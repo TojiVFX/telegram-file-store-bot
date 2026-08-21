@@ -1,0 +1,21 @@
+{
+  "name": "filestore-bot",
+  "version": "1.0.0",
+  "description": "Standalone Telegram Filestore Bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "echo \"No tests configured\""
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "mongodb": "^7.5.0"
+  },
+  "devDependencies": {
+    "node-fetch": "^3.3.2"
+  },
+  "overrides": {
+    "iconv-lite": "0.6.3"
+  }
+}

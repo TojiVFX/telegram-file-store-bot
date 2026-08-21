@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: filestore-bot
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_DOMAIN
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: TELEGRAM_DB_CHANNEL_ID
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
