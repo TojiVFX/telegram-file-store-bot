@@ -23,7 +23,7 @@ export default async function handler(req, res) {
 
   if (!verifyTelegramWebhook(req)) {
     log('warn', 'Rejected webhook request with invalid/missing secret token', {
-      ip: req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown',
+      ip: req?.headers ? (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown') : 'unknown',
     });
     return res.status(401).send('Unauthorized');
   }
