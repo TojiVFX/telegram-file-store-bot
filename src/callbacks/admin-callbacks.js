@@ -277,16 +277,44 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     const timerLabel = timerSec < 60 ? `${timerSec}s` : timerSec < 3600 ? `${Math.round(timerSec / 60)} mins` : `${Math.round(timerSec / 3600)} hours`;
     const protect = s.protectContent === '1';
 
-    const text = `<b>Security & Auto Delete Settings</b>\n\nAuto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\nTimer: <b>${autoDel ? timerLabel : 'Disabled (Turn ON to activate)'}</b>\nContent Protection: <b>${protect ? 'ON' : 'OFF'}</b>`;
+    const text = `<b>Security & Auto Delete Settings</b>\n\nAuto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\nTimer: <b>${autoDel ? timerLabel : 'Disabled'}</b>\nContent Protection: <b>${protect ? 'ON' : 'OFF'}</b>`;
 
+    const buttons = [];
+    if (!autoDel) {
+      buttons.push([{ text: toSmallCaps('Enable Auto Delete'), callback_data: 'admin:select_autodel_timer' }]);
+    } else {
+      buttons.push([{ text: toSmallCaps('Disable Auto Delete'), callback_data: 'admin:toggle_autodel:0' }]);
+      buttons.push([
+        { text: toSmallCaps('1 Min'), callback_data: 'admin:set_timer:60' },
+        { text: toSmallCaps('5 Mins'), callback_data: 'admin:set_timer:300' },
+        { text: toSmallCaps('10 Mins'), callback_data: 'admin:set_timer:600' }
+      ]);
+      buttons.push([
+        { text: toSmallCaps('30 Mins'), callback_data: 'admin:set_timer:1800' },
+        { text: toSmallCaps('1 Hour'), callback_data: 'admin:set_timer:3600' },
+        { text: toSmallCaps('24 Hours'), callback_data: 'admin:set_timer:86400' }
+      ]);
+    }
+
+    buttons.push([{ text: toSmallCaps(protect ? 'Disable Content Protection' : 'Enable Content Protection'), callback_data: `admin:toggle_protect:${protect ? 0 : 1}` }]);
+    buttons.push(...navButtons('admin:dashboard'));
+
+    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  } else if (action === 'select_autodel_timer') {
+    const text = `⏱ <b>Select Auto Delete Duration</b>\n\nChoose how long before files are automatically deleted:`;
     const buttons = [
-      [{ text: toSmallCaps(autoDel ? 'Disable Auto Delete' : 'Enable Auto Delete'), callback_data: `admin:toggle_autodel:${autoDel ? 0 : 1}` }],
-      [{ text: toSmallCaps('1 Min'), callback_data: 'admin:set_timer:60' }, { text: toSmallCaps('5 Mins'), callback_data: 'admin:set_timer:300' }, { text: toSmallCaps('10 Mins'), callback_data: 'admin:set_timer:600' }],
-      [{ text: toSmallCaps('30 Mins'), callback_data: 'admin:set_timer:1800' }, { text: toSmallCaps('1 Hour'), callback_data: 'admin:set_timer:3600' }, { text: toSmallCaps('24 Hours'), callback_data: 'admin:set_timer:86400' }],
-      [{ text: toSmallCaps(protect ? 'Disable Content Protection' : 'Enable Content Protection'), callback_data: `admin:toggle_protect:${protect ? 0 : 1}` }],
-      ...navButtons('admin:dashboard')
+      [{ text: toSmallCaps('1 Min'), callback_data: 'admin:set_timer_enable:60' }, { text: toSmallCaps('5 Mins'), callback_data: 'admin:set_timer_enable:300' }, { text: toSmallCaps('10 Mins'), callback_data: 'admin:set_timer_enable:600' }],
+      [{ text: toSmallCaps('30 Mins'), callback_data: 'admin:set_timer_enable:1800' }, { text: toSmallCaps('1 Hour'), callback_data: 'admin:set_timer_enable:3600' }, { text: toSmallCaps('24 Hours'), callback_data: 'admin:set_timer_enable:86400' }],
+      [{ text: toSmallCaps('Cancel'), callback_data: 'admin:auto_del_mgmt' }]
     ];
     await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  } else if (action.startsWith('set_timer_enable:')) {
+    const sec = action.split(':')[1];
+    await updateSettings({ autoDeleteTimer: sec, autoDeleteEnabled: '1' });
+    await answerCallbackQuery(cq.id, `Auto Delete Enabled (${sec < 60 ? sec + 's' : sec < 3600 ? Math.round(sec / 60) + ' mins' : Math.round(sec / 3600) + ' hours'})`);
+    const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
+    const { default: mainHandler } = await import('../routes/telegram.js');
+    return mainHandler({ ...req, body: mockUpdate }, res);
   } else if (action.startsWith('toggle_autodel:')) {
     const val = action.split(':')[1];
     await updateSettings({ autoDeleteEnabled: val });
@@ -296,8 +324,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     return mainHandler({ ...req, body: mockUpdate }, res);
   } else if (action.startsWith('set_timer:')) {
     const sec = action.split(':')[1];
-    await updateSettings({ autoDeleteTimer: sec });
-    await answerCallbackQuery(cq.id, `Timer set!`);
+    await updateSettings({ autoDeleteTimer: sec, autoDeleteEnabled: '1' });
+    await answerCallbackQuery(cq.id, `Timer updated!`);
     const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
     const { default: mainHandler } = await import('../routes/telegram.js');
     return mainHandler({ ...req, body: mockUpdate }, res);
