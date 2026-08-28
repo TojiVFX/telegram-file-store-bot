@@ -277,7 +277,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     const timerLabel = timerSec < 60 ? `${timerSec}s` : timerSec < 3600 ? `${Math.round(timerSec / 60)} mins` : `${Math.round(timerSec / 3600)} hours`;
     const protect = s.protectContent === '1';
 
-    const text = `<b>Security & Auto Delete Settings</b>\n\nAuto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\nTimer: <b>${timerLabel}</b>\nContent Protection: <b>${protect ? 'ON' : 'OFF'}</b>`;
+    const text = `<b>Security & Auto Delete Settings</b>\n\nAuto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\nTimer: <b>${autoDel ? timerLabel : 'Disabled (Turn ON to activate)'}</b>\nContent Protection: <b>${protect ? 'ON' : 'OFF'}</b>`;
 
     const buttons = [
       [{ text: toSmallCaps(autoDel ? 'Disable Auto Delete' : 'Enable Auto Delete'), callback_data: `admin:toggle_autodel:${autoDel ? 0 : 1}` }],
