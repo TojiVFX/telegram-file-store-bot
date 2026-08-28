@@ -96,9 +96,9 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       await updateSettings({ forceSubscribeChannels: JSON.stringify(channels) });
       await answerCallbackQuery(cq.id, `Mode toggled to ${channels[index].mode === 'join_request' ? 'Join Request' : 'Normal'} Mode!`);
     }
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:fs_cfg:fsub' } };
+    const mockUpdate = { headers: req?.headers || {}, body: { callback_query: { ...cq, data: 'admin:fs_cfg:fsub' } } };
     const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    return mainHandler(mockUpdate, res);
   }
 
   if (action.startsWith('fs_fsub_del:')) {
@@ -136,9 +136,9 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       await updateSettings({ forceSubscribeChannels: newValue });
       await answerCallbackQuery(cq.id, `Removed ${removed.title}!`);
     }
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:fs_cfg:fsub' } };
+    const mockUpdate = { headers: req?.headers || {}, body: { callback_query: { ...cq, data: 'admin:fs_cfg:fsub' } } };
     const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    return mainHandler(mockUpdate, res);
   }
 
   if (action.startsWith('fs_fsub_setlbl:')) {
