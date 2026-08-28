@@ -330,20 +330,55 @@ export async function checkSubscription(chatId, userId) {
 // ─── deliverBatch ─────────────────────────────────────────────────────────────
 export async function deliverBatch(toChatId, batch, protectContent = false) {
   const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId } = batch;
+  const sentMessageIds = [];
+
   if (Array.isArray(dbMessageIds)) {
     const count = dbMessageIds.length;
     for (const msgId of dbMessageIds) {
-      await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+      const res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+      if (res?.ok && res?.messageId) sentMessageIds.push(res.messageId);
       if (count > 5) await new Promise((r) => setTimeout(r, 50));
     }
   }
   else if (dbFirstMsgId && dbLastMsgId) {
     const count = dbLastMsgId - dbFirstMsgId + 1;
     for (let msgId = dbFirstMsgId; msgId <= dbLastMsgId; msgId++) {
-      await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+      const res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+      if (res?.ok && res?.messageId) sentMessageIds.push(res.messageId);
       if (count > 5) await new Promise((r) => setTimeout(r, 50));
     }
   }
+
+  await scheduleAutoDelete(toChatId, sentMessageIds);
+  return sentMessageIds;
+}
+
+export async function scheduleAutoDelete(chatId, messageIds) {
+  if (!messageIds || (Array.isArray(messageIds) && messageIds.length === 0)) return;
+
+  const s = await getSettings();
+  if (s?.autoDeleteEnabled !== '1') return;
+
+  const timerSeconds = parseInt(s?.autoDeleteTimer, 10) || 300; // default 5 mins
+  const ms = timerSeconds * 1000;
+  const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
+
+  const formatTimerLabel = (sec) => {
+    if (sec < 60) return `${sec} seconds`;
+    if (sec < 3600) return `${Math.round(sec / 60)} minute(s)`;
+    return `${Math.round(sec / 3600)} hour(s)`;
+  };
+
+  const timerLabel = formatTimerLabel(timerSeconds);
+
+  const warnMsg = await sendTelegramMessage(chatId, `⚠️ <b>Note:</b> These file(s) will be automatically deleted in <b>${timerLabel}</b>!`);
+  if (warnMsg?.ok && warnMsg?.messageId) ids.push(warnMsg.messageId);
+
+  setTimeout(async () => {
+    for (const msgId of ids) {
+      await deleteTelegramMessage(chatId, msgId).catch(() => {});
+    }
+  }, ms);
 }
 
 export async function registerWebhook(token, webhookUrl) {
