@@ -38,6 +38,10 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     // Check if user has premium
     const premium = await hasPremium(chatId);
 
+    if (premium) {
+      await sendTelegramMessage(chatId, `✨ <b>You are free like a bird!</b> Premium access is active.`);
+    }
+
     // 2. Token Verification Check (skip if admin or premium)
     if (!admin && !premium) {
       const s = await getSettings();
@@ -58,7 +62,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         const target = `https://t.me/${botUsername}?start=verify_${tkn}`;
         const short = await getShortenedLink(target);
         const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short || target }]] };
-        const text = `🔐 <b>Verification Required</b>`;
+        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s). Verification is valid for <b>${validityHours} hours</b>.</blockquote>`;
         const protect = s?.protectContent === '1';
         if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
         else await sendTelegramMessage(chatId, text, kb, protect);
@@ -119,14 +123,24 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         await editTelegramMessage(chatId, loadingMsg.messageId, `⏳ <b>Files are loading...</b>\n\n${step.b} ${step.p}%`);
       }
 
+      const { scheduleAutoDelete } = await import('../bot-helpers.js');
+      let sentMsgId = null;
+
       if (f.dbChannelId && f.dbMessageId) {
         const { copyFromDbChannel } = await import('../bot-helpers.js');
-        await copyFromDbChannel(chatId, f.dbChannelId, f.dbMessageId, protect);
+        const resCopy = await copyFromDbChannel(chatId, f.dbChannelId, f.dbMessageId, protect);
+        if (resCopy?.ok && resCopy?.messageId) sentMsgId = resCopy.messageId;
       } else {
-        if (f.type === 'video') await sendTelegramVideo(chatId, f.fileId, '', null, protect);
-        else if (f.type === 'document') await sendTelegramDocument(chatId, f.fileId, '', null, protect);
-        else if (f.type === 'audio') await sendTelegramAudio(chatId, f.fileId, '', null, protect);
-        else if (f.type === 'photo') await sendTelegramPhoto(chatId, f.fileId, '', null, protect);
+        let resSend;
+        if (f.type === 'video') resSend = await sendTelegramVideo(chatId, f.fileId, '', null, protect);
+        else if (f.type === 'document') resSend = await sendTelegramDocument(chatId, f.fileId, '', null, protect);
+        else if (f.type === 'audio') resSend = await sendTelegramAudio(chatId, f.fileId, '', null, protect);
+        else if (f.type === 'photo') resSend = await sendTelegramPhoto(chatId, f.fileId, '', null, protect);
+        if (resSend?.result?.message_id) sentMsgId = resSend.result.message_id;
+      }
+
+      if (sentMsgId) {
+        await scheduleAutoDelete(chatId, [sentMsgId]);
       }
 
       await deleteTelegramMessage(chatId, loadingMsg.messageId);

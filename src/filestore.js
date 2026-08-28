@@ -232,6 +232,36 @@ export async function clearBatchSession(chatId) {
  * @param {string|null}  [botId]   Unused (reserved parameter, kept for call-site compatibility)
  * @returns {Promise<string | null>}
  */
+/**
+ * Execute weekly cleanup for files/records created between Sunday and Monday.
+ * Deletes matching records from MongoDB and optionally deletes associated messages if requested.
+ */
+export async function runWeeklyCleanup() {
+  const files = await getCollection('files');
+  const allFiles = await files.find({}).toArray();
+
+  let deletedCount = 0;
+  const deletedIds = [];
+
+  for (const item of allFiles) {
+    if (!item.createdAt) continue;
+    const dt = new Date(item.createdAt);
+    const day = dt.getUTCDay(); // 0 = Sunday, 1 = Monday
+    if (day === 0 || day === 1) {
+      deletedIds.push(item._id);
+      deletedCount++;
+    }
+  }
+
+  if (deletedIds.length > 0) {
+    await files.deleteMany({ _id: { $in: deletedIds } });
+  }
+
+  return {
+    deletedRecords: deletedCount,
+  };
+}
+
 export async function getShortenedLink(targetUrl, botId = null) {
   const s = await getSettings();
   if (!s?.shortenerUrl || !s?.shortenerKey) return null;

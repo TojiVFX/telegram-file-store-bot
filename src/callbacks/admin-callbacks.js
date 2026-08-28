@@ -180,13 +180,17 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     return res.status(200).send('OK');
   }
 
+  const navButtons = (backCb) => [
+    [{ text: toSmallCaps('Back'), callback_data: backCb }, { text: toSmallCaps('Home'), callback_data: 'admin:dashboard' }]
+  ];
+
   if (action === 'dashboard') {
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [
         [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
         [{ text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }, { text: toSmallCaps('File Control'), callback_data: 'admin:file_mgmt' }],
-        [{ text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
+        [{ text: toSmallCaps('Security & Auto Delete'), callback_data: 'admin:auto_del_mgmt' }, { text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
         [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
       ]
     });
@@ -194,7 +198,6 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     const { getUserStats } = await import('../bot-users.js');
     const s = await getUserStats();
 
-    // Aggregation to get total referrals
     const users = await getCollection('users');
     const referralAggregation = await users.aggregate([
       { $group: { _id: null, total: { $sum: '$referralCount' } } }
@@ -206,7 +209,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
                  `Total Links: <b>${s.filestoreLinks}</b>\n` +
                  `Total Referrals: <b>${totalRefs}</b>`;
     await editTelegramMessage(chatId, messageId, text, {
-      inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:dashboard' }]]
+      inline_keyboard: navButtons('admin:dashboard')
     });
   } else if (action === 'broadcast_prompt') {
     await sessions.updateOne(
@@ -214,8 +217,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       { $set: { val: 'broadcast', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `📢 <b>Broadcast Message</b>\n\nPlease send the message you want to broadcast to all users.\n\nHTML is supported.\n\nSend /cancel to abort.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+    await editTelegramMessage(chatId, messageId, `<b>Broadcast Message</b>\n\nPlease send the message you want to broadcast to all users.\n\nHTML is supported.\n\nSend /cancel to abort.`, {
+      inline_keyboard: navButtons('admin:dashboard')
     });
     await logHistory('broadcast_prompt', 'tg');
   } else if (action === 'user_mgmt') {
@@ -224,7 +227,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       inline_keyboard: [
         [{ text: toSmallCaps('Ban User'), callback_data: 'admin:ban_prompt' }, { text: toSmallCaps('Unban User'), callback_data: 'admin:unban_prompt' }],
         [{ text: toSmallCaps('Banned List'), callback_data: 'admin:ban_list' }, { text: toSmallCaps('Grant Premium'), callback_data: 'admin:fs_premium_prompt' }],
-        [{ text: toSmallCaps('Back'), callback_data: 'admin:dashboard' }]
+        ...navButtons('admin:dashboard')
       ]
     });
   } else if (action === 'ban_prompt') {
@@ -233,8 +236,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       { $set: { val: 'ban', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `🚫 <b>Ban User</b>\n\nPlease send the <b>User ID</b> you want to ban.\n\nSend /cancel to abort.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+    await editTelegramMessage(chatId, messageId, `<b>Ban User</b>\n\nPlease send the <b>User ID</b> you want to ban.\n\nSend /cancel to abort.`, {
+      inline_keyboard: navButtons('admin:user_mgmt')
     });
   } else if (action === 'unban_prompt') {
     await sessions.updateOne(
@@ -242,35 +245,80 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       { $set: { val: 'unban', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `🔓 <b>Unban User</b>\n\nPlease send the <b>User ID</b> you want to unban.\n\nSend /cancel to abort.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+    await editTelegramMessage(chatId, messageId, `<b>Unban User</b>\n\nPlease send the <b>User ID</b> you want to unban.\n\nSend /cancel to abort.`, {
+      inline_keyboard: navButtons('admin:user_mgmt')
     });
   } else if (action === 'ban_list') {
     const { getBannedList } = await import('../bot-users.js');
     const list = await getBannedList();
-    const text = list.length ? `🚫 <b>Banned Users:</b>\n\n${list.map(id => `<code>${id}</code>`).join('\n')}` : `No banned users.`;
+    const text = list.length ? `<b>Banned Users:</b>\n\n${list.map(id => `<code>${id}</code>`).join('\n')}` : `No banned users.`;
     await editTelegramMessage(chatId, messageId, text, {
-      inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'admin:user_mgmt' }]]
+      inline_keyboard: navButtons('admin:user_mgmt')
     });
   } else if (action === 'file_mgmt') {
-    const text = `<b>File Management</b>\n\nCreate sharing links for files:`;
+    const text = `<b>File Management</b>\n\nCreate sharing links or manage stored files:`;
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [
         [{ text: toSmallCaps('Create Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps('Store Single'), callback_data: 'admin:store_start' }],
-        [{ text: toSmallCaps('Back'), callback_data: 'admin:dashboard' }]
+        [{ text: toSmallCaps('Run Weekly Cleanup (Sun-Mon)'), callback_data: 'admin:trigger_cleanup' }],
+        ...navButtons('admin:dashboard')
       ]
     });
+  } else if (action === 'trigger_cleanup') {
+    const { runWeeklyCleanup } = await import('../filestore.js');
+    const result = await runWeeklyCleanup();
+    await editTelegramMessage(chatId, messageId, `<b>Weekly Cleanup Completed</b>\n\nDeleted records created between Sunday and Monday: <b>${result.deletedRecords}</b>`, {
+      inline_keyboard: navButtons('admin:file_mgmt')
+    });
+  } else if (action === 'auto_del_mgmt') {
+    const s = await getSettings();
+    const autoDel = s.autoDeleteEnabled === '1';
+    const timerSec = parseInt(s.autoDeleteTimer, 10) || 300;
+    const timerLabel = timerSec < 60 ? `${timerSec}s` : timerSec < 3600 ? `${Math.round(timerSec / 60)} mins` : `${Math.round(timerSec / 3600)} hours`;
+    const protect = s.protectContent === '1';
+
+    const text = `<b>Security & Auto Delete Settings</b>\n\nAuto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\nTimer: <b>${timerLabel}</b>\nContent Protection: <b>${protect ? 'ON' : 'OFF'}</b>`;
+
+    const buttons = [
+      [{ text: toSmallCaps(autoDel ? 'Disable Auto Delete' : 'Enable Auto Delete'), callback_data: `admin:toggle_autodel:${autoDel ? 0 : 1}` }],
+      [{ text: toSmallCaps('1 Min'), callback_data: 'admin:set_timer:60' }, { text: toSmallCaps('5 Mins'), callback_data: 'admin:set_timer:300' }, { text: toSmallCaps('10 Mins'), callback_data: 'admin:set_timer:600' }],
+      [{ text: toSmallCaps('30 Mins'), callback_data: 'admin:set_timer:1800' }, { text: toSmallCaps('1 Hour'), callback_data: 'admin:set_timer:3600' }, { text: toSmallCaps('24 Hours'), callback_data: 'admin:set_timer:86400' }],
+      [{ text: toSmallCaps(protect ? 'Disable Content Protection' : 'Enable Content Protection'), callback_data: `admin:toggle_protect:${protect ? 0 : 1}` }],
+      ...navButtons('admin:dashboard')
+    ];
+    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  } else if (action.startsWith('toggle_autodel:')) {
+    const val = action.split(':')[1];
+    await updateSettings({ autoDeleteEnabled: val });
+    await answerCallbackQuery(cq.id, `Auto Delete ${val === '1' ? 'Enabled' : 'Disabled'}`);
+    const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
+    const { default: mainHandler } = await import('../routes/telegram.js');
+    return mainHandler({ ...req, body: mockUpdate }, res);
+  } else if (action.startsWith('set_timer:')) {
+    const sec = action.split(':')[1];
+    await updateSettings({ autoDeleteTimer: sec });
+    await answerCallbackQuery(cq.id, `Timer set!`);
+    const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
+    const { default: mainHandler } = await import('../routes/telegram.js');
+    return mainHandler({ ...req, body: mockUpdate }, res);
+  } else if (action.startsWith('toggle_protect:')) {
+    const val = action.split(':')[1];
+    await updateSettings({ protectContent: val });
+    await answerCallbackQuery(cq.id, `Content Protection ${val === '1' ? 'Enabled' : 'Disabled'}`);
+    const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
+    const { default: mainHandler } = await import('../routes/telegram.js');
+    return mainHandler({ ...req, body: mockUpdate }, res);
   } else if (action === 'batch_start') {
     const { setBatchSession } = await import('../filestore.js');
     await setBatchSession(chatId, { step: 'first', collectedIds: [] });
-    await editTelegramMessage(chatId, messageId, `📦 <b>Batch Mode</b>\n\nForward the first message or start sending files.\n\nSend /cancel to abort.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+    await editTelegramMessage(chatId, messageId, `<b>Batch Mode</b>\n\nForward the first message or start sending files.\n\nSend /cancel to abort.`, {
+      inline_keyboard: navButtons('admin:file_mgmt')
     });
   } else if (action === 'store_start') {
     const { setAdminWaitingForFile } = await import('../filestore.js');
     await setAdminWaitingForFile(chatId);
-    await editTelegramMessage(chatId, messageId, `📁 <b>Store Single File</b>\n\nPlease send the file (document, video, audio, or photo) you want to store.\n\nSend /cancel to abort.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+    await editTelegramMessage(chatId, messageId, `<b>Store Single File</b>\n\nPlease send the file (document, video, audio, or photo) you want to store.\n\nSend /cancel to abort.`, {
+      inline_keyboard: navButtons('admin:file_mgmt')
     });
   } else if (action === 'batch_done') {
     const { getBatchSession, storeBatch, clearBatchSession } = await import('../filestore.js');
@@ -291,14 +339,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     const botUsername = await getBotUsername();
     const shareLink   = `https://t.me/${botUsername}?start=${batchCode}`;
 
-    let msgText = `✅ <b>Batch Created!</b>\n\n📁 Files collected: <b>${totalCollected}</b>\n🆔 Batch code: <code>${batchCode}</code>\n\n🔗 <b>Share this link:</b>\n${shareLink}`;
+    let msgText = `<b>Batch Created!</b>\n\nFiles collected: <b>${totalCollected}</b>\nBatch code: <code>${batchCode}</code>\n\n<b>Share this link:</b>\n${shareLink}`;
     if (totalCollected > 500) {
       const dropped = totalCollected - 500;
-      msgText += `\n\n⚠️ <b>Warning:</b> Batches are limited to 500 files. <b>${dropped}</b> files were truncated (dropped) from the end of the batch.`;
+      msgText += `\n\n<b>Warning:</b> Batches are limited to 500 files. <b>${dropped}</b> files were truncated (dropped) from the end of the batch.`;
     }
 
     await editTelegramMessage(chatId, messageId, msgText, {
-      inline_keyboard: [[{ text: '⬅️ Back to Dashboard', callback_data: 'admin:dashboard' }]]
+      inline_keyboard: navButtons('admin:dashboard')
     });
     return res.status(200).send('OK');
   } else if (action === 'cancel_session') {
@@ -309,10 +357,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
     await sessions.deleteOne({ _id: `admin:waiting_premium_user:${chatId}` });
 
-    const backData = 'admin:dashboard';
-
     await editTelegramMessage(chatId, messageId, `<b>Session cancelled.</b>`, {
-      inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: backData }]]
+      inline_keyboard: navButtons('admin:dashboard')
     });
   } else if (action === 'fs_settings') {
     const s = await getSettings();
@@ -321,7 +367,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     const buttons = [
       [{ text: toSmallCaps('START MSG'), callback_data: 'admin:fs_cfg:start' }, { text: toSmallCaps('FORCE SUB'), callback_data: 'admin:fs_cfg:fsub' }],
       [{ text: toSmallCaps('ACCESS TOKEN'), callback_data: 'admin:fs_cfg:tkn' }, { text: toSmallCaps('DB CHANNEL'), callback_data: 'admin:fs_set_db' }],
-      [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }],
+      ...navButtons('admin:dashboard')
     ];
     await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
   } else if (action.startsWith('fs_cfg:')) {
