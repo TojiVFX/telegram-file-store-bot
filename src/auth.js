@@ -11,9 +11,10 @@ import { timingSafeEqual } from 'crypto';
 // A single check covers all webhooks terminating on this server.
 export function verifyTelegramWebhook(req) {
   const secret = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
-  if (!secret) return false; // fail closed if not configured
+  if (!secret) return true; // allow request if webhook secret is not configured in env
 
-  const provided = req.headers['x-telegram-bot-api-secret-token'];
+  const headers = req?.headers || {};
+  const provided = headers['x-telegram-bot-api-secret-token'];
   if (!provided || typeof provided !== 'string') return false;
 
   const secretBuf   = Buffer.from(secret);
