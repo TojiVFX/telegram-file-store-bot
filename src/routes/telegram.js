@@ -147,7 +147,7 @@ async function handleUpdate(req, res) {
       if (!admin) return res.status(200).send('OK');
 
       const action = data.slice(6);
-      return handleAdminCallback(chatId, messageId, action, cq, req, res);
+      return handleAdminCallback(chatId, messageId, action, cq, res);
     }
 
     if (data.startsWith('sub_check:')) {

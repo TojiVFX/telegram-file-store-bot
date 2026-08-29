@@ -5,7 +5,116 @@ import {
   getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId, getAdminDashboardKeyboard, getDbChannelReadinessError
 } from '../bot-helpers.js';
 
-export async function handleAdminCallback(chatId, messageId, action, cq, req, res) {
+// ─── Shared nav row ─────────────────────────────────────────────────────────────
+const navButtons = (backCb) => [
+  [{ text: toSmallCaps('Back'), callback_data: backCb }, { text: toSmallCaps('Home'), callback_data: 'admin:dashboard' }]
+];
+
+// ─── Screen renderers ───────────────────────────────────────────────────────────
+// Each of these renders one dashboard "screen" by directly editing the message.
+// Previously, refreshing a screen after a toggle (e.g. after flipping Auto
+// Delete on/off) was done by building a fake Telegram update and re-running the
+// *entire webhook handler* against it (routes/telegram.js's mainHandler). That
+// worked, but re-ran env/webhook-secret validation and command registration on
+// every toggle tap, relied on two different mock-update shapes across call
+// sites, and required a circular dynamic import back into routes/telegram.js.
+// Calling these functions directly removes all of that.
+
+async function renderDashboard(chatId, messageId) {
+  const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
+  await editTelegramMessage(chatId, messageId, text, getAdminDashboardKeyboard());
+}
+
+async function renderAutoDelMgmt(chatId, messageId) {
+  const s = await getSettings();
+  const autoDel = s.autoDeleteEnabled === '1';
+  const timerSec = parseInt(s.autoDeleteTimer, 10) || 300;
+  const timerLabel = timerSec < 60 ? `${timerSec}s` : timerSec < 3600 ? `${Math.round(timerSec / 60)} mins` : `${Math.round(timerSec / 3600)} hours`;
+  const protect = s.protectContent === '1';
+
+  const text = `<b>Security & Auto Delete Settings</b>\n\nAuto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\nTimer: <b>${autoDel ? timerLabel : 'Disabled'}</b>\nContent Protection: <b>${protect ? 'ON' : 'OFF'}</b>`;
+
+  const buttons = [];
+  if (!autoDel) {
+    buttons.push([{ text: toSmallCaps('Enable Auto Delete'), callback_data: 'admin:select_autodel_timer' }]);
+  } else {
+    buttons.push([{ text: toSmallCaps('Disable Auto Delete'), callback_data: 'admin:toggle_autodel:0' }]);
+    buttons.push([
+      { text: toSmallCaps('1 Min'), callback_data: 'admin:set_timer:60' },
+      { text: toSmallCaps('5 Mins'), callback_data: 'admin:set_timer:300' },
+      { text: toSmallCaps('10 Mins'), callback_data: 'admin:set_timer:600' }
+    ]);
+    buttons.push([
+      { text: toSmallCaps('30 Mins'), callback_data: 'admin:set_timer:1800' },
+      { text: toSmallCaps('1 Hour'), callback_data: 'admin:set_timer:3600' },
+      { text: toSmallCaps('24 Hours'), callback_data: 'admin:set_timer:86400' }
+    ]);
+  }
+
+  buttons.push([{ text: toSmallCaps(protect ? 'Disable Content Protection' : 'Enable Content Protection'), callback_data: `admin:toggle_protect:${protect ? 0 : 1}` }]);
+  buttons.push(...navButtons('admin:dashboard'));
+
+  await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+}
+
+async function renderFsCfg(chatId, messageId, cfgType) {
+  const s = await getSettings();
+  let text = '';
+  let buttons = [];
+
+  if (cfgType === 'start') {
+    text = `<b>Start Message</b>\n\nCustomize your main bot start message using the following buttons:`;
+    buttons = [
+      [{ text: toSmallCaps('START TEXT'), callback_data: 'admin:fs_set_stext' }, { text: toSmallCaps('START PHOTO'), callback_data: 'admin:fs_set_sphoto' }],
+      [{ text: toSmallCaps('BACK'), callback_data: 'admin:fs_settings' }]
+    ];
+  } else if (cfgType === 'fsub') {
+    const fsub = s.forceSubscribeChannels || '';
+    const globalMode = s.forceSubscribeMode || 'normal';
+    const channels = getForceSubChannelsList(fsub, globalMode);
+
+    text = `<b><u>Force Sub</u></b>\n\nUsers can only use your main bot after joining all force sub channels.\nmain bot now also supports join request mode.\n\nYou can add up to 6 channels`;
+
+    buttons = [];
+    for (let i = 0; i < channels.length; i++) {
+      const chan = channels[i];
+      let displayName = chan.title || 'Channel';
+      if (displayName.startsWith('-100')) {
+        displayName = 'Channel ' + displayName.replace('-100', '');
+      }
+      buttons.push([
+        { text: `• ${displayName}`, callback_data: `admin:fs_fsub_toggle:${i}` },
+        { text: `✏️ Label`, callback_data: `admin:fs_fsub_setlbl:${i}` },
+        { text: `❌`, callback_data: `admin:fs_fsub_del:${i}` }
+      ]);
+    }
+
+    if (channels.length < 6) {
+      buttons.push([{ text: `+ Add Channel`, callback_data: `admin:fs_fsub_add` }]);
+    }
+
+    buttons.push([{ text: `📥 Bulk Setup`, callback_data: `admin:fs_fsub_bulk` }]);
+
+    buttons.push([
+      { text: `🔍 Check Status`, callback_data: `admin:fs_fsub_status` },
+      { text: `Message`, callback_data: `admin:fs_set_fsub_msg` }
+    ]);
+    buttons.push([{ text: `< back`, callback_data: `admin:fs_settings` }]);
+  } else if (cfgType === 'tkn') {
+    const enabled = s.enabled === '1';
+    const refDisabled = s.referralDisabled === '1';
+    text = `<b>Access Token (Shortener)</b>\n\nUsers need to pass a shortened link to gain special access to messages from all shareable links. This access will be valid for the next custom validity period.\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>`;
+    buttons = [
+      [{ text: toSmallCaps('Shortener URL'), callback_data: 'admin:fs_set_url' }, { text: toSmallCaps('API Key'), callback_data: 'admin:fs_set_key' }],
+      [{ text: toSmallCaps('Validity'), callback_data: 'admin:fs_set_ttl' }, { text: toSmallCaps('Tutorial'), callback_data: 'admin:fs_set_tut' }],
+      [{ text: toSmallCaps(enabled ? 'Disable Token' : 'Enable Token'), callback_data: `admin:fs_toggle:${enabled ? 0 : 1}` }, { text: toSmallCaps(refDisabled ? 'Enable Ref' : 'Disable Ref'), callback_data: `admin:fs_toggle_ref:${refDisabled ? 0 : 1}` }],
+      [{ text: toSmallCaps('BACK'), callback_data: 'admin:fs_settings' }]
+    ];
+  }
+  await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+}
+
+export async function handleAdminCallback(chatId, messageId, action, cq, res) {
   const requiresCustomToast = action.startsWith('fs_fsub_toggle:') ||
                               action.startsWith('fs_fsub_del_confirm:') ||
                               action.startsWith('fs_fsub_setmode:') ||
@@ -95,9 +204,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       await updateSettings({ forceSubscribeChannels: JSON.stringify(channels) });
       await answerCallbackQuery(cq.id, `Mode toggled to ${channels[index].mode === 'join_request' ? 'Join Request' : 'Normal'} Mode!`);
     }
-    const mockUpdate = { headers: req?.headers || {}, body: { callback_query: { ...cq, data: 'admin:fs_cfg:fsub' } } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler(mockUpdate, res);
+    await renderFsCfg(chatId, messageId, 'fsub');
+    return res.status(200).send('OK');
   }
 
   if (action.startsWith('fs_fsub_del:')) {
@@ -135,9 +243,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       await updateSettings({ forceSubscribeChannels: newValue });
       await answerCallbackQuery(cq.id, `Removed ${removed.title}!`);
     }
-    const mockUpdate = { headers: req?.headers || {}, body: { callback_query: { ...cq, data: 'admin:fs_cfg:fsub' } } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler(mockUpdate, res);
+    await renderFsCfg(chatId, messageId, 'fsub');
+    return res.status(200).send('OK');
   }
 
   if (action.startsWith('fs_fsub_setlbl:')) {
@@ -179,13 +286,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     return res.status(200).send('OK');
   }
 
-  const navButtons = (backCb) => [
-    [{ text: toSmallCaps('Back'), callback_data: backCb }, { text: toSmallCaps('Home'), callback_data: 'admin:dashboard' }]
-  ];
-
   if (action === 'dashboard') {
-    const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
-    await editTelegramMessage(chatId, messageId, text, getAdminDashboardKeyboard());
+    await renderDashboard(chatId, messageId);
   } else if (action === 'stats') {
     const { getUserStats } = await import('../bot-users.js');
     const s = await getUserStats();
@@ -263,35 +365,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       inline_keyboard: navButtons('admin:file_mgmt')
     });
   } else if (action === 'auto_del_mgmt') {
-    const s = await getSettings();
-    const autoDel = s.autoDeleteEnabled === '1';
-    const timerSec = parseInt(s.autoDeleteTimer, 10) || 300;
-    const timerLabel = timerSec < 60 ? `${timerSec}s` : timerSec < 3600 ? `${Math.round(timerSec / 60)} mins` : `${Math.round(timerSec / 3600)} hours`;
-    const protect = s.protectContent === '1';
-
-    const text = `<b>Security & Auto Delete Settings</b>\n\nAuto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\nTimer: <b>${autoDel ? timerLabel : 'Disabled'}</b>\nContent Protection: <b>${protect ? 'ON' : 'OFF'}</b>`;
-
-    const buttons = [];
-    if (!autoDel) {
-      buttons.push([{ text: toSmallCaps('Enable Auto Delete'), callback_data: 'admin:select_autodel_timer' }]);
-    } else {
-      buttons.push([{ text: toSmallCaps('Disable Auto Delete'), callback_data: 'admin:toggle_autodel:0' }]);
-      buttons.push([
-        { text: toSmallCaps('1 Min'), callback_data: 'admin:set_timer:60' },
-        { text: toSmallCaps('5 Mins'), callback_data: 'admin:set_timer:300' },
-        { text: toSmallCaps('10 Mins'), callback_data: 'admin:set_timer:600' }
-      ]);
-      buttons.push([
-        { text: toSmallCaps('30 Mins'), callback_data: 'admin:set_timer:1800' },
-        { text: toSmallCaps('1 Hour'), callback_data: 'admin:set_timer:3600' },
-        { text: toSmallCaps('24 Hours'), callback_data: 'admin:set_timer:86400' }
-      ]);
-    }
-
-    buttons.push([{ text: toSmallCaps(protect ? 'Disable Content Protection' : 'Enable Content Protection'), callback_data: `admin:toggle_protect:${protect ? 0 : 1}` }]);
-    buttons.push(...navButtons('admin:dashboard'));
-
-    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+    await renderAutoDelMgmt(chatId, messageId);
   } else if (action === 'select_autodel_timer') {
     const text = `⏱ <b>Select Auto Delete Duration</b>\n\nChoose how long before files are automatically deleted:`;
     const buttons = [
@@ -304,30 +378,22 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     const sec = action.split(':')[1];
     await updateSettings({ autoDeleteTimer: sec, autoDeleteEnabled: '1' });
     await answerCallbackQuery(cq.id, `Auto Delete Enabled (${sec < 60 ? sec + 's' : sec < 3600 ? Math.round(sec / 60) + ' mins' : Math.round(sec / 3600) + ' hours'})`);
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    await renderAutoDelMgmt(chatId, messageId);
   } else if (action.startsWith('toggle_autodel:')) {
     const val = action.split(':')[1];
     await updateSettings({ autoDeleteEnabled: val });
     await answerCallbackQuery(cq.id, `Auto Delete ${val === '1' ? 'Enabled' : 'Disabled'}`);
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    await renderAutoDelMgmt(chatId, messageId);
   } else if (action.startsWith('set_timer:')) {
     const sec = action.split(':')[1];
     await updateSettings({ autoDeleteTimer: sec, autoDeleteEnabled: '1' });
     await answerCallbackQuery(cq.id, `Timer updated!`);
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    await renderAutoDelMgmt(chatId, messageId);
   } else if (action.startsWith('toggle_protect:')) {
     const val = action.split(':')[1];
     await updateSettings({ protectContent: val });
     await answerCallbackQuery(cq.id, `Content Protection ${val === '1' ? 'Enabled' : 'Disabled'}`);
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:auto_del_mgmt' } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    await renderAutoDelMgmt(chatId, messageId);
   } else if (action === 'batch_start') {
     const dbError = await getDbChannelReadinessError();
     if (dbError) {
@@ -353,7 +419,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
       inline_keyboard: navButtons('admin:file_mgmt')
     });
   } else if (action === 'batch_done') {
-    const { getBatchSession, storeBatch, clearBatchSession } = await import('../filestore.js');
+    const { getBatchSession, storeBatch, clearBatchSession, generateBatchCode } = await import('../filestore.js');
     const batchSession = await getBatchSession(chatId);
     if (!batchSession || !batchSession.collectedIds?.length) {
       await answerCallbackQuery(cq.id, 'No files collected.');
@@ -403,79 +469,20 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     ];
     await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
   } else if (action.startsWith('fs_cfg:')) {
-    const parts = action.split(':');
-    const cfgType = parts[1];
-    const s = await getSettings();
-
-    let text = '';
-    let buttons = [];
-
-    if (cfgType === 'start') {
-      text = `<b>Start Message</b>\n\nCustomize your main bot start message using the following buttons:`;
-      buttons = [
-        [{ text: toSmallCaps('START TEXT'), callback_data: 'admin:fs_set_stext' }, { text: toSmallCaps('START PHOTO'), callback_data: 'admin:fs_set_sphoto' }],
-        [{ text: toSmallCaps('BACK'), callback_data: 'admin:fs_settings' }]
-      ];
-    } else if (cfgType === 'fsub') {
-      const fsub = s.forceSubscribeChannels || '';
-      const globalMode = s.forceSubscribeMode || 'normal';
-      const channels = getForceSubChannelsList(fsub, globalMode);
-
-      text = `<b><u>Force Sub</u></b>\n\nUsers can only use your main bot after joining all force sub channels.\nmain bot now also supports join request mode.\n\nYou can add up to 6 channels`;
-
-      buttons = [];
-      for (let i = 0; i < channels.length; i++) {
-        const chan = channels[i];
-        let displayName = chan.title || 'Channel';
-        if (displayName.startsWith('-100')) {
-          displayName = 'Channel ' + displayName.replace('-100', '');
-        }
-        buttons.push([
-          { text: `• ${displayName}`, callback_data: `admin:fs_fsub_toggle:${i}` },
-          { text: `✏️ Label`, callback_data: `admin:fs_fsub_setlbl:${i}` },
-          { text: `❌`, callback_data: `admin:fs_fsub_del:${i}` }
-        ]);
-      }
-
-      if (channels.length < 6) {
-        buttons.push([{ text: `+ Add Channel`, callback_data: `admin:fs_fsub_add` }]);
-      }
-
-      buttons.push([{ text: `📥 Bulk Setup`, callback_data: `admin:fs_fsub_bulk` }]);
-
-      buttons.push([
-        { text: `🔍 Check Status`, callback_data: `admin:fs_fsub_status` },
-        { text: `Message`, callback_data: `admin:fs_set_fsub_msg` }
-      ]);
-      buttons.push([{ text: `< back`, callback_data: `admin:fs_settings` }]);
-    } else if (cfgType === 'tkn') {
-      const enabled = s.enabled === '1';
-      const refDisabled = s.referralDisabled === '1';
-      text = `<b>Access Token (Shortener)</b>\n\nUsers need to pass a shortened link to gain special access to messages from all shareable links. This access will be valid for the next custom validity period.\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>`;
-      buttons = [
-        [{ text: toSmallCaps('Shortener URL'), callback_data: 'admin:fs_set_url' }, { text: toSmallCaps('API Key'), callback_data: 'admin:fs_set_key' }],
-        [{ text: toSmallCaps('Validity'), callback_data: 'admin:fs_set_ttl' }, { text: toSmallCaps('Tutorial'), callback_data: 'admin:fs_set_tut' }],
-        [{ text: toSmallCaps(enabled ? 'Disable Token' : 'Enable Token'), callback_data: `admin:fs_toggle:${enabled ? 0 : 1}` }, { text: toSmallCaps(refDisabled ? 'Enable Ref' : 'Disable Ref'), callback_data: `admin:fs_toggle_ref:${refDisabled ? 0 : 1}` }],
-        [{ text: toSmallCaps('BACK'), callback_data: 'admin:fs_settings' }]
-      ];
-    }
-    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+    const cfgType = action.split(':')[1];
+    await renderFsCfg(chatId, messageId, cfgType);
   } else if (action.startsWith('fs_toggle:')) {
     const val = action.split(':')[1];
     await updateSettings({ enabled: val });
     await logHistory(`verification_${val === '1' ? 'enabled' : 'disabled'}`, 'tg');
     await answerCallbackQuery(cq.id, `Token verification ${val === '1' ? 'enabled' : 'disabled'}.`);
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:fs_cfg:tkn' } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    await renderFsCfg(chatId, messageId, 'tkn');
   } else if (action.startsWith('fs_toggle_ref:')) {
     const val = action.split(':')[1];
     await updateSettings({ referralDisabled: val });
     await logHistory(`referrals_${val === '1' ? 'disabled' : 'enabled'}`, 'tg');
     await answerCallbackQuery(cq.id, `Referrals system ${val === '1' ? 'disabled' : 'enabled'}.`);
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:fs_cfg:tkn' } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    await renderFsCfg(chatId, messageId, 'tkn');
   } else if (action === 'fs_set_db') {
     await sessions.updateOne(
       { _id: `admin:waiting_setting:${chatId}` },
@@ -565,9 +572,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     const newMode = s.forceSubscribeMode === 'join_request' ? 'normal' : 'join_request';
     await updateSettings({ forceSubscribeMode: newMode });
     await answerCallbackQuery(cq.id, `Mode set to ${newMode}.`);
-    const mockUpdate = { callback_query: { ...cq, data: 'admin:fs_cfg:fsub' } };
-    const { default: mainHandler } = await import('../routes/telegram.js');
-    return mainHandler({ ...req, body: mockUpdate }, res);
+    await renderFsCfg(chatId, messageId, 'fsub');
+    return res.status(200).send('OK');
   } else if (action === 'fs_premium_prompt') {
     await sessions.updateOne(
       { _id: `admin:waiting_premium_user:${chatId}` },
@@ -609,13 +615,4 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     await answerCallbackQuery(cq.id).catch(() => {});
   }
   return res.status(200).send('OK');
-}
-
-function generateBatchCode() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  let result = '';
-  for (let i = 0; i < 12; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `batch_${result}`;
 }

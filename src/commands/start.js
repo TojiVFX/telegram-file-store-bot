@@ -3,7 +3,7 @@ import {
   getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, esc
 } from '../bot-common.js';
 import {
-  getBotUsername, checkSubscription, deliverBatch, getAdminDashboardKeyboard, buildStartMenuButtons
+  getBotUsername, deliverBatch, getAdminDashboardKeyboard, buildStartMenuButtons, buildForceSubscribeGate, showLoadingAnimation
 } from '../bot-helpers.js';
 import { getBatch, getFile, getShortenedLink } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral } from '../bot-users.js';
@@ -14,22 +14,9 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
 
   // 1. Force Subscribe Check (skip if admin)
   if (!admin) {
-    const sub = await checkSubscription(chatId, chatId);
-    if (!sub.ok) {
-      const s = await getSettings();
-      const customMsg = s?.forceSubscribeMsg || '❌ <b>Access Denied!</b>\n\nYou must join our channels to use this bot.';
-
-      const buttons = sub.notJoined.map(c => {
-        const btnText = c.buttonLabel ? esc(c.buttonLabel) : `Join ${esc(c.title)}`;
-        return [{
-          text: toSmallCaps(btnText),
-          url: c.inviteLink || `https://t.me/${String(c.id).replace('-100', '')}`
-        }];
-      });
-
-      buttons.push([{ text: toSmallCaps('Try Again'), callback_data: `sub_check:${payload || ''}` }]);
-
-      await sendTelegramMessage(chatId, customMsg, { inline_keyboard: buttons });
+    const gate = await buildForceSubscribeGate(chatId, payload);
+    if (gate) {
+      await sendTelegramMessage(chatId, gate.text, gate.replyMarkup);
       return res.status(200).send('OK');
     }
   }
@@ -78,16 +65,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       await sendTelegramMessage(chatId, `❌ Not found.`, null, s?.protectContent === '1');
       return res.status(200).send('OK');
     }
-    const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
-    const steps = [
-      { p: 30, b: '[███▒▒▒▒▒▒▒]' },
-      { p: 70, b: '[███████▒▒▒]' },
-      { p: 100, b: '[██████████]' }
-    ];
-    for (const step of steps) {
-      await new Promise(r => setTimeout(r, 400));
-      await editTelegramMessage(chatId, loadingMsg.messageId, `⏳ <b>Files are loading...</b>\n\n${step.b} ${step.p}%`);
-    }
+    const loadingMsg = await showLoadingAnimation(chatId);
     const s = await getSettings();
     await deliverBatch(chatId, b, s?.protectContent === '1');
     await deleteTelegramMessage(chatId, loadingMsg.messageId);
@@ -105,16 +83,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     const s = await getSettings();
     const protect = s?.protectContent === '1';
     if (f) {
-      const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
-      const steps = [
-        { p: 30, b: '[███▒▒▒▒▒▒▒]' },
-        { p: 70, b: '[███████▒▒▒]' },
-        { p: 100, b: '[██████████]' }
-      ];
-      for (const step of steps) {
-        await new Promise(r => setTimeout(r, 400));
-        await editTelegramMessage(chatId, loadingMsg.messageId, `⏳ <b>Files are loading...</b>\n\n${step.b} ${step.p}%`);
-      }
+      const loadingMsg = await showLoadingAnimation(chatId);
 
       const { scheduleAutoDelete } = await import('../bot-helpers.js');
       let sentMsgId = null;

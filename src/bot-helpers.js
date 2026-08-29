@@ -313,6 +313,33 @@ export function getForceSubChannelsList(forceSubscribeChannelsRaw, globalMode = 
   return channels.filter(c => c && c.id && String(c.id).trim() !== '[object Object]' && String(c.id).trim() !== '');
 }
 
+// ─── Force subscribe gate ───────────────────────────────────────────────────────
+// Shared by /start and the user: callback handler, both of which need to show
+// the same "join these channels" gate. Returns null when the user already has
+// access; otherwise { text, replyMarkup } ready to hand straight to
+// sendTelegramMessage/editTelegramMessage. `payload` (when present) is baked
+// into the "Try Again" callback_data so retrying can resume wherever the user
+// was headed, instead of falling back to the plain /start screen.
+export async function buildForceSubscribeGate(chatId, payload = '') {
+  const sub = await checkSubscription(chatId, chatId);
+  if (sub.ok) return null;
+
+  const s = await getSettings();
+  const text = s?.forceSubscribeMsg || '❌ <b>Access Denied!</b>\n\nYou must join our channels to use this bot.';
+
+  const buttons = sub.notJoined.map(c => {
+    const btnText = c.buttonLabel ? esc(c.buttonLabel) : `Join ${esc(c.title)}`;
+    return [{
+      text: toSmallCaps(btnText),
+      url: c.inviteLink || `https://t.me/${String(c.id).replace('-100', '')}`
+    }];
+  });
+
+  buttons.push([{ text: toSmallCaps('Try Again'), callback_data: `sub_check:${payload || ''}` }]);
+
+  return { text, replyMarkup: { inline_keyboard: buttons } };
+}
+
 export async function checkSubscription(chatId, userId) {
   return botContext.run({ token: getMainToken() }, async () => {
     let s = await getSettings();
@@ -383,6 +410,24 @@ export async function checkSubscription(chatId, userId) {
     }
     return { ok: true };
   });
+}
+
+// ─── Loading animation ──────────────────────────────────────────────────────────
+// Shared "Files are loading..." progress bar used by both batch delivery and
+// single-file delivery in start.js. Returns the loading message so the caller
+// can delete it once the actual file(s) have been sent.
+export async function showLoadingAnimation(chatId) {
+  const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
+  const steps = [
+    { p: 30, b: '[███▒▒▒▒▒▒▒]' },
+    { p: 70, b: '[███████▒▒▒]' },
+    { p: 100, b: '[██████████]' }
+  ];
+  for (const step of steps) {
+    await new Promise(r => setTimeout(r, 400));
+    await editTelegramMessage(chatId, loadingMsg.messageId, `⏳ <b>Files are loading...</b>\n\n${step.b} ${step.p}%`);
+  }
+  return loadingMsg;
 }
 
 // ─── deliverBatch ─────────────────────────────────────────────────────────────

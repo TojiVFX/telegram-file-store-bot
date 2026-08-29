@@ -1,5 +1,5 @@
 import { getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessage, answerCallbackQuery } from '../bot-common.js';
-import { getBotUsername, buildStartMenuButtons } from '../bot-helpers.js';
+import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate } from '../bot-helpers.js';
 
 export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin, res) {
   // Answer instantly to dismiss the button loading spinner immediately
@@ -10,29 +10,9 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
 
   // 1. Force Subscribe Check (skip if admin)
   if (!admin) {
-    const { checkSubscription } = await import('../bot-helpers.js');
-    const sub = await checkSubscription(chatId, chatId);
-    if (!sub.ok) {
-      const customMsg = cs?.forceSubscribeMsg || '❌ <b>Access Denied!</b>\n\nYou must join our channels to use this bot.';
-
-      const buttons = sub.notJoined.map(c => {
-        const btnText = c.buttonLabel ? esc(c.buttonLabel) : `Join ${esc(c.title)}`;
-        return [{
-          text: toSmallCaps(btnText),
-          url: c.inviteLink || `https://t.me/${String(c.id).replace('-100', '')}`
-        }];
-      });
-
-      buttons.push([{ text: toSmallCaps('Try Again'), callback_data: `sub_check:` }]);
-
-      const styledButtons = buttons.map(row => row.map(btn => {
-        if ('callback_data' in btn && btn.callback_data) {
-          return { ...btn, text: toSmallCaps(btn.text) };
-        }
-        return btn;
-      }));
-
-      await editTelegramMessage(chatId, messageId, customMsg, { inline_keyboard: styledButtons });
+    const gate = await buildForceSubscribeGate(chatId);
+    if (gate) {
+      await editTelegramMessage(chatId, messageId, gate.text, gate.replyMarkup);
       return res.status(200).send('OK');
     }
   }

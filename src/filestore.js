@@ -1,12 +1,22 @@
 import { getCollection, getSettings } from './bot-common.js';
 
-export function generateFileCode() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/**
+ * Shared random-code generator backing both generateFileCode() and
+ * generateBatchCode() below, so the two can't drift apart (a third, private
+ * copy of this same logic used to live in callbacks/admin-callbacks.js).
+ */
+function generateCode(prefix, length = 12) {
   let result = '';
-  for (let i = 0; i < 12; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  for (let i = 0; i < length; i++) {
+    result += CODE_CHARS.charAt(Math.floor(Math.random() * CODE_CHARS.length));
   }
-  return `file_${result}`;
+  return `${prefix}_${result}`;
+}
+
+export function generateFileCode() {
+  return generateCode('file');
 }
 
 export async function storeFile(fileCode, dataObj) {
@@ -45,12 +55,7 @@ export async function checkAndClearAdminWaiting(chatId) {
 }
 
 export function generateBatchCode() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  let result = '';
-  for (let i = 0; i < 12; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `batch_${result}`;
+  return generateCode('batch');
 }
 
 export async function storeBatch(batchCode, dbChannelId, dbMessageIds) {
