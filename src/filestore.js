@@ -195,9 +195,13 @@ export async function getShortenedLink(targetUrl, botId = null) {
       return null;
     }
 
-    const short = data.short_url ?? data.link ?? data.url ?? null;
+    const short = data.short_url ?? data.shortenedUrl ?? data.link ?? data.url ?? null;
     if (!short) {
-      log('error', 'getShortenedLink: shortener API response did not contain a usable short URL', { data });
+      if (data.status === 'error') {
+        log('error', 'getShortenedLink: shortener API returned an error status', { message: data.message || '(no message)' });
+      } else {
+        log('error', 'getShortenedLink: shortener API response did not contain a usable short URL', { data });
+      }
     }
     return short;
   } catch (err) {
