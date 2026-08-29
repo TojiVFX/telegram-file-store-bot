@@ -1,9 +1,9 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc
+  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, esc
 } from '../bot-common.js';
 import {
-  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername
+  getBotUsername, checkSubscription, deliverBatch, getAdminDashboardKeyboard, buildStartMenuButtons
 } from '../bot-helpers.js';
 import { getBatch, getFile, getShortenedLink } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral } from '../bot-users.js';
@@ -96,14 +96,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
 
   if (payload === 'setting' && admin) {
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
-    await sendTelegramMessage(chatId, text, {
-      inline_keyboard: [
-        [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
-        [{ text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }, { text: toSmallCaps('File Control'), callback_data: 'admin:file_mgmt' }],
-        [{ text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
-        [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
-      ]
-    });
+    await sendTelegramMessage(chatId, text, getAdminDashboardKeyboard());
     return res.status(200).send('OK');
   }
 
@@ -162,14 +155,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
   }
   if (s.startPhoto) startPhoto = s.startPhoto;
 
-  const buttons = [
-    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
-  ];
-  if (admin) {
-    buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
-  }
-
-  const styledButtons = buttons.map(row => row.map(btn => ({ ...btn, text: toSmallCaps(btn.text) })));
+  const styledButtons = await buildStartMenuButtons(admin);
 
   if (startPhoto) {
     await sendTelegramPhoto(chatId, startPhoto, startMsg, { inline_keyboard: styledButtons });

@@ -1,13 +1,10 @@
-import { getCollection, getSettings, getDb, toSmallCaps, esc } from '../bot-common.js';
-import { getBotUsername, getForceSubChannelsList } from '../bot-helpers.js';
-import { editTelegramMessage, answerCallbackQuery, deleteTelegramMessage } from '../bot-common.js';
-import { handleStartPayload } from '../commands/start.js';
+import { getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessage, answerCallbackQuery } from '../bot-common.js';
+import { getBotUsername, buildStartMenuButtons } from '../bot-helpers.js';
 
 export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin, res) {
   // Answer instantly to dismiss the button loading spinner immediately
   answerCallbackQuery(cq.id).catch(() => {});
 
-  const botId = await getCurrentBotId();
   const botUsername = await getBotUsername();
   const cs = await getSettings();
 
@@ -109,26 +106,8 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
         .replace(/{last_name}/g, esc(from?.last_name || ''));
     }
 
-    const { isMainBot } = await import('../bot-common.js');
-    const { getMainBotUsername } = await import('../bot-helpers.js');
-    const buttons = [
-      [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
-    ];
-    if (admin) {
-      if (isMainBot()) {
-        buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
-      } else if (botId) {
-        const mainBotUsername = await getMainBotUsername();
-        buttons.unshift([{ text: 'Clone Dashboard', url: `https://t.me/${mainBotUsername}?start=clone_view_${botId}` }]);
-      }
-    }
-    const styledButtons = buttons.map(row => row.map(btn => ({ ...btn, text: toSmallCaps(btn.text) })));
+    const styledButtons = await buildStartMenuButtons(admin);
     await editTelegramMessage(chatId, messageId, startMsg, { inline_keyboard: styledButtons });
   }
   return res.status(200).send('OK');
-}
-
-async function getCurrentBotId() {
-  const { getCurrentBotId: helperGetBotId } = await import('../bot-common.js');
-  return helperGetBotId();
 }

@@ -91,7 +91,6 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       if (copyResult.ok) {
         const count = await addIdToBatch(chatId, copyResult.messageId);
 
-        // Update session step if it was 'first' or 'last'
         if (batchSession.step !== 'collect') {
            await updateBatchSessionMeta(chatId, { step: 'collect' });
         }
@@ -160,7 +159,6 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       return res.status(200).send('OK');
     }
 
-    // Input Validation
     if (waitingFor === 'dbChannelId') {
       if (!/^-100\d+$/.test(rawText)) {
         await sendTelegramMessage(chatId, `❌ <b>Invalid DB Channel ID!</b>\n\nChannel ID must match pattern <code>-100dddddddddd</code>. Please try again or send /cancel.`);
@@ -307,6 +305,5 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     return res.status(200).send('OK');
   }
 
-  // Not processed, let's bubble up to normal user flow or ignore
   return null;
 }

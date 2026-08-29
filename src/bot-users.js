@@ -2,7 +2,6 @@ import {
   getCollection, getSettings, log, sendTelegramMessage
 } from './bot-common.js';
 
-// ─── User store ───────────────────────────────────────────────────────────────
 export async function upsertUser(message) {
   try {
     const chatId  = String(message.chat.id);
@@ -37,7 +36,6 @@ export async function upsertUser(message) {
   }
 }
 
-// ─── Ban store ────────────────────────────────────────────────────────────────
 export async function banUser(targetId) {
   try {
     const users = await getCollection('users');
@@ -87,7 +85,6 @@ export async function getBannedList() {
   }
 }
 
-// ─── Broadcast ────────────────────────────────────────────────────────────────
 export async function broadcastToAll(text) {
   try {
     const users = await getCollection('users');
@@ -97,7 +94,7 @@ export async function broadcastToAll(text) {
 
     let sent   = 0;
     let failed = 0;
-    const CHUNK = 25; // Stay safely under Telegram's 30 msg/s bot limit
+    const CHUNK = 25;
 
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk   = ids.slice(i, i + CHUNK);
@@ -110,7 +107,6 @@ export async function broadcastToAll(text) {
         else failed++;
       }
 
-      // Pace chunks to respect Telegram rate limits
       if (i + CHUNK < ids.length) await new Promise(r => setTimeout(r, 1000));
     }
 
@@ -122,7 +118,6 @@ export async function broadcastToAll(text) {
   }
 }
 
-// ─── Stats ────────────────────────────────────────────────────────────────────
 export async function getUserStats() {
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -155,7 +150,6 @@ export async function getUserStats() {
   }
 }
 
-// ─── Admin helpers ────────────────────────────────────────────────────────────
 export function getAdminId() {
   const raw = (process.env.ADMIN_CHAT_ID || '').trim();
   return raw ? Number(raw) : null;
@@ -163,19 +157,14 @@ export function getAdminId() {
 
 export async function isAdmin(chatId) {
   const adminId = getAdminId();
-
-  // Global admin is admin on every bot
   if (adminId !== null && Number(chatId) === adminId) return true;
-
   return false;
 }
 
-// ─── Referral system ──────────────────────────────────────────────────────────
 export async function addReferral(referrerId, newUserId) {
   try {
     const users = await getCollection('users');
 
-    // Each user can only be referred once
     const userDoc = await users.findOne({ _id: String(newUserId) });
     if (userDoc && userDoc.referrerId) return false;
 
@@ -193,7 +182,6 @@ export async function addReferral(referrerId, newUserId) {
     const referrerDoc = await users.findOne({ _id: String(referrerId) });
     const newCount = referrerDoc ? referrerDoc.referralCount : 0;
 
-    // Reward: +24 h premium for every 3 referrals
     if (newCount > 0 && newCount % 3 === 0) {
       const REWARD_SECONDS = 24 * 3600;
       const currentPremiumUntil = referrerDoc.premiumUntil ? new Date(referrerDoc.premiumUntil) : null;
@@ -233,9 +221,6 @@ export async function getReferralStats(userId) {
   }
 }
 
-/**
- * Checks if a user has premium access.
- */
 export async function hasPremium(userId) {
   try {
     const users = await getCollection('users');

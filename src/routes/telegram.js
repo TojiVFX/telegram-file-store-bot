@@ -1,5 +1,5 @@
 import {
-  getCollection, getSettings, log, getToken, getMainToken, esc
+  getCollection, getSettings, log, getToken, getMainToken, esc, isRateLimited, answerCallbackQuery
 } from '../bot-common.js';
 import {
   getBotUsername, isBotAdmin, registerWebhook, setMyCommands
@@ -123,6 +123,21 @@ async function handleUpdate(req, res) {
     const messageId = msg?.message_id;
     const admin     = await isAdmin(chatId);
 
+    // Same ban/rate-limit gate the message branch below applies — previously
+    // button taps (callback_query updates) bypassed both entirely, so a
+    // banned user could still act via old inline keyboards and no one was
+    // ever rate-limited for callback spam.
+    if (!admin && await isBanned(chatId)) {
+      await answerCallbackQuery(cbId, '❌ You are banned from using this bot.', true);
+      return res.status(200).send('OK');
+    }
+
+    if (!admin && await isRateLimited(chatId)) {
+      log('warn', 'Rate limit exceeded (callback)', { chatId });
+      await answerCallbackQuery(cbId, '⏳ Please slow down and try again shortly.', true);
+      return res.status(200).send('OK');
+    }
+
     if (data.startsWith('user:')) {
       const action = data.slice(5);
       return handleUserCallback(chatId, messageId, action, cq, from, msg, admin, res);
@@ -136,7 +151,7 @@ async function handleUpdate(req, res) {
     }
 
     if (data.startsWith('sub_check:')) {
-      const { answerCallbackQuery, deleteTelegramMessage } = await import('../bot-common.js');
+      const { deleteTelegramMessage } = await import('../bot-common.js');
       const { checkSubscription } = await import('../bot-helpers.js');
       const payload = data.slice('sub_check:'.length);
 
@@ -166,7 +181,6 @@ async function handleUpdate(req, res) {
   const admin = await isAdmin(chatId);
   if (await isBanned(chatId) && !admin) return res.status(200).send('OK');
 
-  const { isRateLimited } = await import('../bot-common.js');
   if (!admin && await isRateLimited(chatId)) {
     log('warn', 'Rate limit exceeded', { chatId });
     return res.status(200).send('OK');

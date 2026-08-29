@@ -27,7 +27,6 @@ export async function getDb() {
     await client.connect();
     const database = client.db();
 
-    // Ensure indexes are created asynchronously (fire-and-forget/non-blocking)
     database.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
       .catch(err => console.error('Error creating sessions expiresAt index:', err.message));
     database.collection('users').createIndex({ username: 1 }, { unique: false, sparse: true })
@@ -42,15 +41,7 @@ export async function getDb() {
   } catch (err) {
     dbPromise = null;
     if (err.message && err.message.includes('SSL alert number 80')) {
-      throw new Error('\n\n🚨 MONGODB CONNECTION ERROR: IP NOT WHITELISTED 🚨\n' +
-                      'Cloudflare Workers have dynamic IP addresses worldwide. You must allow ALL IPs to access your database.\n' +
-                      '1. Go to your MongoDB Atlas dashboard.\n' +
-                      '2. On the left menu, click "Network Access" under "Security".\n' +
-                      '3. Click "Add IP Address".\n' +
-                      '4. Click "Allow Access From Anywhere" (which adds 0.0.0.0/0).\n' +
-                      '5. Click Confirm.\n' +
-                      'Wait a few minutes for changes to deploy, then try again.\n\n' +
-                      'Original Error: ' + err.message);
+      throw new Error('MONGODB CONNECTION ERROR: IP NOT WHITELISTED. Original Error: ' + err.message);
     }
     throw err;
   }
@@ -61,10 +52,9 @@ export async function getCollection(name) {
   return database.collection(name);
 }
 
-// ─── Settings Helpers ─────────────────────────────────────────────────────────
 let cachedSettings = null;
 let cachedSettingsTime = 0;
-const SETTINGS_CACHE_TTL = 10 * 1000; // 10 seconds TTL
+const SETTINGS_CACHE_TTL = 10 * 1000;
 
 export async function getSettings() {
   const now = Date.now();
@@ -81,31 +71,26 @@ export async function getSettings() {
 export async function updateSettings(fields) {
   const coll = await getCollection('settings');
   await coll.updateOne({ _id: 'global' }, { $set: fields }, { upsert: true });
-  // Invalidate cache immediately on update
   cachedSettings = null;
   cachedSettingsTime = 0;
 }
 
-// ─── Rate limiter ─────────────────────────────────────────────────────────────
 export async function isRateLimited(id, limit = 5, window = 10) {
   const coll = await getCollection('sessions');
   const key = `rate_limit:${id}`;
   const now = new Date();
 
-  // Atomically find non-expired rate limit document and increment count.
   const result = await coll.findOneAndUpdate(
     { _id: key, expiresAt: { $gt: now } },
     { $inc: { count: 1 } },
     { returnDocument: 'after' }
   );
 
-  // Support both newer MongoDB driver versions (direct document return) and older versions ({ value })
   const doc = result && (result.value !== undefined ? result.value : result);
   if (doc) {
     return doc.count > limit;
   }
 
-  // If not found or expired, upsert and initialize/reset count and expiresAt.
   await coll.updateOne(
     { _id: key },
     { $set: { count: 1, expiresAt: new Date(Date.now() + window * 1000) } },
@@ -114,7 +99,6 @@ export async function isRateLimited(id, limit = 5, window = 10) {
   return false;
 }
 
-// ─── Logger ───────────────────────────────────────────────────────────────────
 export function log(level, message, meta = {}) {
   const entry = { timestamp: new Date().toISOString(), level, message, ...meta };
   level === 'error'
@@ -122,7 +106,6 @@ export function log(level, message, meta = {}) {
     : console.log(JSON.stringify(entry));
 }
 
-// ─── HTML escape ──────────────────────────────────────────────────────────────
 export function esc(s) {
   return String(s || '')
     .replace(/&/g, '&amp;')
@@ -132,7 +115,6 @@ export function esc(s) {
     .replace(/'/g, '&#039;');
 }
 
-// ─── Small Caps Unicode map ───────────────────────────────────────────────────
 export function toSmallCaps(text) {
   if (!text) return '';
   const map = {
@@ -146,22 +128,14 @@ export function toSmallCaps(text) {
   return text.split('').map(c => map[c] || c).join('');
 }
 
-// ─── Button Formatting Helper (No Emojis, Small Caps, Subscript Digits) ──────
 export function formatButtonText(text) {
   if (!text) return '';
-
-  // Strip emojis, Variation Selectors, and common decorative/ASCII symbols (+ < > •)
   let clean = text
     .replace(/[\p{Extended_Pictographic}\uFE00-\uFE0F]/gu, '')
     .replace(/[+<>•✖◀▶⬅➡➡️]/g, '')
     .trim()
     .replace(/\s+/g, ' ');
-
-  // If the text became empty (e.g. it was just an emoji like ❌), fallback to 'x'
-  if (!clean) {
-    clean = 'x';
-  }
-
+  if (!clean) clean = 'x';
   const map = {
     A:'ᴀ',B:'ʙ',C:'ᴄ',D:'ᴅ',E:'ᴇ',F:'ꜰ',G:'ɢ',H:'ʜ',I:'ɪ',J:'ᴊ',
     K:'ᴋ',L:'ʟ',M:'ᴍ',N:'ɴ',O:'ᴏ',P:'ᴘ',Q:'ǫ',R:'ʀ',S:'ꜱ',T:'ᴛ',
@@ -174,13 +148,9 @@ export function formatButtonText(text) {
   return clean.split('').map(c => map[c] || c).join('');
 }
 
-// ─── Format all buttons in inline keyboards or custom keyboards ──────────────
 export function formatReplyMarkup(replyMarkup) {
   if (!replyMarkup) return replyMarkup;
-
-  // Deep clone the object to avoid mutating the original passed in
   const formatted = JSON.parse(JSON.stringify(replyMarkup));
-
   if (formatted.inline_keyboard && Array.isArray(formatted.inline_keyboard)) {
     formatted.inline_keyboard = formatted.inline_keyboard.map(row => {
       if (Array.isArray(row)) {
@@ -194,7 +164,6 @@ export function formatReplyMarkup(replyMarkup) {
       return row;
     });
   }
-
   if (formatted.keyboard && Array.isArray(formatted.keyboard)) {
     formatted.keyboard = formatted.keyboard.map(row => {
       if (Array.isArray(row)) {
@@ -210,37 +179,27 @@ export function formatReplyMarkup(replyMarkup) {
       return row;
     });
   }
-
   return formatted;
 }
 
-// ─── Small Caps Safe for HTML/Commands/Placeholders ───────────────────────────
 export function toSmallCapsSafe(text) {
   if (!text) return '';
   const tagRegex = /(<\/?[a-zA-Z][^>]*>)/g;
   const parts = text.split(tagRegex);
   return parts.map((part, index) => {
-    if (index % 2 === 1) {
-      return part; // HTML tag — leave untouched
-    }
+    if (index % 2 === 1) return part;
     const urlRegex = /(https?:\/\/\S+)/g;
     const urlParts = part.split(urlRegex);
     return urlParts.map((urlPart, uIdx) => {
-      if (uIdx % 2 === 1) {
-        return urlPart; // full URL — leave untouched
-      }
+      if (uIdx % 2 === 1) return urlPart;
       const cmdRegex = /(\/[a-zA-Z_0-9@]+)/g;
       const subParts = urlPart.split(cmdRegex);
       return subParts.map((sub, sIdx) => {
-        if (sIdx % 2 === 1) {
-          return sub; // /command — leave untouched
-        }
+        if (sIdx % 2 === 1) return sub;
         const plRegex = /(\{[a-zA-Z_]+\})/g;
         const plParts = sub.split(plRegex);
         return plParts.map((plPart, pIdx) => {
-          if (pIdx % 2 === 1) {
-            return plPart; // {placeholder} — leave untouched
-          }
+          if (pIdx % 2 === 1) return plPart;
           return toSmallCaps(plPart);
         }).join('');
       }).join('');
@@ -248,7 +207,6 @@ export function toSmallCapsSafe(text) {
   }).join('');
 }
 
-// ─── Token helpers ────────────────────────────────────────────────────────────
 export function getMainToken() {
   return (process.env.TELEGRAM_BOT_TOKEN || '').trim().replace(/^bot/i, '');
 }
@@ -259,12 +217,10 @@ export function getToken() {
   return getMainToken();
 }
 
-// ─── Webhook secret helper ───────────────────────────────────────────────
 export function getWebhookSecret() {
   return (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
 }
 
-// ─── Telegram API helpers ─────────────────────────────────────────────────────
 export async function sendTelegramMessage(chatId, text, replyMarkup = null, protectContent = false) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
@@ -443,13 +399,7 @@ export async function createChatInviteLink(chatId, createsJoinRequest = false) {
 
 export async function logHistory(event, method) {
   const coll = await getCollection('history');
-  await coll.insertOne({
-    event,
-    method,
-    time: new Date()
-  });
-
-  // Prune old logs in the background without blocking the request handler.
+  await coll.insertOne({ event, method, time: new Date() });
   (async () => {
     try {
       const count = await coll.countDocuments();

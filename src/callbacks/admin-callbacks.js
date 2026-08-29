@@ -1,9 +1,8 @@
-import crypto from 'crypto';
 import {
   getCollection, getSettings, updateSettings, toSmallCaps, editTelegramMessage, answerCallbackQuery, sendTelegramMessage, logHistory, deleteTelegramMessage, sendTelegramVideo, sendTelegramPhoto, esc
 } from '../bot-common.js';
 import {
-  getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId
+  getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId, getAdminDashboardKeyboard, getDbChannelReadinessError
 } from '../bot-helpers.js';
 
 export async function handleAdminCallback(chatId, messageId, action, cq, req, res) {
@@ -186,14 +185,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
 
   if (action === 'dashboard') {
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
-    await editTelegramMessage(chatId, messageId, text, {
-      inline_keyboard: [
-        [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
-        [{ text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }, { text: toSmallCaps('File Control'), callback_data: 'admin:file_mgmt' }],
-        [{ text: toSmallCaps('Security & Auto Delete'), callback_data: 'admin:auto_del_mgmt' }, { text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
-        [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
-      ]
-    });
+    await editTelegramMessage(chatId, messageId, text, getAdminDashboardKeyboard());
   } else if (action === 'stats') {
     const { getUserStats } = await import('../bot-users.js');
     const s = await getUserStats();
@@ -337,12 +329,24 @@ export async function handleAdminCallback(chatId, messageId, action, cq, req, re
     const { default: mainHandler } = await import('../routes/telegram.js');
     return mainHandler({ ...req, body: mockUpdate }, res);
   } else if (action === 'batch_start') {
+    const dbError = await getDbChannelReadinessError();
+    if (dbError) {
+      await editTelegramMessage(chatId, messageId, dbError, { inline_keyboard: navButtons('admin:file_mgmt') });
+      return res.status(200).send('OK');
+    }
+
     const { setBatchSession } = await import('../filestore.js');
     await setBatchSession(chatId, { step: 'first', collectedIds: [] });
     await editTelegramMessage(chatId, messageId, `<b>Batch Mode</b>\n\nForward the first message or start sending files.\n\nSend /cancel to abort.`, {
       inline_keyboard: navButtons('admin:file_mgmt')
     });
   } else if (action === 'store_start') {
+    const dbError = await getDbChannelReadinessError();
+    if (dbError) {
+      await editTelegramMessage(chatId, messageId, dbError, { inline_keyboard: navButtons('admin:file_mgmt') });
+      return res.status(200).send('OK');
+    }
+
     const { setAdminWaitingForFile } = await import('../filestore.js');
     await setAdminWaitingForFile(chatId);
     await editTelegramMessage(chatId, messageId, `<b>Store Single File</b>\n\nPlease send the file (document, video, audio, or photo) you want to store.\n\nSend /cancel to abort.`, {

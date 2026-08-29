@@ -11,6 +11,7 @@ import {
   toSmallCaps,
   getWebhookSecret,
   getMainToken,
+  isMainBot,
 } from './bot-common.js';
 
 export const GROUP_TYPES = new Set(['group', 'supergroup']);
@@ -39,6 +40,25 @@ export async function isBotAdmin(channelId) {
     return ['administrator', 'creator'].includes(status);
   }
   return false;
+}
+
+// ─── DB channel readiness ──────────────────────────────────────────────────────
+// Shared by /batch, /store, and their admin-dashboard button equivalents
+// (admin:batch_start, admin:store_start) so the two entry points can't drift.
+// Previously the dashboard buttons skipped this check entirely, letting an
+// admin forward files for minutes before discovering no DB channel was set.
+// Returns null when everything is ready, or an HTML error string to display.
+export async function getDbChannelReadinessError() {
+  const dbChannelId = await getDbChannelId();
+  if (!dbChannelId) {
+    const mainBotUsername = await getMainBotUsername();
+    const setLink = `https://t.me/${mainBotUsername}?start=setting`;
+    return `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`;
+  }
+  if (!(await isBotAdmin(dbChannelId))) {
+    return `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
+  }
+  return null;
 }
 
 // ─── Bot username cache ───────────────────────────────────────────────────────
@@ -97,6 +117,44 @@ export async function getBotUsername(customToken = null) {
 export async function getMainBotUsername() {
   const mainToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim().replace(/^bot/i, '');
   return await getBotUsername(mainToken);
+}
+
+// ─── Shared UI builders ───────────────────────────────────────────────────────
+// Centralized so the admin dashboard and start-menu keyboards can't drift out
+// of sync across the different entry points that render them: the /setting
+// command, /start?start=setting payload, and the admin:dashboard callback for
+// the dashboard; and the initial /start vs. the "Back" button for the start
+// menu. Previously each entry point rebuilt these inline and went stale
+// independently (e.g. one was missing the "Security & Auto Delete" button;
+// another skipped the multi-bot clone-dashboard branch).
+
+export function getAdminDashboardKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
+      [{ text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }, { text: toSmallCaps('File Control'), callback_data: 'admin:file_mgmt' }],
+      [{ text: toSmallCaps('Security & Auto Delete'), callback_data: 'admin:auto_del_mgmt' }, { text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
+      [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
+    ]
+  };
+}
+
+export async function buildStartMenuButtons(admin) {
+  const buttons = [
+    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
+  ];
+  if (admin) {
+    if (isMainBot()) {
+      buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
+    } else {
+      const botId = await getBotId();
+      if (botId) {
+        const mainBotUsername = await getMainBotUsername();
+        buttons.unshift([{ text: 'Clone Dashboard', url: `https://t.me/${mainBotUsername}?start=clone_view_${botId}` }]);
+      }
+    }
+  }
+  return buttons.map(row => row.map(btn => ({ ...btn, text: toSmallCaps(btn.text) })));
 }
 
 // ─── Text helpers ─────────────────────────────────────────────────────────────

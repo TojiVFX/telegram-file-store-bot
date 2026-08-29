@@ -1,17 +1,8 @@
 import { timingSafeEqual } from 'crypto';
 
-// ── NEW: Telegram webhook authenticity check ──────────────────────────────────
-// Telegram lets you register a `secret_token` when calling setWebhook. Telegram
-// then sends that value back on every webhook POST in the
-// `X-Telegram-Bot-Api-Secret-Token` header. Without this check, anyone who
-// discovers /webhook/telegram can POST a forged update body (e.g. claiming to be
-// your ADMIN_CHAT_ID) and the bot will treat it as a real, authenticated
-// Telegram request — including admin commands like /broadcast or /ban.
-//
-// A single check covers all webhooks terminating on this server.
 export function verifyTelegramWebhook(req) {
   const secret = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
-  if (!secret) return true; // allow request if webhook secret is not configured in env
+  if (!secret) return true;
 
   const headers = req?.headers || {};
   const provided = headers['x-telegram-bot-api-secret-token'];
