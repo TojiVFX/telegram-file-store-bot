@@ -48,7 +48,35 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         );
         const target = `https://t.me/${botUsername}?start=verify_${tkn}`;
         const short = await getShortenedLink(target);
-        const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short || target }]] };
+
+        if (!short) {
+          // getShortenedLink() already logged why (unconfigured vs. API
+          // failure). Never hand out `target` directly — that's the raw
+          // deep-link that grants a verify token on click, i.e. the bypass
+          // this whole gate exists to prevent. Drop the unused token, alert
+          // the admin (deduped so a wave of users hitting this doesn't spam
+          // them), and tell the user to come back later.
+          await sessions.deleteOne({ _id: `verify:tkn:${tkn}` });
+
+          const alertKey = 'admin:alert:shortener_down';
+          const existingAlert = await sessions.findOne({ _id: alertKey });
+          if (!existingAlert || existingAlert.expiresAt < new Date()) {
+            await sessions.updateOne(
+              { _id: alertKey },
+              { $set: { val: '1', expiresAt: new Date(Date.now() + 15 * 60 * 1000) } },
+              { upsert: true }
+            );
+            const adminId = (process.env.ADMIN_CHAT_ID || '').trim();
+            if (adminId) {
+              await sendTelegramMessage(adminId, `⚠️ <b>Verification Misconfigured</b>\n\nToken verification is enabled, but the link shortener isn't producing usable links (unset, or its API is failing). Users cannot complete verification right now.\n\nCheck the Shortener URL / API Key under Settings → Access Token, or disable verification until it's fixed.`);
+            }
+          }
+
+          await sendTelegramMessage(chatId, `⚠️ <b>Verification is temporarily unavailable.</b>\n\nPlease try again in a few minutes.`);
+          return res.status(200).send('OK');
+        }
+
+        const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short }]] };
         const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s). Verification is valid for <b>${validityHours} hours</b>.</blockquote>`;
         const protect = s?.protectContent === '1';
         if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
