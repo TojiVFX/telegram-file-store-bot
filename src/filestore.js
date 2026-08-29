@@ -1,4 +1,4 @@
-import { getCollection, getSettings } from './bot-common.js';
+import { getCollection, getSettings, log } from './bot-common.js';
 
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
@@ -161,16 +161,29 @@ export async function runWeeklyCleanup() {
 
 export async function getShortenedLink(targetUrl, botId = null) {
   const s = await getSettings();
-  if (!s?.shortenerUrl || !s?.shortenerKey) return null;
+  if (!s?.shortenerUrl || !s?.shortenerKey) {
+    log('warn', 'getShortenedLink: shortener not configured', {
+      hasShortenerUrl: !!s?.shortenerUrl,
+      hasShortenerKey: !!s?.shortenerKey,
+    });
+    return null;
+  }
 
   try {
     const apiUrl = `${s.shortenerUrl}?api=${s.shortenerKey}&url=${encodeURIComponent(targetUrl)}`;
     const res    = await fetch(apiUrl);
-    if (!res.ok) return null;
-    const data   = await res.json();
-    return data.short_url ?? data.link ?? data.url ?? null;
+    if (!res.ok) {
+      log('error', 'getShortenedLink: shortener API returned a non-ok response', { status: res.status });
+      return null;
+    }
+    const data  = await res.json();
+    const short = data.short_url ?? data.link ?? data.url ?? null;
+    if (!short) {
+      log('error', 'getShortenedLink: shortener API response did not contain a usable short URL', { data });
+    }
+    return short;
   } catch (err) {
-    console.error('getShortenedLink error:', err.message);
+    log('error', 'getShortenedLink: shortener request threw', { errorMessage: err.message });
     return null;
   }
 }
