@@ -176,7 +176,25 @@ export async function getShortenedLink(targetUrl, botId = null) {
       log('error', 'getShortenedLink: shortener API returned a non-ok response', { status: res.status });
       return null;
     }
-    const data  = await res.json();
+
+    // Parse the body ourselves instead of res.json() so a 200 OK response
+    // whose body isn't actually JSON (e.g. an HTML error/landing page from a
+    // misconfigured shortenerUrl) is logged as its own distinct case rather
+    // than falling into the catch block below and being reported as a
+    // generic "request threw", which reads like a network failure and hides
+    // the real cause.
+    const raw = await res.text();
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      log('error', 'getShortenedLink: shortener API returned a 200 OK but the body was not valid JSON — shortenerUrl is likely pointing at a webpage instead of the API endpoint', {
+        contentType: res.headers?.get?.('content-type') || 'unknown',
+        bodyPreview: raw.slice(0, 200),
+      });
+      return null;
+    }
+
     const short = data.short_url ?? data.link ?? data.url ?? null;
     if (!short) {
       log('error', 'getShortenedLink: shortener API response did not contain a usable short URL', { data });
