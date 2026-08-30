@@ -274,7 +274,7 @@ export function getWebhookSecret() {
 // since `0` is falsy in JS, an admin-set "0 hours" silently became 24 hours
 // everywhere it was used — which is what caused the verification bug.
 export function parseValidityHours(raw, fallback = 24) {
-  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  if (raw === undefined  raw === null  String(raw).trim() === '') return fallback;
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 0) return fallback;
   return n;
