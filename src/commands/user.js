@@ -62,7 +62,17 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       }
 
       const tokenKey = `user:token:main:${chatId}`;
-      const expiresAt = new Date(Date.now() + (validityHours || 24) * 3600 * 1000);
+      // NOTE: `validityHours` can legitimately be 0 ("re-verify on every
+      // file/batch" mode). Using `validityHours || 24` here previously
+      // treated 0 as "unset" and silently fell back to a 24h token, which
+      // meant a user who verified once under a 0hr policy stayed
+      // bypass-verified for a full day — and if the admin later switched to
+      // a nonzero timer (e.g. 1hr) to test it, that stale 24h token from the
+      // 0hr test would still satisfy it, making the new timer look broken.
+      // Only fall back to the 24h default when validityHours is genuinely
+      // absent (undefined/null), never when it's the explicit value 0.
+      const effectiveHours = (validityHours === undefined || validityHours === null) ? 24 : validityHours;
+      const expiresAt = new Date(Date.now() + effectiveHours * 3600 * 1000);
       await sessions.updateOne(
         { _id: tokenKey },
         { $set: { val: '1', expiresAt } },
