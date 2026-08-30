@@ -59,7 +59,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         const tkn = crypto.randomBytes(16).toString('hex');
         await sessions.updateOne(
           { _id: `verify:tkn:${tkn}` },
-          { $set: { val: { payload, validityHours }, expiresAt: new Date(Date.now() + 600 * 1000) } },
+          { $set: { val: { payload, validityHours, creatorChatId: String(chatId) }, expiresAt: new Date(Date.now() + 600 * 1000) } },
           { upsert: true }
         );
         const target = `https://t.me/${botUsername}?start=verify_${tkn}`;
