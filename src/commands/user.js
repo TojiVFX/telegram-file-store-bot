@@ -47,7 +47,19 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         await sendTelegramMessage(chatId, `❌ Link expired.`);
         return res.status(200).send('OK');
       }
-      const { payload: originalPayload, validityHours } = rawV;
+      const { payload: originalPayload, validityHours, chatId: requesterChatId } = rawV;
+
+      // This link is minted per-user (bound to whoever requested it via
+      // handleStartPayload) so it can't be forwarded/shared to let someone
+      // else skip their own shortener step. If it's opened from a different
+      // chat than the one that requested it, treat it the same as an
+      // expired link rather than granting access. `requesterChatId` is
+      // guarded so verify sessions already in flight from before this
+      // change (which won't have it set) still work normally.
+      if (requesterChatId && requesterChatId !== String(chatId)) {
+        await sendTelegramMessage(chatId, `❌ Link expired.`);
+        return res.status(200).send('OK');
+      }
 
       const tokenKey = `user:token:main:${chatId}`;
       const expiresAt = new Date(Date.now() + (validityHours || 24) * 3600 * 1000);
