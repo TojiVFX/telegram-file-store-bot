@@ -103,7 +103,11 @@ async function renderFsCfg(chatId, messageId, cfgType) {
   } else if (cfgType === 'tkn') {
     const enabled = s.enabled === '1';
     const refDisabled = s.referralDisabled === '1';
-    text = `<b>Access Token (Shortener)</b>\n\nUsers need to pass a shortened link to gain special access to messages from all shareable links. This access will be valid for the next custom validity period.\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>`;
+    const validityHours = parseInt(s.validityHours, 10) || 24;
+    const shortenerUrl = s.shortenerUrl ? esc(s.shortenerUrl) : 'Not set';
+    const shortenerKey = s.shortenerKey ? esc(s.shortenerKey) : 'Not set';
+
+    text = `<b>Access Token (Shortener)</b>\n\nUsers need to pass a shortened link to gain special access to messages from all shareable links. This access will be valid for the next custom validity period.\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>\nValidity: <b>${validityHours} Hours</b>\nShortener URL: <code>${shortenerUrl}</code>\nAPI Key: <code>${shortenerKey}</code>`;
     buttons = [
       [{ text: toSmallCaps('Shortener URL'), callback_data: 'admin:fs_set_url' }, { text: toSmallCaps('API Key'), callback_data: 'admin:fs_set_key' }],
       [{ text: toSmallCaps('Validity'), callback_data: 'admin:fs_set_ttl' }, { text: toSmallCaps('Tutorial'), callback_data: 'admin:fs_set_tut' }],
@@ -120,6 +124,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
                               action.startsWith('fs_fsub_setmode:') ||
                               action.startsWith('fs_toggle:') ||
                               action.startsWith('fs_toggle_ref:') ||
+                              action.startsWith('fs_set_ttl_val:') ||
                               action === 'fs_set_fsmode' ||
                               action === 'fs_noop' ||
                               action.startsWith('fs_set_premium:') ||
@@ -511,14 +516,35 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
     });
   } else if (action === 'fs_set_ttl') {
-    await sessions.updateOne(
-      { _id: `admin:waiting_setting:${chatId}` },
-      { $set: { val: 'validityHours', expiresAt: new Date(Date.now() + 300 * 1000) } },
-      { upsert: true }
-    );
-    await editTelegramMessage(chatId, messageId, `⏱ <b>Set Token Validity</b>\n\nSend the number of hours a token should remain valid.\n\nSend /cancel to abort.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+    const s = await getSettings();
+    const currentTtl = parseInt(s.validityHours, 10) || 24;
+    const ttlButtons = [];
+    for (let i = 1; i <= 24; i += 4) {
+      const row = [];
+      for (let j = i; j < i + 4 && j <= 24; j++) {
+        const isCurrent = j === currentTtl;
+        row.push({
+          text: `${isCurrent ? '✅ ' : ''}${j} ${j === 1 ? 'Hr' : 'Hrs'}`,
+          callback_data: `admin:fs_set_ttl_val:${j}`
+        });
+      }
+      ttlButtons.push(row);
+    }
+    ttlButtons.push([{ text: toSmallCaps('Back'), callback_data: 'admin:fs_cfg:tkn' }]);
+
+    await editTelegramMessage(chatId, messageId, `⏱ <b>Set Token Validity</b>\n\nSelect the number of hours (1-24) an access token should remain valid before user needs to verify again:`, {
+      inline_keyboard: ttlButtons
     });
+  } else if (action.startsWith('fs_set_ttl_val:')) {
+    const hours = parseInt(action.split(':')[1], 10);
+    if (hours >= 1 && hours <= 24) {
+      await updateSettings({ validityHours: String(hours) });
+      await answerCallbackQuery(cq.id, `Validity updated to ${hours} ${hours === 1 ? 'hour' : 'hours'}!`);
+    } else {
+      await answerCallbackQuery(cq.id, `Invalid hours selection.`, true);
+    }
+    await renderFsCfg(chatId, messageId, 'tkn');
+    return res.status(200).send('OK');
   } else if (action === 'fs_set_stext') {
     await sessions.updateOne(
       { _id: `admin:waiting_setting:${chatId}` },
