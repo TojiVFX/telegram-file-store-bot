@@ -103,11 +103,12 @@ async function renderFsCfg(chatId, messageId, cfgType) {
   } else if (cfgType === 'tkn') {
     const enabled = s.enabled === '1';
     const refDisabled = s.referralDisabled === '1';
-    const validityHours = parseInt(s.validityHours, 10) || 24;
+    const validityHours = (s.validityHours !== undefined && s.validityHours !== '') ? parseInt(s.validityHours, 10) : 24;
+    const validityLabel = validityHours === 0 ? '0 Hours (Every File/Batch)' : `${validityHours} Hours`;
     const shortenerUrl = s.shortenerUrl ? esc(s.shortenerUrl) : 'Not set';
     const shortenerKey = s.shortenerKey ? esc(s.shortenerKey) : 'Not set';
 
-    text = `<b>Access Token (Shortener)</b>\n\nUsers need to pass a shortened link to gain special access to messages from all shareable links. This access will be valid for the next custom validity period.\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>\nValidity: <b>${validityHours} Hours</b>\nShortener URL: <code>${shortenerUrl}</code>\nAPI Key: <code>${shortenerKey}</code>`;
+    text = `<b>Access Token (Shortener)</b>\n\nUsers need to pass a shortened link to gain special access to messages from all shareable links. This access will be valid for the next custom validity period.\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>\nValidity: <b>${validityLabel}</b>\nShortener URL: <code>${shortenerUrl}</code>\nAPI Key: <code>${shortenerKey}</code>`;
     buttons = [
       [{ text: toSmallCaps('Shortener URL'), callback_data: 'admin:fs_set_url' }, { text: toSmallCaps('API Key'), callback_data: 'admin:fs_set_key' }],
       [{ text: toSmallCaps('Validity'), callback_data: 'admin:fs_set_ttl' }, { text: toSmallCaps('Tutorial'), callback_data: 'admin:fs_set_tut' }],
@@ -517,8 +518,10 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     });
   } else if (action === 'fs_set_ttl') {
     const s = await getSettings();
-    const currentTtl = parseInt(s.validityHours, 10) || 24;
-    const ttlButtons = [];
+    const currentTtl = (s.validityHours !== undefined && s.validityHours !== '') ? parseInt(s.validityHours, 10) : 24;
+    const ttlButtons = [
+      [{ text: `${currentTtl === 0 ? '✅ ' : ''}0 Hrs (Verify Every File/Batch)`, callback_data: 'admin:fs_set_ttl_val:0' }]
+    ];
     for (let i = 1; i <= 24; i += 4) {
       const row = [];
       for (let j = i; j < i + 4 && j <= 24; j++) {
@@ -532,14 +535,15 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     }
     ttlButtons.push([{ text: toSmallCaps('Back'), callback_data: 'admin:fs_cfg:tkn' }]);
 
-    await editTelegramMessage(chatId, messageId, `⏱ <b>Set Token Validity</b>\n\nSelect the number of hours (1-24) an access token should remain valid before user needs to verify again:`, {
+    await editTelegramMessage(chatId, messageId, `⏱ <b>Set Token Validity</b>\n\nSelect the number of hours (0-24) an access token should remain valid before user needs to verify again:\n(Select 0 to require verification on every file/batch)`, {
       inline_keyboard: ttlButtons
     });
   } else if (action.startsWith('fs_set_ttl_val:')) {
     const hours = parseInt(action.split(':')[1], 10);
-    if (hours >= 1 && hours <= 24) {
+    if (!isNaN(hours) && hours >= 0 && hours <= 24) {
       await updateSettings({ validityHours: String(hours) });
-      await answerCallbackQuery(cq.id, `Validity updated to ${hours} ${hours === 1 ? 'hour' : 'hours'}!`);
+      const label = hours === 0 ? 'Every File/Batch (0h)' : `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+      await answerCallbackQuery(cq.id, `Validity updated to ${label}!`);
     } else {
       await answerCallbackQuery(cq.id, `Invalid hours selection.`, true);
     }

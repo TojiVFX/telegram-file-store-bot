@@ -43,10 +43,10 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       const s = await getSettings();
       const verEnabled = s?.enabled === '1';
       const tutorialFileId = s?.tutorialFileId;
-      const validityHours = parseInt(s?.validityHours) || 24;
+      const validityHours = (s?.validityHours !== undefined && s?.validityHours !== '') ? parseInt(s?.validityHours, 10) : 24;
 
       const userTokenDoc = await sessions.findOne({ _id: `user:token:main:${chatId}` });
-      const hasUserToken = userTokenDoc && userTokenDoc.expiresAt > new Date();
+      const hasUserToken = validityHours > 0 && userTokenDoc && userTokenDoc.expiresAt > new Date();
 
       if (verEnabled && !hasUserToken) {
         const tkn = crypto.randomBytes(16).toString('hex');
@@ -91,7 +91,10 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         }
 
         const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short }]] };
-        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s).\n\n⏱ This link expires in <b>${VERIFY_LINK_TTL_LABEL}</b> — please complete it before then.\nOnce verified, your access will remain valid for <b>${validityHours} hours</b>.</blockquote>`;
+        const validityNote = validityHours === 0
+          ? `Once verified, you will gain access to this file/batch.`
+          : `Once verified, your access will remain valid for <b>${validityHours} hours</b>.`;
+        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s).\n\n⏱ This link expires in <b>${VERIFY_LINK_TTL_LABEL}</b> — please complete it before then.\n${validityNote}</blockquote>`;
         const protect = s?.protectContent === '1';
         if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
         else await sendTelegramMessage(chatId, text, kb, protect);
