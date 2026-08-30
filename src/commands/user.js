@@ -52,12 +52,12 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       // This link is minted per-user (bound to whoever requested it via
       // handleStartPayload) so it can't be forwarded/shared to let someone
       // else skip their own shortener step. If it's opened from a different
-      // chat than the one that requested it, treat it the same as an
-      // expired link rather than granting access. `requesterChatId` is
-      // guarded so verify sessions already in flight from before this
-      // change (which won't have it set) still work normally.
+      // chat than the one that requested it, reject without granting access.
+      // `requesterChatId` is guarded so verify sessions already in flight
+      // from before this change (which won't have it set) still work
+      // normally.
       if (requesterChatId && requesterChatId !== String(chatId)) {
-        await sendTelegramMessage(chatId, `❌ Link expired.`);
+        await sendTelegramMessage(chatId, `😤 <b>Baka!</b>\n\nThis isn't your verification token.`);
         return res.status(200).send('OK');
       }
 
