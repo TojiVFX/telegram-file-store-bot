@@ -1,11 +1,11 @@
 import {
-  getCollection, getSettings, sendTelegramMessage, editTelegramMessage
+  getCollection, getSettings, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc
 } from '../bot-common.js';
 import {
-  getBotUsername, getAdminDashboardKeyboard, getDbChannelReadinessError
+  getBotUsername, getDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser
 } from '../bot-helpers.js';
 import {
-  setBatchSession, clearBatchSession, checkAndClearAdminWaiting, setAdminWaitingForFile
+  getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral, hasPremium, getReferralStats } from '../bot-users.js';
@@ -47,32 +47,26 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         await sendTelegramMessage(chatId, `❌ Link expired.`);
         return res.status(200).send('OK');
       }
-      const { payload: originalPayload, validityHours, chatId: requesterChatId } = rawV;
+      const { payload: originalPayload, validityHours } = rawV;
 
-      // This link is minted per-user (bound to whoever requested it via
-      // handleStartPayload) so it can't be forwarded/shared to let someone
-      // else skip their own shortener step. If it's opened from a different
-      // chat than the one that requested it, reject without granting access.
-      // `requesterChatId` is guarded so verify sessions already in flight
-      // from before this change (which won't have it set) still work
-      // normally.
-      if (requesterChatId && requesterChatId !== String(chatId)) {
-        await sendTelegramMessage(chatId, `😤 <b>Baka!</b>\n\nThis isn't your verification token.`);
-        return res.status(200).send('OK');
-      }
+      // `validityHours` was already normalized by `parseValidityHours()` when
+      // the verify link was generated in start.js (0 stays 0, blank/invalid
+      // falls back to 24). Here we just guard against a missing/odd value
+      // before doing arithmetic with it.
+      const hours = Number.isFinite(validityHours) ? validityHours : 24;
 
+      // A validity of 0 hours means the admin wants the token to expire
+      // immediately, i.e. the user must re-verify on every single request.
+      // We still write a session doc (so downstream code that checks for its
+      // existence behaves consistently), but its expiresAt is already in the
+      // past, so the `expiresAt > new Date()` check used everywhere else
+      // will correctly treat it as "no valid token" right away. Mongo's TTL
+      // index on `sessions.expiresAt` will also physically clean it up.
       const tokenKey = `user:token:main:${chatId}`;
-      // NOTE: `validityHours` can legitimately be 0 ("re-verify on every
-      // file/batch" mode). Using `validityHours || 24` here previously
-      // treated 0 as "unset" and silently fell back to a 24h token, which
-      // meant a user who verified once under a 0hr policy stayed
-      // bypass-verified for a full day — and if the admin later switched to
-      // a nonzero timer (e.g. 1hr) to test it, that stale 24h token from the
-      // 0hr test would still satisfy it, making the new timer look broken.
-      // Only fall back to the 24h default when validityHours is genuinely
-      // absent (undefined/null), never when it's the explicit value 0.
-      const effectiveHours = (validityHours === undefined || validityHours === null) ? 24 : validityHours;
-      const expiresAt = new Date(Date.now() + effectiveHours * 3600 * 1000);
+      const expiresAt = hours > 0
+        ? new Date(Date.now() + hours * 3600 * 1000)
+        : new Date(Date.now() - 1000);
+
       await sessions.updateOne(
         { _id: tokenKey },
         { $set: { val: '1', expiresAt } },
@@ -89,9 +83,19 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
   const canGenerate = admin;
 
   if (/^\/batch/i.test(rawText) && canGenerate) {
-    const dbError = await getDbChannelReadinessError();
-    if (dbError) {
-      await sendTelegramMessage(chatId, dbError);
+    const dbChannelId = await getDbChannelId();
+    if (!dbChannelId) {
+      const mainBotUsername = await getMainBotUsername();
+      const setLink = `https://t.me/${mainBotUsername}?start=setting`;
+
+      await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
+      return res.status(200).send('OK');
+    }
+
+    if (!(await isBotAdmin(dbChannelId))) {
+      const mainBotUsername = await getMainBotUsername();
+      const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
+      await sendTelegramMessage(chatId, helpMsg);
       return res.status(200).send('OK');
     }
 
@@ -101,9 +105,19 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
   }
 
   if (/^\/store/i.test(rawText) && canGenerate) {
-    const dbError = await getDbChannelReadinessError();
-    if (dbError) {
-      await sendTelegramMessage(chatId, dbError);
+    const dbChannelId = await getDbChannelId();
+    if (!dbChannelId) {
+       const mainBotUsername = await getMainBotUsername();
+       const setLink = `https://t.me/${mainBotUsername}?start=setting`;
+
+       await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
+       return res.status(200).send('OK');
+    }
+
+    if (!(await isBotAdmin(dbChannelId))) {
+      const mainBotUsername = await getMainBotUsername();
+      const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
+      await sendTelegramMessage(chatId, helpMsg);
       return res.status(200).send('OK');
     }
 
@@ -155,7 +169,14 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
   if (/^\/setting/i.test(rawText) && admin) {
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
-    await sendTelegramMessage(chatId, text, getAdminDashboardKeyboard());
+    await sendTelegramMessage(chatId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
+        [{ text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }, { text: toSmallCaps('File Control'), callback_data: 'admin:file_mgmt' }],
+        [{ text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
+        [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
+      ]
+    });
     return res.status(200).send('OK');
   }
 

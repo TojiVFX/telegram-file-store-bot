@@ -1,21 +1,12 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, esc
+  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours
 } from '../bot-common.js';
 import {
-  getBotUsername, deliverBatch, getAdminDashboardKeyboard, buildStartMenuButtons, buildForceSubscribeGate, showLoadingAnimation
+  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername
 } from '../bot-helpers.js';
 import { getBatch, getFile, getShortenedLink } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral } from '../bot-users.js';
-
-// How long a freshly-minted verify_<token> link stays clickable before it
-// expires unused (separate from `validityHours`, which controls how long
-// *granted* access lasts once someone actually completes verification).
-const VERIFY_LINK_TTL_SECONDS = 3600; // 1 hour
-const VERIFY_LINK_TTL_LABEL =
-  VERIFY_LINK_TTL_SECONDS < 60 ? `${VERIFY_LINK_TTL_SECONDS} seconds` :
-  VERIFY_LINK_TTL_SECONDS < 3600 ? `${Math.round(VERIFY_LINK_TTL_SECONDS / 60)} minute(s)` :
-  `${Math.round(VERIFY_LINK_TTL_SECONDS / 3600)} hour(s)`;
 
 export async function handleStartPayload(chatId, payload, message, admin, res) {
   const botUsername = await getBotUsername();
@@ -23,9 +14,22 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
 
   // 1. Force Subscribe Check (skip if admin)
   if (!admin) {
-    const gate = await buildForceSubscribeGate(chatId, payload);
-    if (gate) {
-      await sendTelegramMessage(chatId, gate.text, gate.replyMarkup);
+    const sub = await checkSubscription(chatId, chatId);
+    if (!sub.ok) {
+      const s = await getSettings();
+      const customMsg = s?.forceSubscribeMsg || '❌ <b>Access Denied!</b>\n\nYou must join our channels to use this bot.';
+
+      const buttons = sub.notJoined.map(c => {
+        const btnText = c.buttonLabel ? esc(c.buttonLabel) : `Join ${esc(c.title)}`;
+        return [{
+          text: toSmallCaps(btnText),
+          url: c.inviteLink || `https://t.me/${String(c.id).replace('-100', '')}`
+        }];
+      });
+
+      buttons.push([{ text: toSmallCaps('Try Again'), callback_data: `sub_check:${payload || ''}` }]);
+
+      await sendTelegramMessage(chatId, customMsg, { inline_keyboard: buttons });
       return res.status(200).send('OK');
     }
   }
@@ -43,58 +47,25 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       const s = await getSettings();
       const verEnabled = s?.enabled === '1';
       const tutorialFileId = s?.tutorialFileId;
-      const validityHours = (s?.validityHours !== undefined && s?.validityHours !== '') ? parseInt(s?.validityHours, 10) : 24;
+      // NOTE: `parseValidityHours` treats 0 as a real, intentional value
+      // (token must expire immediately -> re-verify every time), unlike the
+      // old `parseInt(s?.validityHours) || 24` which silently turned 0 into 24.
+      const validityHours = parseValidityHours(s?.validityHours);
 
       const userTokenDoc = await sessions.findOne({ _id: `user:token:main:${chatId}` });
-      const hasUserToken = validityHours > 0 && userTokenDoc && userTokenDoc.expiresAt > new Date();
+      const hasUserToken = userTokenDoc && userTokenDoc.expiresAt > new Date();
 
       if (verEnabled && !hasUserToken) {
         const tkn = crypto.randomBytes(16).toString('hex');
         await sessions.updateOne(
           { _id: `verify:tkn:${tkn}` },
-          {
-            $set: {
-              val: { payload, validityHours, chatId: String(chatId) },
-              expiresAt: new Date(Date.now() + VERIFY_LINK_TTL_SECONDS * 1000),
-            }
-          },
+          { $set: { val: { payload, validityHours }, expiresAt: new Date(Date.now() + 600 * 1000) } },
           { upsert: true }
         );
         const target = `https://t.me/${botUsername}?start=verify_${tkn}`;
         const short = await getShortenedLink(target);
-
-        if (!short) {
-          // getShortenedLink() already logged why (unconfigured vs. API
-          // failure). Never hand out `target` directly — that's the raw
-          // deep-link that grants a verify token on click, i.e. the bypass
-          // this whole gate exists to prevent. Drop the unused token, alert
-          // the admin (deduped so a wave of users hitting this doesn't spam
-          // them), and tell the user to come back later.
-          await sessions.deleteOne({ _id: `verify:tkn:${tkn}` });
-
-          const alertKey = 'admin:alert:shortener_down';
-          const existingAlert = await sessions.findOne({ _id: alertKey });
-          if (!existingAlert || existingAlert.expiresAt < new Date()) {
-            await sessions.updateOne(
-              { _id: alertKey },
-              { $set: { val: '1', expiresAt: new Date(Date.now() + 15 * 60 * 1000) } },
-              { upsert: true }
-            );
-            const adminId = (process.env.ADMIN_CHAT_ID || '').trim();
-            if (adminId) {
-              await sendTelegramMessage(adminId, `⚠️ <b>Verification Misconfigured</b>\n\nToken verification is enabled, but the link shortener isn't producing usable links (unset, or its API is failing). Users cannot complete verification right now.\n\nCheck the Shortener URL / API Key under Settings → Access Token, or disable verification until it's fixed.`);
-            }
-          }
-
-          await sendTelegramMessage(chatId, `⚠️ <b>Verification is temporarily unavailable.</b>\n\nPlease try again in a few minutes.`);
-          return res.status(200).send('OK');
-        }
-
-        const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short }]] };
-        const validityNote = validityHours === 0
-          ? `Once verified, you will gain access to this file/batch.`
-          : `Once verified, your access will remain valid for <b>${validityHours} hours</b>.`;
-        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s).\n\n⏱ This link expires in <b>${VERIFY_LINK_TTL_LABEL}</b> — please complete it before then.\n${validityNote}</blockquote>`;
+        const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short || target }]] };
+        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s). Verification is valid for <b>${validityHours} hours</b>.</blockquote>`;
         const protect = s?.protectContent === '1';
         if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
         else await sendTelegramMessage(chatId, text, kb, protect);
@@ -110,7 +81,16 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       await sendTelegramMessage(chatId, `❌ Not found.`, null, s?.protectContent === '1');
       return res.status(200).send('OK');
     }
-    const loadingMsg = await showLoadingAnimation(chatId);
+    const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
+    const steps = [
+      { p: 30, b: '[███▒▒▒▒▒▒▒]' },
+      { p: 70, b: '[███████▒▒▒]' },
+      { p: 100, b: '[██████████]' }
+    ];
+    for (const step of steps) {
+      await new Promise(r => setTimeout(r, 400));
+      await editTelegramMessage(chatId, loadingMsg.messageId, `⏳ <b>Files are loading...</b>\n\n${step.b} ${step.p}%`);
+    }
     const s = await getSettings();
     await deliverBatch(chatId, b, s?.protectContent === '1');
     await deleteTelegramMessage(chatId, loadingMsg.messageId);
@@ -119,7 +99,14 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
 
   if (payload === 'setting' && admin) {
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
-    await sendTelegramMessage(chatId, text, getAdminDashboardKeyboard());
+    await sendTelegramMessage(chatId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
+        [{ text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }, { text: toSmallCaps('File Control'), callback_data: 'admin:file_mgmt' }],
+        [{ text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
+        [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
+      ]
+    });
     return res.status(200).send('OK');
   }
 
@@ -128,7 +115,16 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     const s = await getSettings();
     const protect = s?.protectContent === '1';
     if (f) {
-      const loadingMsg = await showLoadingAnimation(chatId);
+      const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
+      const steps = [
+        { p: 30, b: '[███▒▒▒▒▒▒▒]' },
+        { p: 70, b: '[███████▒▒▒]' },
+        { p: 100, b: '[██████████]' }
+      ];
+      for (const step of steps) {
+        await new Promise(r => setTimeout(r, 400));
+        await editTelegramMessage(chatId, loadingMsg.messageId, `⏳ <b>Files are loading...</b>\n\n${step.b} ${step.p}%`);
+      }
 
       const { scheduleAutoDelete } = await import('../bot-helpers.js');
       let sentMsgId = null;
@@ -169,7 +165,14 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
   }
   if (s.startPhoto) startPhoto = s.startPhoto;
 
-  const styledButtons = await buildStartMenuButtons(admin);
+  const buttons = [
+    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
+  ];
+  if (admin) {
+    buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
+  }
+
+  const styledButtons = buttons.map(row => row.map(btn => ({ ...btn, text: toSmallCaps(btn.text) })));
 
   if (startPhoto) {
     await sendTelegramPhoto(chatId, startPhoto, startMsg, { inline_keyboard: styledButtons });
