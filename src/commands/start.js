@@ -8,6 +8,15 @@ import {
 import { getBatch, getFile, getShortenedLink } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral } from '../bot-users.js';
 
+// How long a freshly-minted verify_<token> link stays clickable before it
+// expires unused (separate from `validityHours`, which controls how long
+// *granted* access lasts once someone actually completes verification).
+const VERIFY_LINK_TTL_SECONDS = 3600; // 1 hour
+const VERIFY_LINK_TTL_LABEL =
+  VERIFY_LINK_TTL_SECONDS < 60 ? `${VERIFY_LINK_TTL_SECONDS} seconds` :
+  VERIFY_LINK_TTL_SECONDS < 3600 ? `${Math.round(VERIFY_LINK_TTL_SECONDS / 60)} minute(s)` :
+  `${Math.round(VERIFY_LINK_TTL_SECONDS / 3600)} hour(s)`;
+
 export async function handleStartPayload(chatId, payload, message, admin, res) {
   const botUsername = await getBotUsername();
   const sessions = await getCollection('sessions');
@@ -43,7 +52,12 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         const tkn = crypto.randomBytes(16).toString('hex');
         await sessions.updateOne(
           { _id: `verify:tkn:${tkn}` },
-          { $set: { val: { payload, validityHours }, expiresAt: new Date(Date.now() + 600 * 1000) } },
+          {
+            $set: {
+              val: { payload, validityHours, chatId: String(chatId) },
+              expiresAt: new Date(Date.now() + VERIFY_LINK_TTL_SECONDS * 1000),
+            }
+          },
           { upsert: true }
         );
         const target = `https://t.me/${botUsername}?start=verify_${tkn}`;
@@ -77,7 +91,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         }
 
         const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short }]] };
-        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s). Verification is valid for <b>${validityHours} hours</b>.</blockquote>`;
+        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s).\n\n⏱ This link expires in <b>${VERIFY_LINK_TTL_LABEL}</b> — please complete it before then.\nOnce verified, your access will remain valid for <b>${validityHours} hours</b>.</blockquote>`;
         const protect = s?.protectContent === '1';
         if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
         else await sendTelegramMessage(chatId, text, kb, protect);
