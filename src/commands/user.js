@@ -47,12 +47,6 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         await sendTelegramMessage(chatId, `❌ Link expired.`);
         return res.status(200).send('OK');
       }
-
-      if (rawV.creatorChatId && String(rawV.creatorChatId) !== String(chatId)) {
-        await sendTelegramMessage(chatId, `baka\nits not your verification token`);
-        return res.status(200).send('OK');
-      }
-
       const { payload: originalPayload, validityHours } = rawV;
 
       // `validityHours` was already normalized by `parseValidityHours()` when
