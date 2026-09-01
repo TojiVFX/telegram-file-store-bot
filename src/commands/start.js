@@ -1,12 +1,46 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours
+  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername
 } from '../bot-helpers.js';
 import { getBatch, getFile, getShortenedLink } from '../filestore.js';
-import { hasPremium, getReferralStats, addReferral } from '../bot-users.js';
+import { hasPremium, getReferralStats, addReferral, getAdminId } from '../bot-users.js';
+
+// Pending verify-link TTL — how long the user has to actually click through
+// the shortener and land back on /start?start=verify_<tkn> before the link
+// dies. This is intentionally separate from `validityHours` (how long the
+// *granted* access lasts once they do verify) — mixing the two up is what
+// caused the earlier "0 hours validity" bug.
+const VERIFY_LINK_TTL_SECONDS = 3600;
+const VERIFY_LINK_TTL_LABEL = '1 hour';
+
+// Rate-limits/dedupes the "shortener is down" admin alert so a burst of
+// verification attempts while the shortener is misconfigured doesn't spam
+// the admin with one message per attempt.
+const SHORTENER_ALERT_DEDUPE_SECONDS = 900; // 15 minutes
+
+async function alertAdminShortenerDown() {
+  const adminId = getAdminId();
+  if (!adminId) return;
+
+  const sessions = await getCollection('sessions');
+  const key = 'alert:shortener_down';
+  const existing = await sessions.findOne({ _id: key });
+  if (existing && existing.expiresAt > new Date()) return; // already alerted recently
+
+  await sessions.updateOne(
+    { _id: key },
+    { $set: { val: '1', expiresAt: new Date(Date.now() + SHORTENER_ALERT_DEDUPE_SECONDS * 1000) } },
+    { upsert: true }
+  );
+
+  await sendTelegramMessage(
+    adminId,
+    `🚨 <b>Shortener Failure</b>\n\nThe URL shortener is unconfigured or failing — verification links are being blocked rather than falling back to a raw link. Check Shortener URL / API Key under Settings → Access Token.\n\n<i>(Further alerts suppressed for ${Math.round(SHORTENER_ALERT_DEDUPE_SECONDS / 60)} minutes.)</i>`
+  );
+}
 
 export async function handleStartPayload(chatId, payload, message, admin, res) {
   const botUsername = await getBotUsername();
@@ -59,13 +93,43 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         const tkn = crypto.randomBytes(16).toString('hex');
         await sessions.updateOne(
           { _id: `verify:tkn:${tkn}` },
-          { $set: { val: { payload, validityHours, creatorChatId: String(chatId) }, expiresAt: new Date(Date.now() + 600 * 1000) } },
+          {
+            $set: {
+              // `issuedValidityHours` freezes the validity setting as it was
+              // at mint time. On redemption (user.js) this is compared
+              // against the live admin setting so that changing Validity
+              // takes effect immediately, without needing a manual reset
+              // tool — a stale token just gets thrown out and the user
+              // re-verifies under the current policy.
+              val: { payload, issuedValidityHours: validityHours, creatorChatId: String(chatId) },
+              expiresAt: new Date(Date.now() + VERIFY_LINK_TTL_SECONDS * 1000),
+            }
+          },
           { upsert: true }
         );
         const target = `https://t.me/${botUsername}?start=verify_${tkn}`;
         const short = await getShortenedLink(target);
-        const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short || target }]] };
-        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nPlease complete the token verification link below to access your requested file(s). Verification is valid for <b>${validityHours} hours</b>.</blockquote>`;
+
+        if (!short) {
+          // Do NOT fall back to the raw deep-link here — that would let
+          // users silently skip the shortener/verification step entirely
+          // whenever it's unconfigured or temporarily down, defeating the
+          // point of gating access behind it. Fail closed instead: drop the
+          // now-useless pending token, alert the admin (rate-limited), and
+          // tell the user plainly that verification isn't available right now.
+          await sessions.deleteOne({ _id: `verify:tkn:${tkn}` });
+          await alertAdminShortenerDown();
+          await sendTelegramMessage(
+            chatId,
+            `⚠️ <b>Verification is temporarily unavailable.</b>\n\nPlease try again in a few minutes.`,
+            null,
+            s?.protectContent === '1'
+          );
+          return res.status(200).send('OK');
+        }
+
+        const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short }]] };
+        const text = `<blockquote>🔐 <b>Verification Required</b>\n\nComplete the link below within <b>${VERIFY_LINK_TTL_LABEL}</b> to access your requested file(s). Once verified, your access will be valid for <b>${validityHours} hours</b>.</blockquote>`;
         const protect = s?.protectContent === '1';
         if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
         else await sendTelegramMessage(chatId, text, kb, protect);
