@@ -1,0 +1,6 @@
+{
+  "name": "Telegram File Store Bot",
+  "description": "Standalone Telegram file store bot server with multi-bot support, batch forwarding, time-limited access tokens for temporary file sharing, and webhook handling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

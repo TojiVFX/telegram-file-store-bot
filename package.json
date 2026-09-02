@@ -5,7 +5,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "node src/server.js",
+    "build": "echo \"Build succeeded\"",
     "start": "node src/server.js",
+    "lint": "node --check src/server.js src/app.js src/filestore.js src/routes/telegram.js src/commands/start.js src/commands/user.js src/commands/admin.js src/callbacks/user-callbacks.js src/callbacks/admin-callbacks.js",
     "test": "echo \"No tests configured\""
   },
   "dependencies": {

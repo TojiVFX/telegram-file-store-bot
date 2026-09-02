@@ -85,37 +85,112 @@ export async function getBannedList() {
   }
 }
 
-export async function broadcastToAll(text) {
+let broadcastCancelled = false;
+
+export function cancelBroadcast() {
+  broadcastCancelled = true;
+}
+
+export async function broadcastWithProgress({ text, adminChatId, statusMsgId = null }) {
+  broadcastCancelled = false;
   try {
     const users = await getCollection('users');
     const list = await users.find({ banned: { $ne: true } }).toArray();
     const ids = list.map(u => u._id);
-    if (!ids.length) return { sent: 0, failed: 0, total: 0 };
+    const total = ids.length;
 
-    let sent   = 0;
-    let failed = 0;
-    const CHUNK = 25;
-
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const chunk   = ids.slice(i, i + CHUNK);
-      const results = await Promise.allSettled(
-        chunk.map(id => sendTelegramMessage(id, text)),
-      );
-
-      for (const r of results) {
-        if (r.status === 'fulfilled' && r.value?.ok) sent++;
-        else failed++;
+    if (!total) {
+      if (adminChatId && statusMsgId) {
+        const { editTelegramMessage, toSmallCaps } = await import('./bot-common.js');
+        await editTelegramMessage(adminChatId, statusMsgId, `<b>Broadcast</b>\n\nNo active users found to broadcast to.`, {
+          inline_keyboard: [[{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]]
+        });
       }
-
-      if (i + CHUNK < ids.length) await new Promise(r => setTimeout(r, 1000));
+      return { sent: 0, failed: 0, total: 0 };
     }
 
-    log('info', 'Broadcast complete', { sent, failed, total: ids.length });
-    return { sent, failed, total: ids.length };
+    let sent = 0;
+    let failed = 0;
+    let blockedCount = 0;
+    const CHUNK = 20;
+
+    const { editTelegramMessage, toSmallCaps } = await import('./bot-common.js');
+
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      if (broadcastCancelled) {
+        log('info', 'Broadcast cancelled by admin', { sent, failed, total });
+        break;
+      }
+
+      const chunk = ids.slice(i, i + CHUNK);
+      const results = await Promise.allSettled(
+        chunk.map(id => sendTelegramMessage(id, text))
+      );
+
+      for (let j = 0; j < results.length; j++) {
+        const r = results[j];
+        const targetUserId = chunk[j];
+
+        if (r.status === 'fulfilled' && r.value?.ok) {
+          sent++;
+        } else {
+          failed++;
+          const errDetail = r.status === 'fulfilled' ? r.value?.detail : null;
+          if (errDetail?.error_code === 403 || (errDetail?.description || '').toLowerCase().includes('bot was blocked')) {
+            blockedCount++;
+            // Flag user as blocked
+            users.updateOne({ _id: String(targetUserId) }, { $set: { isBlocked: true, lastBlockedAt: new Date() } }).catch(() => {});
+          }
+        }
+      }
+
+      // Live progress update to admin chat
+      if (adminChatId && statusMsgId) {
+        const progressCount = Math.min(total, sent + failed);
+        const percent = Math.min(100, Math.round((progressCount / total) * 100));
+        const barWidth = 10;
+        const filled = Math.round((percent / 100) * barWidth);
+        const bar = '█'.repeat(filled) + '▒'.repeat(barWidth - filled);
+
+        const statusText = `<b>Broadcasting Message...</b>\n\n` +
+          `${bar} ${percent}%\n\n` +
+          `• Total Users: <b>${total}</b>\n` +
+          `• Delivered: <b>${sent}</b>\n` +
+          `• Blocked / Failed: <b>${failed}</b>\n\n` +
+          `<i>Paced at 20 msgs/sec...</i>`;
+
+        await editTelegramMessage(adminChatId, statusMsgId, statusText, {
+          inline_keyboard: [[{ text: toSmallCaps('Cancel Broadcast'), callback_data: 'admin:broadcast_cancel' }]]
+        }).catch(() => {});
+      }
+
+      if (i + CHUNK < ids.length && !broadcastCancelled) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+
+    const finalStatus = broadcastCancelled ? 'Cancelled by Admin' : 'Complete';
+    if (adminChatId && statusMsgId) {
+      const completionText = `<b>Broadcast ${finalStatus}</b>\n\n` +
+        `• Total Users: <b>${total}</b>\n` +
+        `• Delivered: <b>${sent}</b>\n` +
+        `• Blocked / Failed: <b>${failed}</b>`;
+
+      await editTelegramMessage(adminChatId, statusMsgId, completionText, {
+        inline_keyboard: [[{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]]
+      }).catch(() => {});
+    }
+
+    log('info', `Broadcast ${finalStatus}`, { sent, failed, blockedCount, total });
+    return { sent, failed, total, cancelled: broadcastCancelled };
   } catch (err) {
-    log('error', 'broadcastToAll failed', { errorMessage: err.message });
+    log('error', 'broadcastWithProgress failed', { errorMessage: err.message });
     return { sent: 0, failed: 0, total: 0 };
   }
+}
+
+export async function broadcastToAll(text) {
+  return broadcastWithProgress({ text });
 }
 
 export async function getUserStats() {
@@ -161,6 +236,38 @@ export async function isAdmin(chatId) {
   return false;
 }
 
+export async function savePendingReferral(referrerId, newUserId) {
+  try {
+    const sessions = await getCollection('sessions');
+    await sessions.updateOne(
+      { _id: `ref:pending:${newUserId}` },
+      { $set: { referrerId: String(referrerId), createdAt: new Date(), expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000) } },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    log('error', 'savePendingReferral failed', { errorMessage: err.message });
+    return false;
+  }
+}
+
+export async function completePendingReferral(newUserId) {
+  try {
+    const sessions = await getCollection('sessions');
+    const pendingDoc = await sessions.findOne({ _id: `ref:pending:${newUserId}` });
+    if (!pendingDoc || !pendingDoc.referrerId) return false;
+
+    const referrerId = pendingDoc.referrerId;
+    await sessions.deleteOne({ _id: `ref:pending:${newUserId}` });
+
+    const added = await addReferral(referrerId, newUserId);
+    return added;
+  } catch (err) {
+    log('error', 'completePendingReferral failed', { errorMessage: err.message });
+    return false;
+  }
+}
+
 export async function addReferral(referrerId, newUserId) {
   try {
     const users = await getCollection('users');
@@ -182,6 +289,12 @@ export async function addReferral(referrerId, newUserId) {
     const referrerDoc = await users.findOne({ _id: String(referrerId) });
     const newCount = referrerDoc ? referrerDoc.referralCount : 0;
 
+    // Send successful referral notification to the referrer
+    await sendTelegramMessage(
+      referrerId,
+      `🎉 <b>New Referral!</b>\n\nA user joined and completed channel verification using your invite link.\n\nTotal Referrals: <b>${newCount}</b>`
+    ).catch(() => {});
+
     if (newCount > 0 && newCount % 3 === 0) {
       const REWARD_SECONDS = 24 * 3600;
       const currentPremiumUntil = referrerDoc.premiumUntil ? new Date(referrerDoc.premiumUntil) : null;
@@ -201,7 +314,7 @@ export async function addReferral(referrerId, newUserId) {
       await sendTelegramMessage(
         referrerId,
         `🎁 <b>Referral Reward!</b>\n\nYou've referred <b>${newCount}</b> users and earned <b>24 hours</b> of Premium access.`,
-      );
+      ).catch(() => {});
     }
 
     return true;

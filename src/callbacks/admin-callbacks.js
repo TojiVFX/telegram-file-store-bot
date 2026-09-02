@@ -83,23 +83,23 @@ async function renderFsCfg(chatId, messageId, cfgType) {
         displayName = 'Channel ' + displayName.replace('-100', '');
       }
       buttons.push([
-        { text: `• ${displayName}`, callback_data: `admin:fs_fsub_toggle:${i}` },
-        { text: `✏️ Label`, callback_data: `admin:fs_fsub_setlbl:${i}` },
-        { text: `❌`, callback_data: `admin:fs_fsub_del:${i}` }
+        { text: toSmallCaps(displayName), callback_data: `admin:fs_fsub_toggle:${i}` },
+        { text: toSmallCaps('Edit Label'), callback_data: `admin:fs_fsub_setlbl:${i}` },
+        { text: toSmallCaps('Delete'), callback_data: `admin:fs_fsub_del:${i}` }
       ]);
     }
 
     if (channels.length < 6) {
-      buttons.push([{ text: `+ Add Channel`, callback_data: `admin:fs_fsub_add` }]);
+      buttons.push([{ text: toSmallCaps('Add Channel'), callback_data: `admin:fs_fsub_add` }]);
     }
 
-    buttons.push([{ text: `📥 Bulk Setup`, callback_data: `admin:fs_fsub_bulk` }]);
+    buttons.push([{ text: toSmallCaps('Bulk Setup'), callback_data: `admin:fs_fsub_bulk` }]);
 
     buttons.push([
-      { text: `🔍 Check Status`, callback_data: `admin:fs_fsub_status` },
-      { text: `Message`, callback_data: `admin:fs_set_fsub_msg` }
+      { text: toSmallCaps('Check Status'), callback_data: `admin:fs_fsub_status` },
+      { text: toSmallCaps('Custom Message'), callback_data: `admin:fs_set_fsub_msg` }
     ]);
-    buttons.push([{ text: `< back`, callback_data: `admin:fs_settings` }]);
+    buttons.push([{ text: toSmallCaps('Back'), callback_data: `admin:fs_settings` }]);
   } else if (cfgType === 'tkn') {
     const enabled = s.enabled === '1';
     const refDisabled = s.referralDisabled === '1';
@@ -107,13 +107,16 @@ async function renderFsCfg(chatId, messageId, cfgType) {
     const validityLabel = validityHours === 0 ? '0 Hours (Every File/Batch)' : `${validityHours} Hours`;
     const shortenerUrl = s.shortenerUrl ? esc(s.shortenerUrl) : 'Not set';
     const shortenerKey = s.shortenerKey ? esc(s.shortenerKey) : 'Not set';
+    const backupUrl = s.backupShortenerUrl ? esc(s.backupShortenerUrl) : 'Not set';
+    const backupKey = s.backupShortenerKey ? esc(s.backupShortenerKey) : 'Not set';
 
-    text = `<b>Access Token (Shortener)</b>\n\nUsers need to pass a shortened link to gain special access to messages from all shareable links. This access will be valid for the next custom validity period.\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>\nValidity: <b>${validityLabel}</b>\nShortener URL: <code>${shortenerUrl}</code>\nAPI Key: <code>${shortenerKey}</code>`;
+    text = `<b>Access Token & Multi-Shortener</b>\n\nConfigure shorteners for gated link verification:\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>\nValidity: <b>${validityLabel}</b>\n\n• <b>Primary Shortener:</b>\nURL: <code>${shortenerUrl}</code>\nKey: <code>${shortenerKey}</code>\n\n• <b>Backup Shortener (Failover):</b>\nURL: <code>${backupUrl}</code>\nKey: <code>${backupKey}</code>`;
     buttons = [
       [{ text: toSmallCaps('Shortener URL'), callback_data: 'admin:fs_set_url' }, { text: toSmallCaps('API Key'), callback_data: 'admin:fs_set_key' }],
+      [{ text: toSmallCaps('Backup URL'), callback_data: 'admin:fs_set_burl' }, { text: toSmallCaps('Backup Key'), callback_data: 'admin:fs_set_bkey' }],
       [{ text: toSmallCaps('Validity'), callback_data: 'admin:fs_set_ttl' }, { text: toSmallCaps('Tutorial'), callback_data: 'admin:fs_set_tut' }],
       [{ text: toSmallCaps(enabled ? 'Disable Token' : 'Enable Token'), callback_data: `admin:fs_toggle:${enabled ? 0 : 1}` }, { text: toSmallCaps(refDisabled ? 'Enable Ref' : 'Disable Ref'), callback_data: `admin:fs_toggle_ref:${refDisabled ? 0 : 1}` }],
-      [{ text: toSmallCaps('BACK'), callback_data: 'admin:fs_settings' }]
+      [{ text: toSmallCaps('Back'), callback_data: 'admin:fs_settings' }]
     ];
   }
   await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
@@ -312,15 +315,22 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       inline_keyboard: navButtons('admin:dashboard')
     });
   } else if (action === 'broadcast_prompt') {
+    const { getUserStats } = await import('../bot-users.js');
+    const s = await getUserStats();
     await sessions.updateOne(
       { _id: `admin:waiting_action:${chatId}` },
       { $set: { val: 'broadcast', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `<b>Broadcast Message</b>\n\nPlease send the message you want to broadcast to all users.\n\nHTML is supported.\n\nSend /cancel to abort.`, {
+    await editTelegramMessage(chatId, messageId, `<b>Broadcast Message</b>\n\nTotal Registered Users: <b>${s.totalUsers}</b>\n\nPlease send the message you want to broadcast to all users.\n\nHTML is supported.\n\nSend /cancel to abort.`, {
       inline_keyboard: navButtons('admin:dashboard')
     });
     await logHistory('broadcast_prompt', 'tg');
+  } else if (action === 'broadcast_cancel') {
+    const { cancelBroadcast } = await import('../bot-users.js');
+    cancelBroadcast();
+    await answerCallbackQuery(cq.id, 'Broadcast cancellation requested.', true);
+    return res.status(200).send('OK');
   } else if (action === 'user_mgmt') {
     const text = `<b>User Management</b>\n\nManage users and access control:`;
     await editTelegramMessage(chatId, messageId, text, {
@@ -356,12 +366,166 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       inline_keyboard: navButtons('admin:user_mgmt')
     });
   } else if (action === 'file_mgmt') {
-    const text = `<b>File Management</b>\n\nCreate sharing links or manage stored files:`;
+    const text = `<b>File Management</b>\n\nCreate permanent or temporary sharing links, store files, view leaderboard, or backup database:`;
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [
         [{ text: toSmallCaps('Create Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps('Store Single'), callback_data: 'admin:store_start' }],
-        [{ text: toSmallCaps('Run Weekly Cleanup (Sun-Mon)'), callback_data: 'admin:trigger_cleanup' }],
+        [{ text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }, { text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }],
+        [{ text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }],
         ...navButtons('admin:dashboard')
+      ]
+    });
+  } else if (action === 'backup_db') {
+    const { sendTelegramFileBuffer } = await import('../bot-common.js');
+    const filesColl = await getCollection('files');
+    const allFiles = await filesColl.find({}).toArray();
+
+    const jsonStr = JSON.stringify(allFiles, null, 2);
+    const buffer = Buffer.from(jsonStr, 'utf-8');
+    const filename = `filestore_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    const caption = `💾 <b>Database Backup</b>\n\nTotal Stored Records: <b>${allFiles.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`;
+
+    await sendTelegramFileBuffer(chatId, buffer, filename, caption);
+    await answerCallbackQuery(cq.id, 'Database backup sent to chat!');
+    return res.status(200).send('OK');
+  } else if (action === 'top_files') {
+    const { getTopFiles } = await import('../filestore.js');
+    const topList = await getTopFiles(10);
+    const botUsername = await getBotUsername();
+
+    if (!topList.length) {
+      await editTelegramMessage(chatId, messageId, `<b>Traffic Leaderboard</b>\n\nNo file downloads recorded yet.`, {
+        inline_keyboard: navButtons('admin:file_mgmt')
+      });
+      return res.status(200).send('OK');
+    }
+
+    let report = `<b>Top 10 Downloaded Files & Batches</b>\n\n`;
+    for (let i = 0; i < topList.length; i++) {
+      const item = topList[i];
+      const link = `https://t.me/${botUsername}?start=${item._id}`;
+      report += `<b>${i + 1}.</b> <code>${item._id}</code> (${item.type || 'file'})\n` +
+                `   • Downloads: <b>${item.accessCount || 0}</b>\n` +
+                `   • Link: ${link}\n\n`;
+    }
+
+    await editTelegramMessage(chatId, messageId, report, {
+      inline_keyboard: navButtons('admin:file_mgmt')
+    });
+    return res.status(200).send('OK');
+  } else if (action === 'temp_token_start') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_action:${chatId}` },
+      { $set: { val: 'temp_token_input', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    await editTelegramMessage(chatId, messageId, `⏳ <b>Create Temporary Access Token</b>\n\nPlease send the <b>File Code</b> or <b>Batch Code</b> (e.g., <code>file_...</code> or <code>batch_...</code>) you want to generate a time-limited sharing link for.\n\nSend /cancel to abort.`, {
+      inline_keyboard: navButtons('admin:file_mgmt')
+    });
+  } else if (action.startsWith('temp_token_for:')) {
+    const targetCode = action.split(':')[1];
+    const durKb = {
+      inline_keyboard: [
+        [
+          { text: toSmallCaps('15 Mins'), callback_data: `admin:gen_temp:${targetCode}:900` },
+          { text: toSmallCaps('1 Hour'), callback_data: `admin:gen_temp:${targetCode}:3600` },
+          { text: toSmallCaps('6 Hours'), callback_data: `admin:gen_temp:${targetCode}:21600` }
+        ],
+        [
+          { text: toSmallCaps('12 Hours'), callback_data: `admin:gen_temp:${targetCode}:43200` },
+          { text: toSmallCaps('24 Hours'), callback_data: `admin:gen_temp:${targetCode}:86400` },
+          { text: toSmallCaps('3 Days'), callback_data: `admin:gen_temp:${targetCode}:259200` }
+        ],
+        [
+          { text: toSmallCaps('7 Days'), callback_data: `admin:gen_temp:${targetCode}:604800` }
+        ],
+        ...navButtons('admin:file_mgmt')
+      ]
+    };
+    await editTelegramMessage(chatId, messageId, `⏱ <b>Select Expiration Duration</b> for <code>${esc(targetCode)}</code>:`, durKb);
+  } else if (action.startsWith('gen_temp:')) {
+    const parts = action.split(':');
+    const targetCode = parts[1];
+    const durationSec = parseInt(parts[2], 10) || 3600;
+    const { generateTempToken } = await import('../filestore.js');
+
+    const genRes = await generateTempToken(targetCode, durationSec, {
+      createdBy: chatId,
+      creatorName: from?.first_name || 'Admin',
+    });
+
+    if (!genRes.ok) {
+      await editTelegramMessage(chatId, messageId, `❌ <b>Failed to generate temporary link.</b>\n\nTarget code <code>${esc(targetCode)}</code> could not be found in storage.`, {
+        inline_keyboard: navButtons('admin:file_mgmt')
+      });
+      return res.status(200).send('OK');
+    }
+
+    const botUsername = await getBotUsername();
+    const shareLink = `https://t.me/${botUsername}?start=${genRes.token}`;
+    const text = `⏳ <b>Temporary Access Token Generated!</b>\n\n` +
+      `📁 Target: <code>${esc(genRes.tokenDoc.targetCode)}</code> (${genRes.tokenDoc.targetType})\n` +
+      `⏱ Validity: <b>${genRes.durationLabel}</b>\n` +
+      `📅 Expires at: <code>${new Date(genRes.expiresAt).toUTCString()}</code>\n\n` +
+      `🔗 <b>Temporary Share Link:</b>\n<code>${shareLink}</code>\n\n` +
+      `<i>Anyone using this link will receive the file(s) before the link expires.</i>`;
+
+    await editTelegramMessage(chatId, messageId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Revoke Token'), callback_data: `admin:revoke_temp:${genRes.token}` }],
+        [{ text: toSmallCaps('📋 All Active Tokens'), callback_data: 'admin:temp_tokens_list' }],
+        ...navButtons('admin:file_mgmt')
+      ]
+    });
+  } else if (action === 'temp_tokens_list') {
+    const { listActiveTempTokens, formatDuration } = await import('../filestore.js');
+    const list = await listActiveTempTokens(null, 20);
+
+    if (!list || list.length === 0) {
+      await editTelegramMessage(chatId, messageId, `ℹ️ <b>No active temporary access tokens found.</b>\n\nGenerate temporary tokens from File Management or using <code>/temptoken &lt;code&gt; [duration]</code>.`, {
+        inline_keyboard: navButtons('admin:file_mgmt')
+      });
+      return res.status(200).send('OK');
+    }
+
+    const botUsername = await getBotUsername();
+    let text = `📋 <b>Active Temporary Access Tokens</b> (${list.length})\n\n`;
+    const buttons = [];
+
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      const remainingSec = Math.max(0, Math.round((new Date(t.expiresAt).getTime() - Date.now()) / 1000));
+      const remStr = formatDuration(remainingSec);
+      const link = `https://t.me/${botUsername}?start=${t._id}`;
+
+      text += `<b>${i + 1}.</b> <code>${t._id}</code> → <code>${t.targetCode}</code>\n` +
+              `   ⏱ Left: <b>${remStr}</b> | Uses: <b>${t.useCount || 0}</b>\n` +
+              `   🔗 ${link}\n\n`;
+
+      buttons.push([
+        { text: toSmallCaps(`Revoke #${i + 1} (${t._id.slice(-6)})`), callback_data: `admin:revoke_temp:${t._id}` }
+      ]);
+    }
+
+    buttons.push(...navButtons('admin:file_mgmt'));
+
+    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  } else if (action.startsWith('revoke_temp:')) {
+    const tokenId = action.split(':')[1];
+    const { revokeTempToken } = await import('../filestore.js');
+    const revokeRes = await revokeTempToken(tokenId, chatId, true);
+
+    if (!revokeRes.ok) {
+      await editTelegramMessage(chatId, messageId, `❌ Failed to revoke token <code>${esc(tokenId)}</code>.`, {
+        inline_keyboard: navButtons('admin:file_mgmt')
+      });
+      return res.status(200).send('OK');
+    }
+
+    await editTelegramMessage(chatId, messageId, `✅ Temporary token <code>${esc(tokenId)}</code> has been revoked and can no longer be accessed.`, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('📋 Active Tokens'), callback_data: 'admin:temp_tokens_list' }],
+        ...navButtons('admin:file_mgmt')
       ]
     });
   } else if (action === 'trigger_cleanup') {
@@ -450,7 +614,10 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     }
 
     await editTelegramMessage(chatId, messageId, msgText, {
-      inline_keyboard: navButtons('admin:dashboard')
+      inline_keyboard: [
+        [{ text: toSmallCaps('⏳ Generate Temp Link'), callback_data: `admin:temp_token_for:${batchCode}` }],
+        ...navButtons('admin:dashboard')
+      ]
     });
     return res.status(200).send('OK');
   } else if (action === 'cancel_session') {
@@ -514,7 +681,25 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       { upsert: true }
     );
     await editTelegramMessage(chatId, messageId, `🔑 <b>Set Shortener API Key</b>\n\nSend your API key for the shortener.\n\nSend /cancel to abort.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
+    });
+  } else if (action === 'fs_set_burl') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'backupShortenerUrl', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    await editTelegramMessage(chatId, messageId, `🔗 <b>Set Backup Shortener URL</b>\n\nSend the base API URL for your backup shortener (e.g. <code>https://shrinkme.io/api</code>).\n\nSend /cancel to abort.`, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
+    });
+  } else if (action === 'fs_set_bkey') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'backupShortenerKey', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    await editTelegramMessage(chatId, messageId, `🔑 <b>Set Backup Shortener API Key</b>\n\nSend your API key for the backup shortener.\n\nSend /cancel to abort.`, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
     });
   } else if (action === 'fs_set_ttl') {
     const s = await getSettings();

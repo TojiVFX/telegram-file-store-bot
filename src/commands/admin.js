@@ -64,7 +64,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
           await clearBatchSession(chatId);
           const botUsername = await getBotUsername();
           await sendTelegramMessage(chatId, `✅ <b>Batch Created!</b>\n\nFiles: <b>${collectedIds.length}</b>\nLink: https://t.me/${botUsername}?start=${batchCode}`, {
-            inline_keyboard: [[{ text: '⬅️ Back to Dashboard', callback_data: 'admin:dashboard' }]]
+            inline_keyboard: [[{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]]
           });
           return res.status(200).send('OK');
         } else {
@@ -80,8 +80,8 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       if (currentCount >= 500) {
         await sendTelegramMessage(chatId, `⚠️ <b>Batch Limit Reached!</b>\n\nYou can only add up to 500 files per batch. Please finish this batch or cancel.`, {
           inline_keyboard: [
-            [{ text: '✅ Finish Batch', callback_data: 'admin:batch_done' }],
-            [{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]
+            [{ text: toSmallCaps('Finish Batch'), callback_data: 'admin:batch_done' }],
+            [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
           ]
         });
         return res.status(200).send('OK');
@@ -97,8 +97,8 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
         await sendTelegramMessage(chatId, `📥 <b>File added!</b> (Total: ${count})`, {
           inline_keyboard: [
-            [{ text: '✅ Finish Batch', callback_data: 'admin:batch_done' }],
-            [{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]
+            [{ text: toSmallCaps('Finish Batch'), callback_data: 'admin:batch_done' }],
+            [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
           ]
         });
         return res.status(200).send('OK');
@@ -151,9 +151,9 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
       await sendTelegramMessage(chatId, `Choose Force Sub Mode`, {
         inline_keyboard: [
-          [{ text: "Normal Mode", callback_data: "admin:fs_fsub_setmode:normal" }],
-          [{ text: "Join Request Mode", callback_data: "admin:fs_fsub_setmode:join_request" }],
-          [{ text: "❌ Cancel", callback_data: "admin:cancel_session" }]
+          [{ text: toSmallCaps("Normal Mode"), callback_data: "admin:fs_fsub_setmode:normal" }],
+          [{ text: toSmallCaps("Join Request Mode"), callback_data: "admin:fs_fsub_setmode:join_request" }],
+          [{ text: toSmallCaps("Cancel"), callback_data: "admin:cancel_session" }]
         ]
       });
       return res.status(200).send('OK');
@@ -187,10 +187,10 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     let backCb = 'admin:fs_settings';
     if (['startText', 'startPhoto'].includes(waitingFor)) backCb = 'admin:fs_cfg:start';
     else if (['forceSubscribeChannels', 'forceSubscribeMsg'].includes(waitingFor)) backCb = 'admin:fs_cfg:fsub';
-    else if (['shortenerUrl', 'shortenerKey', 'validityHours', 'tutorialFileId'].includes(waitingFor)) backCb = 'admin:fs_cfg:tkn';
+    else if (['shortenerUrl', 'shortenerKey', 'backupShortenerUrl', 'backupShortenerKey', 'validityHours', 'tutorialFileId'].includes(waitingFor)) backCb = 'admin:fs_cfg:tkn';
 
     await sendTelegramMessage(chatId, `✅ Updated <b>${waitingFor}</b>!`, {
-      inline_keyboard: [[{ text: '⬅️ Back to Settings', callback_data: backCb }]]
+      inline_keyboard: [[{ text: toSmallCaps('Back to Settings'), callback_data: backCb }]]
     });
     return res.status(200).send('OK');
   }
@@ -204,14 +204,59 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       return res.status(200).send('OK');
     }
 
+    if (waitingAction === 'temp_token_input') {
+      const targetCode = rawText.trim();
+      const { getFile, getBatch } = await import('../filestore.js');
+      const fileDoc = await getFile(targetCode);
+      const batchDoc = !fileDoc ? await getBatch(targetCode) : null;
+
+      if (!fileDoc && !batchDoc) {
+        await sendTelegramMessage(chatId, `❌ <b>File or Batch not found!</b>\n\nNo stored record matches <code>${esc(targetCode)}</code>. Please try again or send /cancel to abort.`);
+        return res.status(200).send('OK');
+      }
+
+      await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
+      const durKb = {
+        inline_keyboard: [
+          [
+            { text: toSmallCaps('15 Mins'), callback_data: `admin:gen_temp:${targetCode}:900` },
+            { text: toSmallCaps('1 Hour'), callback_data: `admin:gen_temp:${targetCode}:3600` },
+            { text: toSmallCaps('6 Hours'), callback_data: `admin:gen_temp:${targetCode}:21600` }
+          ],
+          [
+            { text: toSmallCaps('12 Hours'), callback_data: `admin:gen_temp:${targetCode}:43200` },
+            { text: toSmallCaps('24 Hours'), callback_data: `admin:gen_temp:${targetCode}:86400` },
+            { text: toSmallCaps('3 Days'), callback_data: `admin:gen_temp:${targetCode}:259200` }
+          ],
+          [
+            { text: toSmallCaps('7 Days'), callback_data: `admin:gen_temp:${targetCode}:604800` }
+          ],
+          [{ text: toSmallCaps('Back to File Control'), callback_data: 'admin:file_mgmt' }]
+        ]
+      };
+      await sendTelegramMessage(chatId, `⏱ <b>Select Expiration Duration</b> for <code>${esc(targetCode)}</code>:`, durKb);
+      return res.status(200).send('OK');
+    }
+
     if (waitingAction === 'broadcast') {
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
 
-      const { sent } = await broadcastToAll(rawText);
-      await logHistory(`broadcast_tg: ${sent} users`, 'tg');
-      await sendTelegramMessage(chatId, `✅ <b>Broadcast Complete!</b>\n\nSent to: <b>${sent} users</b>`, {
-        inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'admin:dashboard' }]]
+      const { broadcastWithProgress, getUserStats } = await import('../bot-users.js');
+      const stats = await getUserStats();
+      const statusMsg = await sendTelegramMessage(chatId, `<b>Starting Broadcast...</b>\n\nTotal Users: <b>${stats.totalUsers}</b>\n\n<i>Initializing queue...</i>`, {
+        inline_keyboard: [[{ text: toSmallCaps('Cancel Broadcast'), callback_data: 'admin:broadcast_cancel' }]]
       });
+
+      broadcastWithProgress({
+        text: rawText,
+        adminChatId: chatId,
+        statusMsgId: statusMsg?.messageId
+      }).then(res => {
+        logHistory(`broadcast_tg: ${res.sent}/${res.total} users`, 'tg').catch(() => {});
+      }).catch(err => {
+        log('error', 'broadcastWithProgress error', { errorMessage: err.message });
+      });
+
       return res.status(200).send('OK');
     }
 
@@ -222,7 +267,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       await banUser(targetId);
       await logHistory(`banned_tg: ${targetId}`, 'tg');
       await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been banned.`, {
-        inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'admin:user_mgmt' }]]
+        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
       });
       return res.status(200).send('OK');
     }
@@ -234,7 +279,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       await unbanUser(targetId);
       await logHistory(`unbanned_tg: ${targetId}`, 'tg');
       await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been unbanned.`, {
-        inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'admin:user_mgmt' }]]
+        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
       });
       return res.status(200).send('OK');
     }
@@ -261,9 +306,9 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     const msgId = pmDoc && pmDoc.expiresAt > new Date() ? pmDoc.val : null;
     const durationKb = {
       inline_keyboard: [
-        [{ text: '7 Days', callback_data: 'admin:fs_set_premium:7' }, { text: '30 Days', callback_data: 'admin:fs_set_premium:30' }],
-        [{ text: '365 Days', callback_data: 'admin:fs_set_premium:365' }],
-        [{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]
+        [{ text: toSmallCaps('7 Days'), callback_data: 'admin:fs_set_premium:7' }, { text: toSmallCaps('30 Days'), callback_data: 'admin:fs_set_premium:30' }],
+        [{ text: toSmallCaps('365 Days'), callback_data: 'admin:fs_set_premium:365' }],
+        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
       ]
     };
 
@@ -296,7 +341,10 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         });
         const bot = await getBotUsername();
         await sendTelegramMessage(chatId, `✅ <b>File Stored!</b>\n\nLink: https://t.me/${bot}?start=${code}`, {
-          inline_keyboard: [[{ text: '⬅️ Back to Dashboard', callback_data: 'admin:dashboard' }]]
+          inline_keyboard: [
+            [{ text: toSmallCaps('Generate Temp Link'), callback_data: `admin:temp_token_for:${code}` }],
+            [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]
+          ]
         });
       } else {
         await sendTelegramMessage(chatId, `❌ <b>Failed to store file.</b>\n\nMake sure the bot is an administrator in the DB channel and has permission to post messages.`);

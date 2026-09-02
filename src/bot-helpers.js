@@ -215,7 +215,11 @@ export async function copyMessage(toChatId, fromChatId, msgId, protectContent = 
     const data = await response.json();
     if (!response.ok) {
       log('error', 'copyMessage failed', { toChatId, fromChatId, msgId, telegramError: data });
-      return { ok: false, reason: data.description || 'unknown_error' };
+      const desc = (data.description || '').toLowerCase();
+      const isNotFound = desc.includes('message to copy not found') ||
+                         desc.includes('message_id_invalid') ||
+                         desc.includes('chat not found');
+      return { ok: false, reason: data.description || 'unknown_error', isNotFound, telegramError: data };
     }
     return { ok: true, messageId: data.result?.message_id };
   } catch (err) {
@@ -434,12 +438,17 @@ export async function showLoadingAnimation(chatId) {
 export async function deliverBatch(toChatId, batch, protectContent = false) {
   const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId } = batch;
   const sentMessageIds = [];
+  let failedCount = 0;
 
   if (Array.isArray(dbMessageIds)) {
     const count = dbMessageIds.length;
     for (const msgId of dbMessageIds) {
       const res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
-      if (res?.ok && res?.messageId) sentMessageIds.push(res.messageId);
+      if (res?.ok && res?.messageId) {
+        sentMessageIds.push(res.messageId);
+      } else {
+        failedCount++;
+      }
       if (count > 5) await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -447,12 +456,24 @@ export async function deliverBatch(toChatId, batch, protectContent = false) {
     const count = dbLastMsgId - dbFirstMsgId + 1;
     for (let msgId = dbFirstMsgId; msgId <= dbLastMsgId; msgId++) {
       const res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
-      if (res?.ok && res?.messageId) sentMessageIds.push(res.messageId);
+      if (res?.ok && res?.messageId) {
+        sentMessageIds.push(res.messageId);
+      } else {
+        failedCount++;
+      }
       if (count > 5) await new Promise((r) => setTimeout(r, 50));
     }
   }
 
-  await scheduleAutoDelete(toChatId, sentMessageIds);
+  if (failedCount > 0 && sentMessageIds.length === 0) {
+    await sendTelegramMessage(toChatId, `❌ <b>Batch Unavailable</b>\n\nThe files in this batch are no longer available in storage (they may have been removed from the database channel).`);
+  } else if (failedCount > 0) {
+    await sendTelegramMessage(toChatId, `⚠️ <b>Note:</b> ${failedCount} file(s) in this batch could not be retrieved because they were deleted from storage.`);
+  }
+
+  if (sentMessageIds.length > 0) {
+    await scheduleAutoDelete(toChatId, sentMessageIds);
+  }
   return sentMessageIds;
 }
 
@@ -477,11 +498,62 @@ export async function scheduleAutoDelete(chatId, messageIds) {
   const warnMsg = await sendTelegramMessage(chatId, `⚠️ <b>Note:</b> These file(s) will be automatically deleted in <b>${timerLabel}</b>!`);
   if (warnMsg?.ok && warnMsg?.messageId) ids.push(warnMsg.messageId);
 
+  // Persist to MongoDB so deletions survive Render restarts / redeployments
+  try {
+    const autoDeletes = await getCollection('auto_deletes');
+    await autoDeletes.insertOne({
+      chatId,
+      messageIds: ids,
+      deleteAt: new Date(Date.now() + ms),
+      createdAt: new Date(),
+    });
+  } catch (err) {
+    log('error', 'Failed to persist auto-delete job to database', { errorMessage: err.message });
+  }
+
+  // Also set in-memory timeout for instant zero-delay deletion during normal operation
   setTimeout(async () => {
     for (const msgId of ids) {
       await deleteTelegramMessage(chatId, msgId).catch(() => {});
     }
+    try {
+      const autoDeletes = await getCollection('auto_deletes');
+      await autoDeletes.deleteMany({ chatId, messageIds: { $in: ids } });
+    } catch {}
   }, ms);
+}
+
+// ─── Background Auto-Delete Worker ───────────────────────────────────────────
+let autoDeleteWorkerRunning = false;
+
+export async function processDueAutoDeletes() {
+  try {
+    const autoDeletes = await getCollection('auto_deletes');
+    const now = new Date();
+    const dueJobs = await autoDeletes.find({ deleteAt: { $lte: now } }).limit(50).toArray();
+
+    for (const job of dueJobs) {
+      if (job.chatId && Array.isArray(job.messageIds)) {
+        for (const msgId of job.messageIds) {
+          await deleteTelegramMessage(job.chatId, msgId).catch(() => {});
+        }
+      }
+      await autoDeletes.deleteOne({ _id: job._id }).catch(() => {});
+    }
+  } catch (err) {
+    log('error', 'processDueAutoDeletes error', { errorMessage: err.message });
+  }
+}
+
+export function startAutoDeleteWorker(intervalMs = 15000) {
+  if (autoDeleteWorkerRunning) return;
+  autoDeleteWorkerRunning = true;
+  // Run once immediately upon startup
+  processDueAutoDeletes().catch(() => {});
+  // Recurring polling
+  setInterval(() => {
+    processDueAutoDeletes().catch(() => {});
+  }, intervalMs);
 }
 
 export async function registerWebhook(token, webhookUrl) {
@@ -508,6 +580,8 @@ export async function setMyCommands() {
 
   const userCommands = [
     { command: 'start',       description: toSmallCaps('Open the main menu') },
+    { command: 'temptoken',   description: toSmallCaps('Create temporary file sharing token') },
+    { command: 'mytokens',    description: toSmallCaps('View active temporary tokens') },
     { command: 'me',          description: toSmallCaps('View your profile & referral link') },
     { command: 'ping',        description: toSmallCaps('Check bot latency') },
     { command: 'help',        description: toSmallCaps('How to use this bot') },

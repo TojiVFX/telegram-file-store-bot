@@ -1,5 +1,6 @@
 import { getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessage, answerCallbackQuery } from '../bot-common.js';
 import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate } from '../bot-helpers.js';
+import { generateTempToken, revokeTempToken, listActiveTempTokens, formatDuration } from '../filestore.js';
 
 export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin, res) {
   // Answer instantly to dismiss the button loading spinner immediately
@@ -15,6 +16,93 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       await editTelegramMessage(chatId, messageId, gate.text, gate.replyMarkup);
       return res.status(200).send('OK');
     }
+  }
+
+  if (action.startsWith('gen_temp:')) {
+    const parts = action.split(':');
+    const targetCode = parts[1];
+    const durationSec = parseInt(parts[2], 10) || 3600;
+
+    const genRes = await generateTempToken(targetCode, durationSec, {
+      createdBy: chatId,
+      creatorName: from?.first_name || 'User',
+    });
+
+    if (!genRes.ok) {
+      await editTelegramMessage(chatId, messageId, `❌ <b>Failed to generate temporary link.</b>\n\nTarget file or batch <code>${esc(targetCode)}</code> could not be found.`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
+      });
+      return res.status(200).send('OK');
+    }
+
+    const shareLink = `https://t.me/${botUsername}?start=${genRes.token}`;
+    const text = `⏳ <b>Temporary Access Token Generated!</b>\n\n` +
+      `📁 Target: <code>${esc(genRes.tokenDoc.targetCode)}</code> (${genRes.tokenDoc.targetType})\n` +
+      `⏱ Validity: <b>${genRes.durationLabel}</b>\n` +
+      `📅 Expires at: <code>${new Date(genRes.expiresAt).toUTCString()}</code>\n\n` +
+      `🔗 <b>Temporary Share Link:</b>\n<code>${shareLink}</code>\n\n` +
+      `<i>This link will automatically expire after the validity duration.</i>`;
+
+    await editTelegramMessage(chatId, messageId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Revoke Token'), callback_data: `user:revoke_token:${genRes.token}` }],
+        [{ text: toSmallCaps('My Active Tokens'), callback_data: 'user:my_tokens' }],
+        [{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]
+      ]
+    });
+    return res.status(200).send('OK');
+  }
+
+  if (action === 'my_tokens') {
+    const list = await listActiveTempTokens(admin ? null : chatId, 15);
+    if (!list || list.length === 0) {
+      await editTelegramMessage(chatId, messageId, `ℹ️ <b>No active temporary tokens found.</b>\n\nCreate one using <code>/temptoken &lt;file_code&gt; [duration]</code>.`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
+      });
+      return res.status(200).send('OK');
+    }
+
+    let text = `📋 <b>Active Temporary Access Tokens</b> (${list.length})\n\n`;
+    const buttons = [];
+
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      const remainingSec = Math.max(0, Math.round((new Date(t.expiresAt).getTime() - Date.now()) / 1000));
+      const remStr = formatDuration(remainingSec);
+      const link = `https://t.me/${botUsername}?start=${t._id}`;
+
+      text += `<b>${i + 1}.</b> <code>${t._id}</code> → <code>${t.targetCode}</code>\n` +
+              `   ⏱ Left: <b>${remStr}</b> | Uses: <b>${t.useCount || 0}</b>\n` +
+              `   🔗 ${link}\n\n`;
+
+      buttons.push([
+        { text: toSmallCaps(`Revoke #${i + 1} (${t._id.slice(-6)})`), callback_data: `user:revoke_token:${t._id}` }
+      ]);
+    }
+
+    buttons.push([{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]);
+
+    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+    return res.status(200).send('OK');
+  }
+
+  if (action.startsWith('revoke_token:')) {
+    const tokenId = action.split(':')[1];
+    const revokeRes = await revokeTempToken(tokenId, chatId, admin);
+    if (!revokeRes.ok) {
+      await editTelegramMessage(chatId, messageId, `❌ Failed to revoke token <code>${esc(tokenId)}</code> (${revokeRes.reason}).`, {
+        inline_keyboard: [[{ text: toSmallCaps('My Tokens'), callback_data: 'user:my_tokens' }]]
+      });
+      return res.status(200).send('OK');
+    }
+
+    await editTelegramMessage(chatId, messageId, `✅ Token <code>${esc(tokenId)}</code> has been revoked and can no longer be accessed.`, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('My Tokens'), callback_data: 'user:my_tokens' }],
+        [{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]
+      ]
+    });
+    return res.status(200).send('OK');
   }
 
   if (action === 'me') {

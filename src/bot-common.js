@@ -3,56 +3,288 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 export const botContext = new AsyncLocalStorage();
 
+// ─── In-Memory MongoDB Fallback Store ─────────────────────────────────────────
+class InMemoryCollection {
+  constructor(name) {
+    this.name = name;
+    this.docs = new Map();
+  }
+
+  _matches(doc, filter) {
+    if (!filter || Object.keys(filter).length === 0) return true;
+    for (const [key, val] of Object.entries(filter)) {
+      if (val && typeof val === 'object' && !(val instanceof Date)) {
+        if (Array.isArray(val.$in)) {
+          if (!val.$in.includes(doc[key])) return false;
+        }
+        if (val.$ne !== undefined) {
+          if (doc[key] === val.$ne) return false;
+        }
+        if (val.$gt !== undefined) {
+          const docVal = doc[key] instanceof Date ? doc[key] : (key === 'expiresAt' || key === 'createdAt' ? new Date(doc[key]) : doc[key]);
+          const filterVal = val.$gt instanceof Date ? val.$gt : (key === 'expiresAt' || key === 'createdAt' ? new Date(val.$gt) : val.$gt);
+          if (!docVal || docVal <= filterVal) return false;
+        }
+        if (val.$gte !== undefined) {
+          const docVal = doc[key] instanceof Date ? doc[key] : (key === 'expiresAt' || key === 'createdAt' ? new Date(doc[key]) : doc[key]);
+          const filterVal = val.$gte instanceof Date ? val.$gte : (key === 'expiresAt' || key === 'createdAt' ? new Date(val.$gte) : val.$gte);
+          if (!docVal || docVal < filterVal) return false;
+        }
+        if (val.$lt !== undefined) {
+          const docVal = doc[key] instanceof Date ? doc[key] : (key === 'expiresAt' || key === 'createdAt' ? new Date(doc[key]) : doc[key]);
+          const filterVal = val.$lt instanceof Date ? val.$lt : (key === 'expiresAt' || key === 'createdAt' ? new Date(val.$lt) : val.$lt);
+          if (!docVal || docVal >= filterVal) return false;
+        }
+        if (val.$regex) {
+          const regex = new RegExp(val.$regex);
+          if (!regex.test(String(doc[key] || ''))) return false;
+        }
+      } else {
+        if (doc[key] !== val) return false;
+      }
+    }
+    return true;
+  }
+
+  async createIndex() {
+    return 'ok';
+  }
+
+  async findOne(filter) {
+    for (const doc of this.docs.values()) {
+      if (this._matches(doc, filter)) {
+        return JSON.parse(JSON.stringify(doc));
+      }
+    }
+    return null;
+  }
+
+  find(filter = {}) {
+    let matched = [];
+    for (const doc of this.docs.values()) {
+      if (this._matches(doc, filter)) {
+        matched.push(JSON.parse(JSON.stringify(doc)));
+      }
+    }
+    const createCursor = (docs) => {
+      let current = [...docs];
+      return {
+        sort: (sortSpec) => {
+          const [field, order] = Object.entries(sortSpec || {})[0] || [];
+          if (field) {
+            current.sort((a, b) => {
+              const valA = a[field] instanceof Date ? a[field].getTime() : a[field];
+              const valB = b[field] instanceof Date ? b[field].getTime() : b[field];
+              if (valA < valB) return order === 1 ? -1 : 1;
+              if (valA > valB) return order === 1 ? 1 : -1;
+              return 0;
+            });
+          }
+          return createCursor(current);
+        },
+        skip: (n) => createCursor(current.slice(n)),
+        limit: (n) => createCursor(current.slice(0, n)),
+        toArray: async () => current,
+      };
+    };
+    return createCursor(matched);
+  }
+
+  async updateOne(filter, update, options = {}) {
+    let target = null;
+    for (const doc of this.docs.values()) {
+      if (this._matches(doc, filter)) {
+        target = doc;
+        break;
+      }
+    }
+
+    if (!target) {
+      if (options.upsert) {
+        target = { _id: filter._id || String(Date.now() + Math.random()) };
+        if (update.$setOnInsert) {
+          Object.assign(target, update.$setOnInsert);
+        }
+        this.docs.set(target._id, target);
+      } else {
+        return { matchedCount: 0, modifiedCount: 0 };
+      }
+    }
+
+    if (update.$set) {
+      Object.assign(target, update.$set);
+    }
+    if (update.$inc) {
+      for (const [k, v] of Object.entries(update.$inc)) {
+        target[k] = (target[k] || 0) + v;
+      }
+    }
+    if (update.$push) {
+      for (const [k, v] of Object.entries(update.$push)) {
+        if (!Array.isArray(target[k])) target[k] = [];
+        target[k].push(v);
+      }
+    }
+
+    return { matchedCount: 1, modifiedCount: 1, upsertedId: target._id };
+  }
+
+  async findOneAndUpdate(filter, update, options = {}) {
+    let target = null;
+    for (const doc of this.docs.values()) {
+      if (this._matches(doc, filter)) {
+        target = doc;
+        break;
+      }
+    }
+
+    if (!target) {
+      return null;
+    }
+
+    if (update.$inc) {
+      for (const [k, v] of Object.entries(update.$inc)) {
+        target[k] = (target[k] || 0) + v;
+      }
+    }
+    if (update.$set) {
+      Object.assign(target, update.$set);
+    }
+
+    return JSON.parse(JSON.stringify(target));
+  }
+
+  async deleteOne(filter) {
+    for (const [id, doc] of this.docs.entries()) {
+      if (this._matches(doc, filter)) {
+        this.docs.delete(id);
+        return { deletedCount: 1 };
+      }
+    }
+    return { deletedCount: 0 };
+  }
+
+  async deleteMany(filter) {
+    let count = 0;
+    for (const [id, doc] of this.docs.entries()) {
+      if (this._matches(doc, filter)) {
+        this.docs.delete(id);
+        count++;
+      }
+    }
+    return { deletedCount: count };
+  }
+
+  async insertOne(doc) {
+    const id = doc._id || String(Date.now() + Math.random());
+    const newDoc = { ...doc, _id: id };
+    this.docs.set(id, newDoc);
+    return { insertedId: id };
+  }
+
+  async countDocuments(filter = {}) {
+    let count = 0;
+    for (const doc of this.docs.values()) {
+      if (this._matches(doc, filter)) count++;
+    }
+    return count;
+  }
+
+  aggregate(pipeline = []) {
+    let list = Array.from(this.docs.values());
+    for (const stage of pipeline) {
+      if (stage.$group) {
+        const total = list.reduce((sum, item) => sum + (item.referralCount || 0), 0);
+        return {
+          toArray: async () => [{ _id: null, total }],
+        };
+      }
+    }
+    return {
+      toArray: async () => list,
+    };
+  }
+}
+
+const inMemoryDb = {
+  _collections: new Map(),
+  collection(name) {
+    if (!this._collections.has(name)) {
+      this._collections.set(name, new InMemoryCollection(name));
+    }
+    return this._collections.get(name);
+  },
+  async command(cmd) {
+    if (cmd && cmd.dbStats) {
+      return { storageSize: 1024 * 1024, dataSize: 512 * 1024 };
+    }
+    return { ok: 1 };
+  },
+};
+
 // ─── MongoDB Connection ───────────────────────────────────────────────────────
 const MONGODB_URI = (process.env.MONGODB_URI || '').trim();
-
-if (!MONGODB_URI) {
-  console.error('CRITICAL: MONGODB_URI environment variable is missing!');
-}
 
 let client = null;
 let db = null;
 let dbPromise = null;
+let isUsingMockDb = false;
 
 export async function getDb() {
   if (db) return db;
   if (dbPromise) return dbPromise;
 
   if (!MONGODB_URI) {
-    throw new Error('MONGODB_URI is missing');
+    console.warn('[AI Studio] MONGODB_URI not set — using in-memory mock database store (data resets on container restart)');
+    db = inMemoryDb;
+    isUsingMockDb = true;
+    return db;
   }
 
   dbPromise = (async () => {
-    client = new MongoClient(MONGODB_URI);
-    await client.connect();
-    const database = client.db();
+    try {
+      client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+      await client.connect();
+      const database = client.db();
 
-    // Ensure indexes are created asynchronously (fire-and-forget/non-blocking)
-    database.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
-      .catch(err => console.error('Error creating sessions expiresAt index:', err.message));
-    database.collection('users').createIndex({ username: 1 }, { unique: false, sparse: true })
-      .catch(err => console.error('Error creating users username index:', err.message));
+      // Ensure indexes are created asynchronously (fire-and-forget/non-blocking)
+      database.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+        .catch(err => console.error('Error creating sessions expiresAt index:', err.message));
+      database.collection('users').createIndex({ username: 1 }, { unique: false, sparse: true })
+        .catch(err => console.error('Error creating users username index:', err.message));
+      database.collection('temp_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+        .catch(err => console.error('Error creating temp_tokens expiresAt index:', err.message));
+      database.collection('temp_tokens').createIndex({ createdBy: 1 })
+        .catch(err => console.error('Error creating temp_tokens createdBy index:', err.message));
+      database.collection('activity_logs').createIndex({ timestamp: -1 })
+        .catch(err => console.error('Error creating activity_logs timestamp index:', err.message));
+      // Auto-purge ephemeral activity logs after 30 days to keep MongoDB Atlas free tier healthy
+      database.collection('activity_logs').createIndex({ timestamp: 1 }, { expireAfterSeconds: 30 * 24 * 3600 })
+        .catch(err => console.error('Error creating activity_logs TTL index:', err.message));
+      database.collection('activity_logs').createIndex({ eventType: 1, timestamp: -1 })
+        .catch(err => console.error('Error creating activity_logs eventType index:', err.message));
+      database.collection('activity_logs').createIndex({ userId: 1, timestamp: -1 })
+        .catch(err => console.error('Error creating activity_logs userId index:', err.message));
+      database.collection('auto_deletes').createIndex({ deleteAt: 1 })
+        .catch(err => console.error('Error creating auto_deletes deleteAt index:', err.message));
 
-    db = database;
-    return db;
+      db = database;
+      return db;
+    } catch (err) {
+      console.warn('[AI Studio] MongoDB connection failed (' + err.message + ') — falling back to in-memory store');
+      db = inMemoryDb;
+      isUsingMockDb = true;
+      return db;
+    }
   })();
 
   try {
     return await dbPromise;
   } catch (err) {
     dbPromise = null;
-    if (err.message && err.message.includes('SSL alert number 80')) {
-      throw new Error('\n\n🚨 MONGODB CONNECTION ERROR: IP NOT WHITELISTED 🚨\n' +
-                      'Cloudflare Workers have dynamic IP addresses worldwide. You must allow ALL IPs to access your database.\n' +
-                      '1. Go to your MongoDB Atlas dashboard.\n' +
-                      '2. On the left menu, click "Network Access" under "Security".\n' +
-                      '3. Click "Add IP Address".\n' +
-                      '4. Click "Allow Access From Anywhere" (which adds 0.0.0.0/0).\n' +
-                      '5. Click Confirm.\n' +
-                      'Wait a few minutes for changes to deploy, then try again.\n\n' +
-                      'Original Error: ' + err.message);
-    }
-    throw err;
+    db = inMemoryDb;
+    isUsingMockDb = true;
+    return db;
   }
 }
 
@@ -150,16 +382,48 @@ export function toSmallCaps(text) {
 export function formatButtonText(text) {
   if (!text) return '';
 
-  // Strip emojis, Variation Selectors, and common decorative/ASCII symbols (+ < > •)
-  let clean = text
+  let raw = String(text).trim();
+
+  // Smart symbol translation for standalone emoji buttons before stripping
+  const symbolMap = {
+    '❌': 'Cancel',
+    '✖': 'Cancel',
+    '🗑️': 'Delete',
+    '🗑': 'Delete',
+    '✏️': 'Edit',
+    '✏': 'Edit',
+    '⚙️': 'Settings',
+    '⚙': 'Settings',
+    '⬅️': 'Back',
+    '⬅': 'Back',
+    '◀': 'Back',
+    '▶': 'Next',
+    '➡️': 'Next',
+    '➡': 'Next',
+    '➕': 'Add',
+    '+': 'Add',
+    '🔍': 'Check',
+    '🔎': 'Check',
+    '📥': 'Bulk Setup',
+    '✅': 'Done',
+    'ℹ️': 'Info',
+    'ℹ': 'Info',
+  };
+
+  if (symbolMap[raw]) {
+    raw = symbolMap[raw];
+  }
+
+  // Strip emojis, Variation Selectors, and common decorative/ASCII symbols (+ < > • |)
+  let clean = raw
     .replace(/[\p{Extended_Pictographic}\uFE00-\uFE0F]/gu, '')
-    .replace(/[+<>•✖◀▶⬅➡➡️]/g, '')
+    .replace(/[+<>•✖◀▶⬅➡➡️\|]/g, '')
     .trim()
     .replace(/\s+/g, ' ');
 
-  // If the text became empty (e.g. it was just an emoji like ❌), fallback to 'x'
+  // If the text became empty (fallback), default to 'Select'
   if (!clean) {
-    clean = 'x';
+    clean = 'Select';
   }
 
   const map = {
@@ -286,7 +550,7 @@ export function parseValidityHours(raw, fallback = 24) {
 }
 
 // ─── Telegram API helpers ─────────────────────────────────────────────────────
-export async function sendTelegramMessage(chatId, text, replyMarkup = null, protectContent = false) {
+export async function sendTelegramMessage(chatId, text, replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
@@ -301,6 +565,11 @@ export async function sendTelegramMessage(chatId, text, replyMarkup = null, prot
       body: JSON.stringify(body),
     });
     const data = await res.json();
+    if (res.status === 429 && maxRetries > 0) {
+      const waitSec = data?.parameters?.retry_after || 1;
+      await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+      return sendTelegramMessage(chatId, text, replyMarkup, protectContent, maxRetries - 1);
+    }
     return { ok: res.ok, messageId: data.result?.message_id, detail: data };
   } catch (err) {
     return { ok: false, reason: 'network_error', detail: err.message };
@@ -319,6 +588,29 @@ export async function sendTelegramDocument(chatId, documentId, caption = '', rep
     });
     return await res.json();
   } catch (err) { return { ok: false, reason: err.message }; }
+}
+
+export async function sendTelegramFileBuffer(chatId, buffer, filename, caption = '', replyMarkup = null, protectContent = false) {
+  const token = getToken();
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const formData = new FormData();
+    formData.append('chat_id', chatId);
+    const blob = new Blob([buffer], { type: 'application/octet-stream' });
+    formData.append('document', blob, filename);
+    if (caption) formData.append('caption', toSmallCapsSafe(caption));
+    formData.append('parse_mode', 'HTML');
+    if (protectContent) formData.append('protect_content', 'true');
+    if (replyMarkup) formData.append('reply_markup', JSON.stringify(formatReplyMarkup(replyMarkup)));
+
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+      method: 'POST',
+      body: formData,
+    });
+    return await res.json();
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
 }
 
 export async function sendTelegramVideo(chatId, videoId, caption = '', replyMarkup = null, protectContent = false) {

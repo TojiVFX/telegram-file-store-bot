@@ -3,10 +3,11 @@ import {
   getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours
 } from '../bot-common.js';
 import {
-  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername
+  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard
 } from '../bot-helpers.js';
-import { getBatch, getFile, getShortenedLink } from '../filestore.js';
+import { getBatch, getFile, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral, getAdminId } from '../bot-users.js';
+import { logActivity } from '../bot-logs.js';
 
 // Pending verify-link TTL — how long the user has to actually click through
 // the shortener and land back on /start?start=verify_<tkn> before the link
@@ -66,6 +67,43 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       await sendTelegramMessage(chatId, customMsg, { inline_keyboard: buttons });
       return res.status(200).send('OK');
     }
+
+    // User is fully subscribed! Complete pending referral if this user arrived via referral link
+    const { completePendingReferral } = await import('../bot-users.js');
+    await completePendingReferral(chatId);
+  }
+
+  // Handle Temporary Time-Limited Access Tokens
+  if (payload && (payload.startsWith('temp_') || payload.startsWith('tmp_'))) {
+    const tokenRes = await getTempToken(payload);
+    if (!tokenRes.ok) {
+      if (tokenRes.reason === 'expired') {
+        await sendTelegramMessage(chatId, `❌ <b>Access Token Expired</b>\n\nThis temporary file sharing link has expired. Please request a new link from the sender.`);
+      } else if (tokenRes.reason === 'revoked') {
+        await sendTelegramMessage(chatId, `🚫 <b>Access Token Revoked</b>\n\nThis temporary sharing link has been revoked by its creator.`);
+      } else if (tokenRes.reason === 'limit_reached') {
+        await sendTelegramMessage(chatId, `⚠️ <b>Access Limit Reached</b>\n\nThis temporary sharing link has reached its maximum allowed access count.`);
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Invalid Token</b>\n\nThis temporary file sharing link was not found.`);
+      }
+      return res.status(200).send('OK');
+    }
+
+    const doc = tokenRes.tokenDoc;
+    const remainingSec = Math.max(0, Math.round((new Date(doc.expiresAt).getTime() - Date.now()) / 1000));
+    const remainingLabel = formatDuration(remainingSec);
+
+    await consumeTempToken(payload, chatId);
+    await sendTelegramMessage(
+      chatId,
+      `⏳ <b>Temporary Access Granted</b>\n\n` +
+      `Duration: <b>${doc.durationLabel}</b>\n` +
+      `Time Remaining: <b>${remainingLabel}</b>\n` +
+      (doc.maxUses ? `Access Limit: <b>${(doc.useCount || 0) + 1}/${doc.maxUses}</b>\n` : '') +
+      `\n<i>Loading file...</i>`
+    );
+
+    return handleStartPayload(chatId, doc.targetCode, message, admin, res);
   }
 
   if (payload && (payload.startsWith('batch_') || payload.startsWith('file_'))) {
@@ -145,6 +183,18 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       await sendTelegramMessage(chatId, `❌ Not found.`, null, s?.protectContent === '1');
       return res.status(200).send('OK');
     }
+
+    logActivity({
+      eventType: 'batch_access',
+      userId: chatId,
+      username: message.from?.username,
+      firstName: message.from?.first_name,
+      targetCode: payload,
+      targetType: 'batch',
+      details: `Accessed batch ${payload}`,
+    }).catch(() => {});
+    incrementAccessCount(payload);
+
     const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
     const steps = [
       { p: 30, b: '[███▒▒▒▒▒▒▒]' },
@@ -163,14 +213,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
 
   if (payload === 'setting' && admin) {
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
-    await sendTelegramMessage(chatId, text, {
-      inline_keyboard: [
-        [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
-        [{ text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }, { text: toSmallCaps('File Control'), callback_data: 'admin:file_mgmt' }],
-        [{ text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
-        [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
-      ]
-    });
+    await sendTelegramMessage(chatId, text, getAdminDashboardKeyboard());
     return res.status(200).send('OK');
   }
 
@@ -179,6 +222,18 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     const s = await getSettings();
     const protect = s?.protectContent === '1';
     if (f) {
+      logActivity({
+        eventType: 'file_access',
+        userId: chatId,
+        username: message.from?.username,
+        firstName: message.from?.first_name,
+        targetCode: payload,
+        targetType: 'file',
+        details: `Accessed file ${payload}`,
+        metadata: { fileType: f.type }
+      }).catch(() => {});
+      incrementAccessCount(payload);
+
       const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
       const steps = [
         { p: 30, b: '[███▒▒▒▒▒▒▒]' },
@@ -208,6 +263,8 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
 
       if (sentMsgId) {
         await scheduleAutoDelete(chatId, [sentMsgId]);
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>File Unavailable</b>\n\nThis file is no longer available in storage (it may have been deleted by an administrator).`);
       }
 
       await deleteTelegramMessage(chatId, loadingMsg.messageId);
@@ -216,6 +273,14 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     }
     return res.status(200).send('OK');
   }
+
+  logActivity({
+    eventType: 'user_start',
+    userId: chatId,
+    username: message.from?.username,
+    firstName: message.from?.first_name,
+    details: 'Opened start menu',
+  }).catch(() => {});
 
   let startMsg = `👋 <b>Welcome to Filestore Bot!</b>\n\nI can store files and provide permanent sharing links. Use the buttons below or commands to explore.`;
   let startPhoto = null;
