@@ -597,14 +597,16 @@ export async function setMyCommands() {
     if (adminId) {
       const adminCommands = [
         ...userCommands,
-        { command: 'userstats',  description: toSmallCaps('User & filestore statistics (admin)') },
-        { command: 'ban',        description: toSmallCaps('Ban a user by chat ID (admin)') },
-        { command: 'unban',      description: toSmallCaps('Unban a user by chat ID (admin)') },
-        { command: 'banlist',    description: toSmallCaps('List all banned users (admin)') },
-        { command: 'broadcast',  description: toSmallCaps('Send a message to all users (admin)') },
-        { command: 'batch',      description: toSmallCaps('Create a batch link from a channel range (admin)') },
-        { command: 'store',      description: toSmallCaps('Store a single file (admin)') },
-        { command: 'setting',    description: toSmallCaps('Open admin dashboard (admin)') },
+        { command: 'setting',    description: toSmallCaps('Open admin dashboard') },
+        { command: 'userstats',  description: toSmallCaps('View user & filestore statistics') },
+        { command: 'topfiles',   description: toSmallCaps('Top 10 most downloaded files & batches') },
+        { command: 'backup',     description: toSmallCaps('Export database backup as JSON file') },
+        { command: 'broadcast',  description: toSmallCaps('Send a message to all users') },
+        { command: 'batch',      description: toSmallCaps('Create a batch link from a channel range') },
+        { command: 'store',      description: toSmallCaps('Store a single file') },
+        { command: 'ban',        description: toSmallCaps('Ban a user by chat ID') },
+        { command: 'unban',      description: toSmallCaps('Unban a user by chat ID') },
+        { command: 'banlist',    description: toSmallCaps('List all banned users') },
         { command: 'adminhelp',  description: toSmallCaps('Admin command reference') },
       ];
       await fetch(`https://api.telegram.org/bot${token}/setMyCommands`, {
