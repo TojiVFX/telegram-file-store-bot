@@ -57,15 +57,59 @@ async function renderAutoDelMgmt(chatId, messageId) {
   await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
 }
 
+async function renderBannersMgmt(chatId, messageId) {
+  const s = await getSettings();
+  const startStatus = s.startPhoto ? 'Set' : 'None';
+  const fsubStatus = s.bannerFsub ? 'Set' : 'None';
+  const verifyStatus = s.bannerVerify ? 'Set' : 'None';
+  const deliveryStatus = s.bannerDelivery ? 'Set' : 'None';
+  const profileStatus = s.bannerProfile ? 'Set' : 'None';
+
+  const text = `🖼 <b>Banners & Images Manager</b>\n\n` +
+    `Customize images & banners for key bot screens:\n\n` +
+    `• <b>Start Menu:</b> <code>${startStatus}</code>\n` +
+    `• <b>Force-Sub Gate:</b> <code>${fsubStatus}</code>\n` +
+    `• <b>Verification Gate:</b> <code>${verifyStatus}</code>\n` +
+    `• <b>Batch Delivery:</b> <code>${deliveryStatus}</code>\n` +
+    `• <b>User Profile (/me):</b> <code>${profileStatus}</code>\n\n` +
+    `<i>Tap a button below to set or update any screen banner:</i>`;
+
+  const buttons = [
+    [{ text: toSmallCaps('Start Banner'), callback_data: 'admin:set_banner:startPhoto' }, { text: toSmallCaps('Force-Sub Banner'), callback_data: 'admin:set_banner:bannerFsub' }],
+    [{ text: toSmallCaps('Verify Banner'), callback_data: 'admin:set_banner:bannerVerify' }, { text: toSmallCaps('Delivery Banner'), callback_data: 'admin:set_banner:bannerDelivery' }],
+    [{ text: toSmallCaps('Profile Banner'), callback_data: 'admin:set_banner:bannerProfile' }],
+  ];
+
+  const removeRow = [];
+  if (s.startPhoto) removeRow.push({ text: toSmallCaps('Del Start'), callback_data: 'admin:del_banner:startPhoto' });
+  if (s.bannerFsub) removeRow.push({ text: toSmallCaps('Del F-Sub'), callback_data: 'admin:del_banner:bannerFsub' });
+  if (s.bannerVerify) removeRow.push({ text: toSmallCaps('Del Verify'), callback_data: 'admin:del_banner:bannerVerify' });
+  if (s.bannerDelivery) removeRow.push({ text: toSmallCaps('Del Delivery'), callback_data: 'admin:del_banner:bannerDelivery' });
+  if (s.bannerProfile) removeRow.push({ text: toSmallCaps('Del Profile'), callback_data: 'admin:del_banner:bannerProfile' });
+
+  if (removeRow.length > 0) {
+    for (let i = 0; i < removeRow.length; i += 2) {
+      buttons.push(removeRow.slice(i, i + 2));
+    }
+  }
+
+  buttons.push(...navButtons('admin:dashboard'));
+
+  await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+}
+
 async function renderFsCfg(chatId, messageId, cfgType) {
   const s = await getSettings();
   let text = '';
   let buttons = [];
 
   if (cfgType === 'start') {
-    text = `<b>Start Message</b>\n\nCustomize your main bot start message using the following buttons:`;
+    text = `<b>Start Message</b>\n\nCustomize your main bot start message using the following buttons:\n\n` +
+           `• Start Photo: <b>${s.startPhoto ? 'Configured' : 'Not set'}</b>\n` +
+           `• Start Text: <b>${s.startText ? 'Custom' : 'Default'}</b>`;
     buttons = [
       [{ text: toSmallCaps('START TEXT'), callback_data: 'admin:fs_set_stext' }, { text: toSmallCaps('START PHOTO'), callback_data: 'admin:fs_set_sphoto' }],
+      ...(s.startPhoto ? [[{ text: toSmallCaps('REMOVE PHOTO'), callback_data: 'admin:fs_del_sphoto' }]] : []),
       [{ text: toSmallCaps('BACK'), callback_data: 'admin:fs_settings' }]
     ];
   } else if (cfgType === 'fsub') {
@@ -720,14 +764,47 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     });
   } else if (action === 'fs_settings') {
     const s = await getSettings();
-    const dbChannel = s.dbChannelId || 'Not set';
-    const text = `<b>Filestore Settings</b>\n\nConfigure your main bot settings using given categories below.\n\nDB Channel: <code>${esc(dbChannel)}</code>`;
+    const envDb = (process.env.TELEGRAM_DB_CHANNEL_ID || '').trim();
+    const dbChannel = envDb || s.dbChannelId || 'Not set';
+    const text = `<b>Bot Settings</b>\n\nConfigure your bot settings using the categories below.\n\n• <b>DB Channel:</b> <code>${esc(dbChannel)}</code> <i>(${envDb ? 'Environment' : 'Database'})</i>`;
     const buttons = [
-      [{ text: toSmallCaps('START MSG'), callback_data: 'admin:fs_cfg:start' }, { text: toSmallCaps('FORCE SUB'), callback_data: 'admin:fs_cfg:fsub' }],
-      [{ text: toSmallCaps('ACCESS TOKEN'), callback_data: 'admin:fs_cfg:tkn' }, { text: toSmallCaps('DB CHANNEL'), callback_data: 'admin:fs_set_db' }],
+      [{ text: toSmallCaps('Start Message'), callback_data: 'admin:fs_cfg:start' }, { text: toSmallCaps('Force Sub'), callback_data: 'admin:fs_cfg:fsub' }],
+      [{ text: toSmallCaps('Access Token'), callback_data: 'admin:fs_cfg:tkn' }, { text: toSmallCaps('Banners & Images'), callback_data: 'admin:banners_mgmt' }],
       ...navButtons('admin:dashboard')
     ];
     await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  } else if (action === 'banners_mgmt') {
+    await renderBannersMgmt(chatId, messageId);
+    return res.status(200).send('OK');
+  } else if (action.startsWith('set_banner:')) {
+    const bannerKey = action.split(':')[1];
+    const bannerLabels = {
+      startPhoto: 'Start Menu Banner',
+      bannerFsub: 'Force-Sub Gate Banner',
+      bannerVerify: 'Token Verification Banner',
+      bannerDelivery: 'Batch Delivery Banner',
+      bannerProfile: 'User Profile (/me) Banner',
+    };
+    const label = bannerLabels[bannerKey] || 'Banner';
+
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: bannerKey, expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+
+    await editTelegramMessage(chatId, messageId,
+      `🖼 <b>Set ${esc(label)}</b>\n\n` +
+      `Please send or forward the <b>photo</b> or <b>image link (URL)</b> you want to display for this screen.\n\n` +
+      `Send /cancel to abort.`,
+      { inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]] }
+    );
+  } else if (action.startsWith('del_banner:')) {
+    const bannerKey = action.split(':')[1];
+    await updateSettings({ [bannerKey]: null });
+    await answerCallbackQuery(cq.id, 'Banner removed.');
+    await renderBannersMgmt(chatId, messageId);
+    return res.status(200).send('OK');
   } else if (action.startsWith('fs_cfg:')) {
     const cfgType = action.split(':')[1];
     await renderFsCfg(chatId, messageId, cfgType);
@@ -828,7 +905,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       { upsert: true }
     );
     await editTelegramMessage(chatId, messageId, `📝 <b>Set Main Bot Start Text</b>\n\nYou can use HTML tags and placeholders:\n• <code>{mention}</code> : mention user\n• <code>{first_name}</code> : user first name\n• <code>{last_name}</code> : user last name\n\nPlease send the text now.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
     });
   } else if (action === 'fs_set_sphoto') {
     await sessions.updateOne(
@@ -837,8 +914,13 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       { upsert: true }
     );
     await editTelegramMessage(chatId, messageId, `🖼 <b>Set Main Bot Start Photo</b>\n\nPlease send or forward the photo you want to use.`, {
-      inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
     });
+  } else if (action === 'fs_del_sphoto') {
+    await updateSettings({ startPhoto: null });
+    await answerCallbackQuery(cq.id, 'Start photo removed.');
+    await renderFsCfg(chatId, messageId, 'start');
+    return res.status(200).send('OK');
   } else if (action === 'fs_set_tut') {
     await sessions.updateOne(
       { _id: `admin:waiting_setting:${chatId}` },

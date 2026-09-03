@@ -294,6 +294,31 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     return res.status(200).send('OK');
   }
 
+  if (/^\/me$/i.test(rawText.trim())) {
+    const cs = await getSettings();
+    const botUsername = await getBotUsername();
+    const { getReferralStats, hasPremium } = await import('../bot-users.js');
+    const refs = await getReferralStats(chatId);
+    const premium = await hasPremium(chatId);
+    let premiumText = 'Standard';
+    if (premium) {
+      const users = await getCollection('users');
+      const user = await users.findOne({ _id: String(chatId) });
+      const globalTtl = user && user.premiumUntil ? Math.round((new Date(user.premiumUntil).getTime() - Date.now()) / 1000) : 0;
+      premiumText = `Premium (${globalTtl > 0 ? Math.ceil(globalTtl / (24 * 3600)) : 'Lifetime'} days left)`;
+    }
+    const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
+    const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\nStatus: <b>${premiumText}</b>\nReferrals: <b>${refs}</b>\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n<i>Share this link to earn Premium access! 3 referrals = 24h Premium.</i>`;
+
+    if (cs?.bannerProfile) {
+      const { sendTelegramPhoto } = await import('../bot-common.js');
+      await sendTelegramPhoto(chatId, cs.bannerProfile, text);
+    } else {
+      await sendTelegramMessage(chatId, text);
+    }
+    return res.status(200).send('OK');
+  }
+
   if (/^\/setting/i.test(rawText) && admin) {
     const { getAdminDashboardKeyboard } = await import('../bot-helpers.js');
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;

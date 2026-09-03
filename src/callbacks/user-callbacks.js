@@ -135,9 +135,23 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
     const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
     const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\nStatus: <b>${premiumText}</b>\nReferrals: <b>${refs}</b>\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n<i>Share this link to earn Premium access! 3 referrals = 24h Premium.</i>`;
-    await editTelegramMessage(chatId, messageId, text, {
-      inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
-    });
+
+    if (cs.bannerProfile) {
+      const { editTelegramCaption, deleteTelegramMessage, sendTelegramPhoto } = await import('../bot-common.js');
+      const capRes = await editTelegramCaption(chatId, messageId, text, {
+        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
+      });
+      if (!capRes.ok) {
+        await deleteTelegramMessage(chatId, messageId).catch(() => {});
+        await sendTelegramPhoto(chatId, cs.bannerProfile, text, {
+          inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
+        });
+      }
+    } else {
+      await editTelegramMessage(chatId, messageId, text, {
+        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
+      });
+    }
   } else if (action === 'help') {
     const helpText = `<b>Bot Help & Guide</b>\n\n- <b>Getting Files:</b> Click the links provided to you.\n- <b>Referrals:</b> Share your link from /me to earn Premium.\n- <b>Premium:</b> Bypass verification and support the bot.\n\nNeed more help? Contact our support.`;
     await editTelegramMessage(chatId, messageId, helpText, {
@@ -184,7 +198,17 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     const styledButtons = await buildStartMenuButtons(admin);
-    await editTelegramMessage(chatId, messageId, startMsg, { inline_keyboard: styledButtons });
+
+    if (s.startPhoto) {
+      const { editTelegramCaption, deleteTelegramMessage, sendTelegramPhoto } = await import('../bot-common.js');
+      const capRes = await editTelegramCaption(chatId, messageId, startMsg, { inline_keyboard: styledButtons });
+      if (!capRes.ok) {
+        await deleteTelegramMessage(chatId, messageId).catch(() => {});
+        await sendTelegramPhoto(chatId, s.startPhoto, startMsg, { inline_keyboard: styledButtons });
+      }
+    } else {
+      await editTelegramMessage(chatId, messageId, startMsg, { inline_keyboard: styledButtons });
+    }
   }
   return res.status(200).send('OK');
 }

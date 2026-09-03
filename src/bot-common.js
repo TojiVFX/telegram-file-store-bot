@@ -657,6 +657,30 @@ export async function sendTelegramPhoto(chatId, photoUrl, caption, replyMarkup =
   } catch (err) { return { ok: false, reason: err.message }; }
 }
 
+export async function editTelegramCaption(chatId, messageId, caption, replyMarkup = null) {
+  const token = getToken();
+  if (!token) return { ok: false };
+  try {
+    const styledCaption = toSmallCapsSafe(caption);
+    const body = {
+      chat_id: chatId,
+      message_id: messageId,
+      caption: styledCaption,
+      parse_mode: 'HTML',
+    };
+    if (replyMarkup) body.reply_markup = formatReplyMarkup(replyMarkup);
+    const res = await fetch(`https://api.telegram.org/bot${token}/editMessageCaption`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    return { ok: res.ok, messageId: data.result?.message_id, detail: data };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
 export async function editTelegramMessage(chatId, messageId, text, replyMarkup = null, disablePreview = true) {
   const token = getToken();
   if (!token) return { ok: false };
@@ -670,8 +694,41 @@ export async function editTelegramMessage(chatId, messageId, text, replyMarkup =
     const res = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
-    return { ok: res.ok };
-  } catch { return { ok: false }; }
+    const data = await res.json();
+
+    if (res.ok) return { ok: true, messageId: data.result?.message_id || messageId };
+
+    const desc = (data.description || '').toLowerCase();
+
+    // Already identical text/markup
+    if (desc.includes('message is not modified')) {
+      return { ok: true, messageId };
+    }
+
+    // Photo / media message: Telegram cannot edit text of a photo message with editMessageText
+    if (desc.includes('there is no text in the message to edit')) {
+      // 1. If styledText fits in caption (<= 1024 chars), edit the photo caption
+      if (styledText.length <= 1024) {
+        const captionRes = await editTelegramCaption(chatId, messageId, text, replyMarkup);
+        if (captionRes.ok) return { ok: true, messageId };
+      }
+
+      // 2. If caption edit fails or text exceeds 1024 chars: delete the photo message and send clean text message
+      await deleteTelegramMessage(chatId, messageId).catch(() => {});
+      const sendRes = await sendTelegramMessage(chatId, text, replyMarkup, false, 2, disablePreview);
+      return { ok: sendRes.ok, messageId: sendRes.messageId };
+    }
+
+    // If message cannot be edited or was deleted, fallback to sending a new message
+    if (desc.includes('message to edit not found') || desc.includes("message can't be edited")) {
+      const sendRes = await sendTelegramMessage(chatId, text, replyMarkup, false, 2, disablePreview);
+      return { ok: sendRes.ok, messageId: sendRes.messageId };
+    }
+
+    return { ok: false, detail: data };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
 }
 
 export async function deleteTelegramMessage(chatId, messageId) {

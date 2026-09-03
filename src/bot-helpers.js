@@ -132,9 +132,9 @@ export function getAdminDashboardKeyboard() {
   return {
     inline_keyboard: [
       [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
-      [{ text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }, { text: toSmallCaps('File Control'), callback_data: 'admin:file_mgmt' }],
-      [{ text: toSmallCaps('Security & Auto Delete'), callback_data: 'admin:auto_del_mgmt' }, { text: toSmallCaps('Settings'), callback_data: 'admin:fs_settings' }],
-      [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
+      [{ text: toSmallCaps('File Management'), callback_data: 'admin:file_mgmt' }, { text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }],
+      [{ text: toSmallCaps('Security & Auto Delete'), callback_data: 'admin:auto_del_mgmt' }, { text: toSmallCaps('Banners & Images'), callback_data: 'admin:banners_mgmt' }],
+      [{ text: toSmallCaps('Bot Settings'), callback_data: 'admin:fs_settings' }, { text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
     ]
   };
 }
@@ -349,7 +349,7 @@ export async function buildForceSubscribeGate(chatId, payload = '') {
 
   buttons.push([{ text: toSmallCaps('Try Again'), callback_data: `sub_check:${payload || ''}` }]);
 
-  return { text, replyMarkup: { inline_keyboard: buttons } };
+  return { text, replyMarkup: { inline_keyboard: buttons }, photo: s?.bannerFsub || null };
 }
 
 export async function checkSubscription(chatId, userId) {

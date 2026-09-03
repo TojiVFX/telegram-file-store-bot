@@ -3,7 +3,7 @@ import {
   getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours
 } from '../bot-common.js';
 import {
-  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard
+  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard, buildStartMenuButtons
 } from '../bot-helpers.js';
 import { getBatch, getFile, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral, getAdminId } from '../bot-users.js';
@@ -93,7 +93,11 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
 
       buttons.push([{ text: toSmallCaps('Try Again'), callback_data: `sub_check:${payload || ''}` }]);
 
-      await sendTelegramMessage(chatId, customMsg, { inline_keyboard: buttons });
+      if (s?.bannerFsub) {
+        await sendTelegramPhoto(chatId, s.bannerFsub, customMsg, { inline_keyboard: buttons });
+      } else {
+        await sendTelegramMessage(chatId, customMsg, { inline_keyboard: buttons });
+      }
       return res.status(200).send('OK');
     }
 
@@ -198,7 +202,8 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short }]] };
         const text = `<blockquote>🔐 <b>Verification Required</b>\n\nComplete the link below within <b>${VERIFY_LINK_TTL_LABEL}</b> to access your requested file(s). Once verified, your access will be valid for <b>${validityHours} hours</b>.</blockquote>`;
         const protect = s?.protectContent === '1';
-        if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
+        if (s?.bannerVerify) await sendTelegramPhoto(chatId, s.bannerVerify, text, kb, protect);
+        else if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
         else await sendTelegramMessage(chatId, text, kb, protect);
         return res.status(200).send('OK');
       }
@@ -239,7 +244,9 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       `────────────────────────\n` +
       `⏳ <i>Delivering files... [▒▒▒▒▒▒▒▒▒▒] 0%</i>`;
 
-    const progressMsg = await sendTelegramMessage(chatId, summaryText);
+    const progressMsg = s?.bannerDelivery
+      ? await sendTelegramPhoto(chatId, s.bannerDelivery, summaryText)
+      : await sendTelegramMessage(chatId, summaryText);
 
     let lastProgressPct = 0;
     await deliverBatch(chatId, b, s?.protectContent === '1', payload, async (current, total) => {
@@ -335,14 +342,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
   }
   if (s.startPhoto) startPhoto = s.startPhoto;
 
-  const buttons = [
-    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
-  ];
-  if (admin) {
-    buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
-  }
-
-  const styledButtons = buttons.map(row => row.map(btn => ({ ...btn, text: toSmallCaps(btn.text) })));
+  const styledButtons = await buildStartMenuButtons(admin);
 
   if (startPhoto) {
     await sendTelegramPhoto(chatId, startPhoto, startMsg, { inline_keyboard: styledButtons });

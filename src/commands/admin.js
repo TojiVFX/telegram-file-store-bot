@@ -178,14 +178,24 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
     let value = rawText;
     if (waitingFor === 'tutorialFileId') value = message.video?.file_id || message.document?.file_id;
-    if (waitingFor === 'startPhoto') value = message.photo?.[message.photo.length - 1]?.file_id;
 
-    if (!value) return res.status(200).send('OK');
+    const isBannerSetting = ['startPhoto', 'bannerFsub', 'bannerVerify', 'bannerDelivery', 'bannerProfile'].includes(waitingFor);
+    if (isBannerSetting) {
+      value = message.photo?.[message.photo.length - 1]?.file_id ||
+              (message.document?.mime_type?.startsWith('image/') ? message.document.file_id : null) ||
+              (rawText && rawText.startsWith('http') ? rawText.trim() : null);
+    }
+
+    if (!value) {
+      await sendTelegramMessage(chatId, `❌ <b>Invalid input.</b> Please send a valid ${isBannerSetting ? 'photo or image link' : 'value'}, or send /cancel to abort.`);
+      return res.status(200).send('OK');
+    }
     await updateSettings({ [waitingFor]: value });
     await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
 
     let backCb = 'admin:fs_settings';
-    if (['startText', 'startPhoto'].includes(waitingFor)) backCb = 'admin:fs_cfg:start';
+    if (isBannerSetting) backCb = 'admin:banners_mgmt';
+    else if (['startText'].includes(waitingFor)) backCb = 'admin:fs_cfg:start';
     else if (['forceSubscribeChannels', 'forceSubscribeMsg'].includes(waitingFor)) backCb = 'admin:fs_cfg:fsub';
     else if (['shortenerUrl', 'shortenerKey', 'backupShortenerUrl', 'backupShortenerKey', 'validityHours', 'tutorialFileId'].includes(waitingFor)) backCb = 'admin:fs_cfg:tkn';
 
