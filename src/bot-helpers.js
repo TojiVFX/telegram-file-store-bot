@@ -203,14 +203,22 @@ export async function resolveUser(input) {
 }
 
 // ─── copyMessage ──────────────────────────────────────────────────────────────
-export async function copyMessage(toChatId, fromChatId, msgId, protectContent = false) {
+export async function copyMessage(toChatId, fromChatId, msgId, protectContent = false, replyMarkup = null) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
+    const body = {
+      chat_id: toChatId,
+      from_chat_id: fromChatId,
+      message_id: msgId,
+      protect_content: protectContent,
+    };
+    if (replyMarkup) body.reply_markup = replyMarkup;
+
     const response = await fetch(`https://api.telegram.org/bot${token}/copyMessage`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: toChatId, from_chat_id: fromChatId, message_id: msgId, protect_content: protectContent }),
+      body: JSON.stringify(body),
     });
     const data = await response.json();
     if (!response.ok) {
@@ -435,13 +443,16 @@ export async function showLoadingAnimation(chatId) {
 }
 
 // ─── deliverBatch ─────────────────────────────────────────────────────────────
-export async function deliverBatch(toChatId, batch, protectContent = false) {
+export async function deliverBatch(toChatId, batch, protectContent = false, batchCode = null, onProgress = null) {
   const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId } = batch;
   const sentMessageIds = [];
   let failedCount = 0;
 
+  const totalCount = Array.isArray(dbMessageIds)
+    ? dbMessageIds.length
+    : (dbFirstMsgId && dbLastMsgId ? dbLastMsgId - dbFirstMsgId + 1 : 0);
+
   if (Array.isArray(dbMessageIds)) {
-    const count = dbMessageIds.length;
     for (const msgId of dbMessageIds) {
       const res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
       if (res?.ok && res?.messageId) {
@@ -449,11 +460,13 @@ export async function deliverBatch(toChatId, batch, protectContent = false) {
       } else {
         failedCount++;
       }
-      if (count > 5) await new Promise((r) => setTimeout(r, 50));
+      if (typeof onProgress === 'function') {
+        await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+      }
+      if (totalCount > 3) await new Promise((r) => setTimeout(r, 60));
     }
   }
   else if (dbFirstMsgId && dbLastMsgId) {
-    const count = dbLastMsgId - dbFirstMsgId + 1;
     for (let msgId = dbFirstMsgId; msgId <= dbLastMsgId; msgId++) {
       const res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
       if (res?.ok && res?.messageId) {
@@ -461,7 +474,10 @@ export async function deliverBatch(toChatId, batch, protectContent = false) {
       } else {
         failedCount++;
       }
-      if (count > 5) await new Promise((r) => setTimeout(r, 50));
+      if (typeof onProgress === 'function') {
+        await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+      }
+      if (totalCount > 3) await new Promise((r) => setTimeout(r, 60));
     }
   }
 
@@ -472,12 +488,12 @@ export async function deliverBatch(toChatId, batch, protectContent = false) {
   }
 
   if (sentMessageIds.length > 0) {
-    await scheduleAutoDelete(toChatId, sentMessageIds);
+    await scheduleAutoDelete(toChatId, sentMessageIds, batchCode);
   }
   return sentMessageIds;
 }
 
-export async function scheduleAutoDelete(chatId, messageIds) {
+export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = null) {
   if (!messageIds || (Array.isArray(messageIds) && messageIds.length === 0)) return;
 
   const s = await getSettings();
@@ -495,7 +511,14 @@ export async function scheduleAutoDelete(chatId, messageIds) {
 
   const timerLabel = formatTimerLabel(timerSeconds);
 
-  const warnMsg = await sendTelegramMessage(chatId, `⚠️ <b>Note:</b> These file(s) will be automatically deleted in <b>${timerLabel}</b>!`);
+  const warnText = `⚠️ <b>Note:</b> These file(s) will be automatically deleted in <b>${timerLabel}</b>!\n\n💡 <i>Forward them to your <b>Saved Messages</b> to keep them permanently.</i>`;
+  const warnKb = {
+    inline_keyboard: [
+      [{ text: toSmallCaps('How to Save'), callback_data: 'user:save_tip' }]
+    ]
+  };
+
+  const warnMsg = await sendTelegramMessage(chatId, warnText, warnKb);
   if (warnMsg?.ok && warnMsg?.messageId) ids.push(warnMsg.messageId);
 
   // Persist to MongoDB so deletions survive Render restarts / redeployments
@@ -504,6 +527,7 @@ export async function scheduleAutoDelete(chatId, messageIds) {
     await autoDeletes.insertOne({
       chatId,
       messageIds: ids,
+      fileOrBatchCode: fileOrBatchCode || null,
       deleteAt: new Date(Date.now() + ms),
       createdAt: new Date(),
     });
@@ -520,6 +544,24 @@ export async function scheduleAutoDelete(chatId, messageIds) {
       const autoDeletes = await getCollection('auto_deletes');
       await autoDeletes.deleteMany({ chatId, messageIds: { $in: ids } });
     } catch {}
+
+    if (fileOrBatchCode) {
+      try {
+        const botUsername = await getBotUsername();
+        const reGetUrl = `https://t.me/${botUsername}?start=${fileOrBatchCode}`;
+        await sendTelegramMessage(
+          chatId,
+          `🗑️ <b>Files Deleted</b>\n\nYour file(s) have been deleted automatically according to the auto-delete timer.`,
+          {
+            inline_keyboard: [
+              [{ text: toSmallCaps('Get File Again'), url: reGetUrl }]
+            ]
+          }
+        );
+      } catch (err) {
+        log('error', 'Failed to send auto-delete follow-up', { errorMessage: err.message });
+      }
+    }
   }, ms);
 }
 
@@ -536,6 +578,22 @@ export async function processDueAutoDeletes() {
       if (job.chatId && Array.isArray(job.messageIds)) {
         for (const msgId of job.messageIds) {
           await deleteTelegramMessage(job.chatId, msgId).catch(() => {});
+        }
+
+        if (job.fileOrBatchCode) {
+          try {
+            const botUsername = await getBotUsername();
+            const reGetUrl = `https://t.me/${botUsername}?start=${job.fileOrBatchCode}`;
+            await sendTelegramMessage(
+              job.chatId,
+              `🗑️ <b>Files Deleted</b>\n\nYour file(s) have been deleted automatically according to the auto-delete timer.`,
+              {
+                inline_keyboard: [
+                  [{ text: toSmallCaps('Get File Again'), url: reGetUrl }]
+                ]
+              }
+            );
+          } catch {}
         }
       }
       await autoDeletes.deleteOne({ _id: job._id }).catch(() => {});

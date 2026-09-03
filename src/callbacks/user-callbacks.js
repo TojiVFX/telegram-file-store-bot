@@ -3,6 +3,15 @@ import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate } from '
 import { generateTempToken, revokeTempToken, listActiveTempTokens, formatDuration } from '../filestore.js';
 
 export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin, res) {
+  if (action === 'save_tip') {
+    await answerCallbackQuery(
+      cq.id,
+      '💡 How to keep your files:\n\nTap and hold any file message, select "Forward", then choose "Saved Messages". You will keep it permanently even after auto-delete!',
+      true
+    );
+    return res.status(200).send('OK');
+  }
+
   // Answer instantly to dismiss the button loading spinner immediately
   answerCallbackQuery(cq.id).catch(() => {});
 

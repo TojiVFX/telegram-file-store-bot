@@ -22,6 +22,23 @@ const VERIFY_LINK_TTL_LABEL = '1 hour';
 // the admin with one message per attempt.
 const SHORTENER_ALERT_DEDUPE_SECONDS = 900; // 15 minutes
 
+const requestCooldownMap = new Map();
+const COOLDOWN_MS = 10000; // 10 seconds
+
+function checkRequestCooldown(userId) {
+  const lastTime = requestCooldownMap.get(String(userId));
+  const now = Date.now();
+  if (lastTime && (now - lastTime) < COOLDOWN_MS) {
+    const remainingSec = Math.ceil((COOLDOWN_MS - (now - lastTime)) / 1000);
+    return { limited: true, remainingSec };
+  }
+  return { limited: false, remainingSec: 0 };
+}
+
+function updateRequestCooldown(userId) {
+  requestCooldownMap.set(String(userId), Date.now());
+}
+
 async function alertAdminShortenerDown() {
   const adminId = getAdminId();
   if (!adminId) return;
@@ -46,6 +63,18 @@ async function alertAdminShortenerDown() {
 export async function handleStartPayload(chatId, payload, message, admin, res) {
   const botUsername = await getBotUsername();
   const sessions = await getCollection('sessions');
+
+  // Anti-flood: 10-second cooldown on file and batch requests (skip for admin)
+  if (payload && (payload.startsWith('file_') || payload.startsWith('batch_'))) {
+    if (!admin) {
+      const cd = checkRequestCooldown(chatId);
+      if (cd.limited) {
+        await sendTelegramMessage(chatId, `⏳ <b>Please Wait</b>\n\nYou can request another file in <b>${cd.remainingSec}s</b> to prevent server flood.`);
+        return res.status(200).send('OK');
+      }
+      updateRequestCooldown(chatId);
+    }
+  }
 
   // 1. Force Subscribe Check (skip if admin)
   if (!admin) {
@@ -195,19 +224,44 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     }).catch(() => {});
     incrementAccessCount(payload);
 
-    const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
-    const steps = [
-      { p: 30, b: '[███▒▒▒▒▒▒▒]' },
-      { p: 70, b: '[███████▒▒▒]' },
-      { p: 100, b: '[██████████]' }
-    ];
-    for (const step of steps) {
-      await new Promise(r => setTimeout(r, 400));
-      await editTelegramMessage(chatId, loadingMsg.messageId, `⏳ <b>Files are loading...</b>\n\n${step.b} ${step.p}%`);
-    }
     const s = await getSettings();
-    await deliverBatch(chatId, b, s?.protectContent === '1');
-    await deleteTelegramMessage(chatId, loadingMsg.messageId);
+    const isAutoDelete = s?.autoDeleteEnabled === '1';
+    const timerSec = parseInt(s?.autoDeleteTimer, 10) || 300;
+    const timerLabel = timerSec < 60 ? `${timerSec} seconds` : timerSec < 3600 ? `${Math.round(timerSec / 60)} minute(s)` : `${Math.round(timerSec / 3600)} hour(s)`;
+
+    const totalFiles = Array.isArray(b.dbMessageIds)
+      ? b.dbMessageIds.length
+      : (b.dbFirstMsgId && b.dbLastMsgId ? b.dbLastMsgId - b.dbFirstMsgId + 1 : 1);
+
+    const summaryText = `📦 <b>Batch Delivery</b>\n\n` +
+      `• Total Files: <b>${totalFiles}</b>\n` +
+      (isAutoDelete ? `• Auto-Delete: <b>In ${timerLabel}</b>\n` : '') +
+      `────────────────────────\n` +
+      `⏳ <i>Delivering files... [▒▒▒▒▒▒▒▒▒▒] 0%</i>`;
+
+    const progressMsg = await sendTelegramMessage(chatId, summaryText);
+
+    let lastProgressPct = 0;
+    await deliverBatch(chatId, b, s?.protectContent === '1', payload, async (current, total) => {
+      const pct = Math.min(100, Math.round((current / total) * 100));
+      if (pct >= lastProgressPct + 25 || pct === 100) {
+        lastProgressPct = pct;
+        const filled = Math.round((pct / 100) * 10);
+        const bar = '█'.repeat(filled) + '▒'.repeat(10 - filled);
+        if (progressMsg?.messageId) {
+          const updatedSummary = `📦 <b>Batch Delivery</b>\n\n` +
+            `• Total Files: <b>${totalFiles}</b>\n` +
+            (isAutoDelete ? `• Auto-Delete: <b>In ${timerLabel}</b>\n` : '') +
+            `────────────────────────\n` +
+            `⏳ <i>Delivering files... ${bar} ${pct}% (${current}/${total})</i>`;
+          await editTelegramMessage(chatId, progressMsg.messageId, updatedSummary).catch(() => {});
+        }
+      }
+    });
+
+    if (progressMsg?.messageId) {
+      await deleteTelegramMessage(chatId, progressMsg.messageId).catch(() => {});
+    }
     return res.status(200).send('OK');
   }
 
@@ -234,17 +288,6 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       }).catch(() => {});
       incrementAccessCount(payload);
 
-      const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Files are loading...</b>\n\n[▒▒▒▒▒▒▒▒▒▒] 0%`);
-      const steps = [
-        { p: 30, b: '[███▒▒▒▒▒▒▒]' },
-        { p: 70, b: '[███████▒▒▒]' },
-        { p: 100, b: '[██████████]' }
-      ];
-      for (const step of steps) {
-        await new Promise(r => setTimeout(r, 400));
-        await editTelegramMessage(chatId, loadingMsg.messageId, `⏳ <b>Files are loading...</b>\n\n${step.b} ${step.p}%`);
-      }
-
       const { scheduleAutoDelete } = await import('../bot-helpers.js');
       let sentMsgId = null;
 
@@ -262,12 +305,10 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       }
 
       if (sentMsgId) {
-        await scheduleAutoDelete(chatId, [sentMsgId]);
+        await scheduleAutoDelete(chatId, [sentMsgId], payload);
       } else {
         await sendTelegramMessage(chatId, `❌ <b>File Unavailable</b>\n\nThis file is no longer available in storage (it may have been deleted by an administrator).`);
       }
-
-      await deleteTelegramMessage(chatId, loadingMsg.messageId);
     } else {
       await sendTelegramMessage(chatId, `❌ Not found.`);
     }

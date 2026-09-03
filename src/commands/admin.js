@@ -241,20 +241,57 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     if (waitingAction === 'broadcast') {
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
 
-      const { broadcastWithProgress, getUserStats } = await import('../bot-users.js');
+      const { getUserStats } = await import('../bot-users.js');
       const stats = await getUserStats();
-      const statusMsg = await sendTelegramMessage(chatId, `<b>Starting Broadcast...</b>\n\nTotal Users: <b>${stats.totalUsers}</b>\n\n<i>Initializing queue...</i>`, {
-        inline_keyboard: [[{ text: toSmallCaps('Cancel Broadcast'), callback_data: 'admin:broadcast_cancel' }]]
-      });
 
-      broadcastWithProgress({
-        text: rawText,
-        adminChatId: chatId,
-        statusMsgId: statusMsg?.messageId
-      }).then(res => {
-        logHistory(`broadcast_tg: ${res.sent}/${res.total} users`, 'tg').catch(() => {});
-      }).catch(err => {
-        log('error', 'broadcastWithProgress error', { errorMessage: err.message });
+      // Inspect message to detect media, forward origin, and attached inline buttons
+      const isForward = !!(message.forward_origin || message.forward_from || message.forward_from_chat);
+      let mediaType = 'Text';
+      if (message.photo) mediaType = 'Photo';
+      else if (message.video) mediaType = 'Video';
+      else if (message.document) mediaType = 'Document';
+      else if (message.audio) mediaType = 'Audio';
+      else if (message.animation) mediaType = 'Animation / GIF';
+      else if (message.sticker) mediaType = 'Sticker';
+      else if (message.voice) mediaType = 'Voice Note';
+
+      const captionOrText = message.caption || message.text || rawText || '';
+      const hasButtons = !!message.reply_markup;
+
+      // Save draft message reference for preview and confirmation
+      await sessions.updateOne(
+        { _id: `admin:broadcast_draft:${chatId}` },
+        {
+          $set: {
+            fromChatId: chatId,
+            messageId: message.message_id,
+            mediaType,
+            isForward,
+            hasButtons,
+            captionOrText,
+            replyMarkup: message.reply_markup || null,
+            expiresAt: new Date(Date.now() + 600 * 1000)
+          }
+        },
+        { upsert: true }
+      );
+
+      const previewCard = `📢 <b>Broadcast Preview</b>\n\n` +
+        `• <b>Target Audience:</b> <b>${stats.totalUsers}</b> registered users\n` +
+        `• <b>Type:</b> <b>${mediaType}${isForward ? ' (Forwarded)' : ''}</b>\n` +
+        `• <b>Inline Buttons:</b> <b>${hasButtons ? 'Yes (Preserved)' : 'None'}</b>\n` +
+        `• <b>Open Graph:</b> <b>Allowed</b>\n\n` +
+        (captionOrText ? `<b>Content:</b>\n────────────────────\n${captionOrText.slice(0, 300)}${captionOrText.length > 300 ? '...' : ''}\n────────────────────\n\n` : '') +
+        `You can send a test preview to your private chat first to check formatting before delivering to all users.`;
+
+      await sendTelegramMessage(chatId, previewCard, {
+        inline_keyboard: [
+          [{ text: toSmallCaps('Send Test Preview to Me'), callback_data: 'admin:broadcast_test' }],
+          [
+            { text: toSmallCaps('Confirm & Send to All'), callback_data: 'admin:broadcast_confirm' },
+            { text: toSmallCaps('Cancel'), callback_data: 'admin:dashboard' }
+          ]
+        ]
       });
 
       return res.status(200).send('OK');

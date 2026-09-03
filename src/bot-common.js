@@ -550,14 +550,14 @@ export function parseValidityHours(raw, fallback = 24) {
 }
 
 // ─── Telegram API helpers ─────────────────────────────────────────────────────
-export async function sendTelegramMessage(chatId, text, replyMarkup = null, protectContent = false, maxRetries = 2) {
+export async function sendTelegramMessage(chatId, text, replyMarkup = null, protectContent = false, maxRetries = 2, disableWebPagePreview = true) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
     const styledText = toSmallCapsSafe(text);
     const body = {
       chat_id: chatId, text: styledText, parse_mode: 'HTML',
-      disable_web_page_preview: true, protect_content: protectContent,
+      disable_web_page_preview: disableWebPagePreview, protect_content: protectContent,
     };
     if (replyMarkup) body.reply_markup = formatReplyMarkup(replyMarkup);
     const res  = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -568,7 +568,7 @@ export async function sendTelegramMessage(chatId, text, replyMarkup = null, prot
     if (res.status === 429 && maxRetries > 0) {
       const waitSec = data?.parameters?.retry_after || 1;
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
-      return sendTelegramMessage(chatId, text, replyMarkup, protectContent, maxRetries - 1);
+      return sendTelegramMessage(chatId, text, replyMarkup, protectContent, maxRetries - 1, disableWebPagePreview);
     }
     return { ok: res.ok, messageId: data.result?.message_id, detail: data };
   } catch (err) {

@@ -322,7 +322,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       { $set: { val: 'broadcast', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `<b>Broadcast Message</b>\n\nTotal Registered Users: <b>${s.totalUsers}</b>\n\nPlease send the message you want to broadcast to all users.\n\nHTML is supported.\n\nSend /cancel to abort.`, {
+    await editTelegramMessage(chatId, messageId, `<b>Broadcast Message</b>\n\nTotal Registered Users: <b>${s.totalUsers}</b>\n\nPlease send or forward any message you want to broadcast to all users.\n\nSupports: text, photos, videos, documents, audio, animations, stickers, forwarded channel posts, inline buttons, and web link previews.\n\nSend /cancel to abort.`, {
       inline_keyboard: navButtons('admin:dashboard')
     });
     await logHistory('broadcast_prompt', 'tg');
@@ -330,6 +330,54 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     const { cancelBroadcast } = await import('../bot-users.js');
     cancelBroadcast();
     await answerCallbackQuery(cq.id, 'Broadcast cancellation requested.', true);
+    return res.status(200).send('OK');
+  } else if (action === 'broadcast_test') {
+    const draftDoc = await sessions.findOne({ _id: `admin:broadcast_draft:${chatId}` });
+    if (!draftDoc) {
+      await answerCallbackQuery(cq.id, 'Draft expired or not found.', true);
+      return res.status(200).send('OK');
+    }
+
+    if (draftDoc.fromChatId && draftDoc.messageId) {
+      const { copyMessage } = await import('../bot-helpers.js');
+      const copyRes = await copyMessage(chatId, draftDoc.fromChatId, draftDoc.messageId, false, draftDoc.replyMarkup);
+      if (copyRes?.ok) {
+        await answerCallbackQuery(cq.id, 'Preview message sent below!');
+      } else {
+        await answerCallbackQuery(cq.id, `Preview failed: ${copyRes?.reason || 'unknown'}`, true);
+      }
+    } else if (draftDoc.text || draftDoc.captionOrText) {
+      await sendTelegramMessage(chatId, draftDoc.text || draftDoc.captionOrText, draftDoc.replyMarkup, false, 2, false);
+      await answerCallbackQuery(cq.id, 'Preview message sent below!');
+    }
+    return res.status(200).send('OK');
+  } else if (action === 'broadcast_confirm') {
+    const draftDoc = await sessions.findOne({ _id: `admin:broadcast_draft:${chatId}` });
+    if (!draftDoc) {
+      await answerCallbackQuery(cq.id, 'Draft expired or not found.', true);
+      return res.status(200).send('OK');
+    }
+
+    const { fromChatId, messageId: srcMsgId, replyMarkup, captionOrText, text: legacyText } = draftDoc;
+    await sessions.deleteOne({ _id: `admin:broadcast_draft:${chatId}` });
+
+    const { broadcastWithProgress, getUserStats } = await import('../bot-users.js');
+    const s = await getUserStats();
+    await editTelegramMessage(chatId, messageId, `<b>Starting Broadcast...</b>\n\nTotal Users: <b>${s.totalUsers}</b>\n\n<i>Initializing queue...</i>`, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel Broadcast'), callback_data: 'admin:broadcast_cancel' }]]
+    });
+    broadcastWithProgress({
+      text: captionOrText || legacyText,
+      fromChatId,
+      messageId: srcMsgId,
+      replyMarkup,
+      adminChatId: chatId,
+      statusMsgId: messageId
+    }).then(r => {
+      logHistory(`broadcast_tg: ${r.sent}/${r.total} users`, 'tg').catch(() => {});
+    }).catch(err => {
+      log('error', 'broadcastWithProgress error', { errorMessage: err.message });
+    });
     return res.status(200).send('OK');
   } else if (action === 'user_mgmt') {
     const text = `<b>User Management</b>\n\nManage users and access control:`;

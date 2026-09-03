@@ -91,7 +91,7 @@ export function cancelBroadcast() {
   broadcastCancelled = true;
 }
 
-export async function broadcastWithProgress({ text, adminChatId, statusMsgId = null }) {
+export async function broadcastWithProgress({ text = null, fromChatId = null, messageId = null, replyMarkup = null, adminChatId, statusMsgId = null }) {
   broadcastCancelled = false;
   try {
     const users = await getCollection('users');
@@ -115,6 +115,7 @@ export async function broadcastWithProgress({ text, adminChatId, statusMsgId = n
     const CHUNK = 20;
 
     const { editTelegramMessage, toSmallCaps } = await import('./bot-common.js');
+    const { copyMessage } = await import('./bot-helpers.js');
 
     for (let i = 0; i < ids.length; i += CHUNK) {
       if (broadcastCancelled) {
@@ -124,7 +125,14 @@ export async function broadcastWithProgress({ text, adminChatId, statusMsgId = n
 
       const chunk = ids.slice(i, i + CHUNK);
       const results = await Promise.allSettled(
-        chunk.map(id => sendTelegramMessage(id, text))
+        chunk.map(id => {
+          if (fromChatId && messageId) {
+            return copyMessage(id, fromChatId, messageId, false, replyMarkup);
+          } else {
+            // Allow Open Graph preview by passing disableWebPagePreview = false
+            return sendTelegramMessage(id, text, replyMarkup, false, 2, false);
+          }
+        })
       );
 
       for (let j = 0; j < results.length; j++) {
@@ -135,8 +143,9 @@ export async function broadcastWithProgress({ text, adminChatId, statusMsgId = n
           sent++;
         } else {
           failed++;
-          const errDetail = r.status === 'fulfilled' ? r.value?.detail : null;
-          if (errDetail?.error_code === 403 || (errDetail?.description || '').toLowerCase().includes('bot was blocked')) {
+          const errDetail = r.status === 'fulfilled' ? (r.value?.detail || r.value?.telegramError) : null;
+          const desc = ((r.status === 'fulfilled' ? (r.value?.reason || errDetail?.description) : '') || '').toLowerCase();
+          if (errDetail?.error_code === 403 || desc.includes('bot was blocked') || desc.includes('user is deactivated')) {
             blockedCount++;
             // Flag user as blocked
             users.updateOne({ _id: String(targetUserId) }, { $set: { isBlocked: true, lastBlockedAt: new Date() } }).catch(() => {});

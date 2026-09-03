@@ -236,16 +236,40 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
   if (/^\/broadcast\s+/i.test(rawText) && admin) {
     const t = rawText.split(/\s+/).slice(1).join(' ');
-    const { broadcastWithProgress, getUserStats } = await import('../bot-users.js');
+    const { getUserStats } = await import('../bot-users.js');
     const s = await getUserStats();
-    const statusMsg = await sendTelegramMessage(chatId, `<b>Starting Broadcast...</b>\n\nTotal Users: <b>${s.totalUsers}</b>\n\n<i>Initializing queue...</i>`, {
-      inline_keyboard: [[{ text: toSmallCaps('Cancel Broadcast'), callback_data: 'admin:broadcast_cancel' }]]
+
+    await sessions.updateOne(
+      { _id: `admin:broadcast_draft:${chatId}` },
+      {
+        $set: {
+          text: t,
+          captionOrText: t,
+          fromChatId: chatId,
+          messageId: message.message_id,
+          expiresAt: new Date(Date.now() + 600 * 1000)
+        }
+      },
+      { upsert: true }
+    );
+
+    const previewCard = `📢 <b>Broadcast Preview</b>\n\n` +
+      `<b>Target Audience:</b> <b>${s.totalUsers}</b> registered users\n\n` +
+      `<b>Message Content:</b>\n` +
+      `────────────────────\n` +
+      `${t}\n` +
+      `────────────────────\n\n` +
+      `You can send a test preview to your private chat first to check formatting before delivering to all users.`;
+
+    await sendTelegramMessage(chatId, previewCard, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Send Test Preview to Me'), callback_data: 'admin:broadcast_test' }],
+        [
+          { text: toSmallCaps('Confirm & Send to All'), callback_data: 'admin:broadcast_confirm' },
+          { text: toSmallCaps('Cancel'), callback_data: 'admin:dashboard' }
+        ]
+      ]
     });
-    broadcastWithProgress({
-      text: t,
-      adminChatId: chatId,
-      statusMsgId: statusMsg?.messageId
-    }).catch(() => {});
     return res.status(200).send('OK');
   }
 
