@@ -571,6 +571,61 @@ export async function registerWebhook(token, webhookUrl) {
     body: JSON.stringify(body),
   });
 }
+// ─── Health Monitoring ────────────────────────────────────────────────────────
+export async function getWebhookInfo() {
+  const token = getToken();
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+    const data = await res.json();
+    return data?.result || {};
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+export async function pingDatabase() {
+  try {
+    const { getDb } = await import('./bot-common.js');
+    const db = await getDb();
+    if (!db || typeof db.command !== 'function') {
+      return { ok: true, latency: 0, mock: true };
+    }
+    const start = Date.now();
+    await db.command({ ping: 1 });
+    return { ok: true, latency: Date.now() - start, mock: false };
+  } catch (err) {
+    return { ok: false, latency: -1, error: err.message };
+  }
+}
+
+export async function checkShortenerHealth(serviceUrl, apiKey) {
+  if (!serviceUrl || !apiKey) return { status: 'not_configured' };
+  try {
+    const testUrl = 'https://www.google.com';
+    const apiUrl = `${serviceUrl}?api=${apiKey}&url=${encodeURIComponent(testUrl)}`;
+    const start = Date.now();
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(5000) });
+    const latency = Date.now() - start;
+    if (!res.ok) return { status: 'error', latency, httpStatus: res.status };
+    return { status: 'online', latency };
+  } catch (err) {
+    return { status: 'offline', error: err.message };
+  }
+}
+
+export function formatUptime(seconds) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const parts = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(' ');
+}
 
 // ─── setMyCommands ────────────────────────────────────────────────────────────
 export async function setMyCommands() {
@@ -583,7 +638,7 @@ export async function setMyCommands() {
     { command: 'temptoken',   description: toSmallCaps('Create temporary file sharing token') },
     { command: 'mytokens',    description: toSmallCaps('View active temporary tokens') },
     { command: 'me',          description: toSmallCaps('View your profile & referral link') },
-    { command: 'ping',        description: toSmallCaps('Check bot latency') },
+    { command: 'ping',        description: toSmallCaps('Bot latency, uptime & system info') },
     { command: 'help',        description: toSmallCaps('How to use this bot') },
   ];
 
@@ -598,8 +653,10 @@ export async function setMyCommands() {
       const adminCommands = [
         ...userCommands,
         { command: 'setting',    description: toSmallCaps('Open admin dashboard') },
-        { command: 'userstats',  description: toSmallCaps('View user & filestore statistics') },
+        { command: 'status',     description: toSmallCaps('Full system health monitor') },
+        { command: 'userstats',  description: toSmallCaps('User stats & download activity chart') },
         { command: 'topfiles',   description: toSmallCaps('Top 10 most downloaded files & batches') },
+        { command: 'todaylinks', description: toSmallCaps("List all links created today with downloads") },
         { command: 'backup',     description: toSmallCaps('Export database backup as JSON file') },
         { command: 'broadcast',  description: toSmallCaps('Send a message to all users') },
         { command: 'batch',      description: toSmallCaps('Create a batch link from a channel range') },

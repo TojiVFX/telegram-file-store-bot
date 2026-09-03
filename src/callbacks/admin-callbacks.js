@@ -389,18 +389,29 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     await answerCallbackQuery(cq.id, 'Database backup sent to chat!');
     return res.status(200).send('OK');
   } else if (action === 'top_files') {
-    const { getTopFiles } = await import('../filestore.js');
-    const topList = await getTopFiles(10);
+    const { getTopFiles, getDailyFileStats } = await import('../filestore.js');
+    const [topList, daily] = await Promise.all([getTopFiles(10), getDailyFileStats()]);
     const botUsername = await getBotUsername();
 
+    let header = `<b>Traffic Dashboard</b>\n\n` +
+      `<b>Today</b>\n` +
+      `• Links Created: <b>${daily.createdToday}</b>\n` +
+      `• Downloads: <b>${daily.downloadsToday}</b>\n\n` +
+      `<b>All Time</b>\n` +
+      `• Total Links: <b>${daily.totalLinks}</b>\n` +
+      `• Total Downloads: <b>${daily.allTimeDownloads}</b>\n`;
+
     if (!topList.length) {
-      await editTelegramMessage(chatId, messageId, `<b>Traffic Leaderboard</b>\n\nNo file downloads recorded yet.`, {
-        inline_keyboard: navButtons('admin:file_mgmt')
+      await editTelegramMessage(chatId, messageId, header + `\n<i>No downloads recorded yet.</i>`, {
+        inline_keyboard: [
+          [{ text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
+          ...navButtons('admin:file_mgmt')
+        ]
       });
       return res.status(200).send('OK');
     }
 
-    let report = `<b>Top 10 Downloaded Files & Batches</b>\n\n`;
+    let report = header + `\n<b>Top 10 Most Downloaded</b>\n\n`;
     for (let i = 0; i < topList.length; i++) {
       const item = topList[i];
       const link = `https://t.me/${botUsername}?start=${item._id}`;
@@ -410,7 +421,35 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     }
 
     await editTelegramMessage(chatId, messageId, report, {
-      inline_keyboard: navButtons('admin:file_mgmt')
+      inline_keyboard: [
+        [{ text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
+        ...navButtons('admin:file_mgmt')
+      ]
+    });
+    return res.status(200).send('OK');
+  } else if (action === 'today_links') {
+    const { getTodayFiles } = await import('../filestore.js');
+    const todayFiles = await getTodayFiles();
+    const botUsername = await getBotUsername();
+
+    if (!todayFiles.length) {
+      await editTelegramMessage(chatId, messageId, `<b>Links Created Today</b>\n\n<i>No links have been created today yet.</i>`, {
+        inline_keyboard: navButtons('admin:top_files')
+      });
+      return res.status(200).send('OK');
+    }
+
+    let report = `<b>Links Created Today (${todayFiles.length})</b>\n\n`;
+    for (let i = 0; i < todayFiles.length; i++) {
+      const item = todayFiles[i];
+      const link = `https://t.me/${botUsername}?start=${item._id}`;
+      report += `<b>${i + 1}.</b> <code>${item._id}</code> (${item.type || 'file'})\n` +
+                `   • Downloads: <b>${item.accessCount || 0}</b>\n` +
+                `   • Link: ${link}\n\n`;
+    }
+
+    await editTelegramMessage(chatId, messageId, report, {
+      inline_keyboard: navButtons('admin:top_files')
     });
     return res.status(200).send('OK');
   } else if (action === 'temp_token_start') {

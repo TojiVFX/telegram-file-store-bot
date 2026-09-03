@@ -213,6 +213,86 @@ export async function getTopFiles(limit = 10) {
   }
 }
 
+export async function getDownloadActivity(days = 7) {
+  try {
+    const files = await getCollection('files');
+    const allFiles = await files.find({
+      lastAccessedAt: { $exists: true },
+      accessCount: { $gt: 0 }
+    }).toArray();
+
+    // Build day-by-day map for last N days
+    const dayMap = {};
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      dayMap[key] = { label: dayNames[d.getDay()], date: key, count: 0 };
+    }
+
+    // Count accesses per day from lastAccessedAt
+    for (const f of allFiles) {
+      const dateKey = String(f.lastAccessedAt).slice(0, 10);
+      if (dayMap[dateKey]) {
+        dayMap[dateKey].count += (f.accessCount || 0);
+      }
+    }
+
+    return Object.values(dayMap);
+  } catch (err) {
+    log('error', 'getDownloadActivity failed', { errorMessage: err.message });
+    return [];
+  }
+}
+
+export async function getDailyFileStats() {
+  try {
+    const files = await getCollection('files');
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Links created today
+    const createdToday = await files.countDocuments({
+      createdAt: { $exists: true, $gte: today }
+    });
+
+    // Total downloads today (files accessed today)
+    const accessedToday = await files.find({
+      lastAccessedAt: { $exists: true, $gte: today },
+      accessCount: { $gt: 0 }
+    }).toArray();
+    const downloadsToday = accessedToday.reduce((sum, f) => sum + (f.accessCount || 0), 0);
+
+    // All-time totals
+    const totalLinks = await files.countDocuments();
+    const totalDownloads = await files.find({ accessCount: { $gt: 0 } }).toArray();
+    const allTimeDownloads = totalDownloads.reduce((sum, f) => sum + (f.accessCount || 0), 0);
+
+    return {
+      createdToday,
+      downloadsToday,
+      totalLinks,
+      allTimeDownloads,
+    };
+  } catch (err) {
+    log('error', 'getDailyFileStats failed', { errorMessage: err.message });
+    return { createdToday: 0, downloadsToday: 0, totalLinks: 0, allTimeDownloads: 0 };
+  }
+}
+
+export async function getTodayFiles() {
+  try {
+    const files = await getCollection('files');
+    const today = new Date().toISOString().slice(0, 10);
+    return await files.find({
+      createdAt: { $exists: true, $gte: today }
+    }).sort({ createdAt: -1 }).toArray();
+  } catch (err) {
+    log('error', 'getTodayFiles failed', { errorMessage: err.message });
+    return [];
+  }
+}
+
 async function requestShortenerUrl(serviceUrl, apiKey, targetUrl) {
   if (!serviceUrl || !apiKey) return null;
   try {

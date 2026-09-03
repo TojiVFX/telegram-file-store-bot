@@ -143,7 +143,22 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
   if (/^\/userstats/i.test(rawText) && admin) {
     const s = await getUserStats();
-    await sendTelegramMessage(chatId, `📊 <b>Stats</b>\n\nUsers: ${s.totalUsers}\nLinks: ${s.filestoreLinks}`);
+    const { getDownloadActivity } = await import('../filestore.js');
+    const activity = await getDownloadActivity(7);
+
+    let chart = '';
+    if (activity.length > 0) {
+      const maxCount = Math.max(...activity.map(d => d.count), 1);
+      const barWidth = 8;
+      chart = `\n\n<b>Download Activity (Last 7 Days)</b>\n\n`;
+      for (const day of activity) {
+        const filled = Math.round((day.count / maxCount) * barWidth);
+        const bar = '▓'.repeat(filled) + '░'.repeat(barWidth - filled);
+        chart += `${day.label} ${bar} <b>${day.count}</b>\n`;
+      }
+    }
+
+    await sendTelegramMessage(chatId, `📊 <b>Stats</b>\n\nUsers: <b>${s.totalUsers}</b>\nBanned: <b>${s.bannedCount}</b>\nActive Today: <b>${s.todayActive}</b>\nStored Links: <b>${s.filestoreLinks}</b>\nChannels: <b>${s.filestoreChannels}</b>${chart}`);
     return res.status(200).send('OK');
   }
 
@@ -162,22 +177,57 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
   }
 
   if (/^\/topfiles/i.test(rawText) && admin) {
-    const { getTopFiles } = await import('../filestore.js');
-    const topList = await getTopFiles(10);
+    const { getTopFiles, getDailyFileStats } = await import('../filestore.js');
+    const [topList, daily] = await Promise.all([getTopFiles(10), getDailyFileStats()]);
     const botUsername = await getBotUsername();
 
+    let header = `📊 <b>Traffic Dashboard</b>\n\n` +
+      `<b>Today</b>\n` +
+      `• Links Created: <b>${daily.createdToday}</b>\n` +
+      `• Downloads: <b>${daily.downloadsToday}</b>\n\n` +
+      `<b>All Time</b>\n` +
+      `• Total Links: <b>${daily.totalLinks}</b>\n` +
+      `• Total Downloads: <b>${daily.allTimeDownloads}</b>\n`;
+
     if (!topList.length) {
-      await sendTelegramMessage(chatId, `📊 <b>Traffic Leaderboard</b>\n\nNo downloads recorded yet.`);
+      await sendTelegramMessage(chatId, header + `\n<i>No downloads recorded yet.</i>`);
       return res.status(200).send('OK');
     }
 
-    let report = `📊 <b>Top 10 Downloaded Files & Batches</b>\n\n`;
+    let report = header + `\n<b>Top 10 Most Downloaded</b>\n\n`;
     for (let i = 0; i < topList.length; i++) {
       const item = topList[i];
       const link = `https://t.me/${botUsername}?start=${item._id}`;
       report += `<b>${i + 1}.</b> <code>${item._id}</code> (${item.type || 'file'})\n` +
                 `   📥 Downloads: <b>${item.accessCount || 0}</b>\n` +
                 `   🔗 ${link}\n\n`;
+    }
+
+    await sendTelegramMessage(chatId, report, {
+      inline_keyboard: [
+        [{ text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }]
+      ]
+    });
+    return res.status(200).send('OK');
+  }
+
+  if (/^\/todaylinks/i.test(rawText) && admin) {
+    const { getTodayFiles } = await import('../filestore.js');
+    const todayFiles = await getTodayFiles();
+    const botUsername = await getBotUsername();
+
+    if (!todayFiles.length) {
+      await sendTelegramMessage(chatId, `<b>Links Created Today</b>\n\n<i>No links have been created today yet.</i>`);
+      return res.status(200).send('OK');
+    }
+
+    let report = `<b>Links Created Today (${todayFiles.length})</b>\n\n`;
+    for (let i = 0; i < todayFiles.length; i++) {
+      const item = todayFiles[i];
+      const link = `https://t.me/${botUsername}?start=${item._id}`;
+      report += `<b>${i + 1}.</b> <code>${item._id}</code> (${item.type || 'file'})\n` +
+                `   • Downloads: <b>${item.accessCount || 0}</b>\n` +
+                `   • Link: ${link}\n\n`;
     }
 
     await sendTelegramMessage(chatId, report);
@@ -233,12 +283,102 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     await sendTelegramMessage(chatId, helpText, kb);
     return res.status(200).send('OK');
   }
+  if (/^\/status/i.test(rawText) && admin) {
+    const statusMsg = await sendTelegramMessage(chatId, `🔍 <b>Checking system health...</b>`);
+
+    const { getWebhookInfo, pingDatabase, checkShortenerHealth, formatUptime } = await import('../bot-helpers.js');
+
+    const [webhook, dbPing, settings] = await Promise.all([
+      getWebhookInfo(),
+      pingDatabase(),
+      getSettings(),
+    ]);
+
+    // Webhook status
+    const whUrl = webhook.url || 'Not set';
+    const whActive = webhook.url ? '✅ Active' : '❌ Not Set';
+    const whPending = webhook.pending_update_count ?? 0;
+    const whLastError = webhook.last_error_message ? `\n   ⚠️ Last Error: <i>${esc(webhook.last_error_message)}</i>` : '';
+
+    // DB Status
+    const dbIcon = dbPing.ok ? '✅' : '❌';
+    const dbLabel = dbPing.mock ? 'In-Memory (Mock)' : (dbPing.ok ? `Connected (${dbPing.latency}ms)` : `Disconnected — ${dbPing.error || 'Unknown'}`);
+
+    // Shorteners (check in parallel)
+    const [primaryHealth, backupHealth] = await Promise.all([
+      checkShortenerHealth(settings?.shortenerUrl, settings?.shortenerKey),
+      checkShortenerHealth(settings?.backupShortenerUrl, settings?.backupShortenerKey),
+    ]);
+
+    function shortenerLabel(h) {
+      if (h.status === 'not_configured') return '⚪ Not Configured';
+      if (h.status === 'online') return `✅ Online (${h.latency}ms)`;
+      if (h.status === 'error') return `⚠️ Error (HTTP ${h.httpStatus})`;
+      return `❌ Offline`;
+    }
+
+    // Uptime + Memory
+    const uptime = formatUptime(process.uptime());
+    const mem = process.memoryUsage();
+    const memUsedMB = (mem.heapUsed / 1024 / 1024).toFixed(1);
+    const rssMB = (mem.rss / 1024 / 1024).toFixed(1);
+
+    // File stats
+    const filesColl = await getCollection('files');
+    const totalFiles = await filesColl.countDocuments();
+    const recentlyAccessed = await filesColl.countDocuments({
+      lastAccessedAt: { $exists: true, $gte: new Date(Date.now() - 24 * 3600 * 1000).toISOString() }
+    });
+
+    const text = `🩺 <b>System Health Monitor</b>\n\n` +
+      `<b>Webhook</b>\n` +
+      `• Status: ${whActive}\n` +
+      `• Pending Updates: <b>${whPending}</b>${whLastError}\n\n` +
+      `<b>Database</b>\n` +
+      `• Connection: ${dbIcon} <b>${dbLabel}</b>\n` +
+      `• Total Stored Files: <b>${totalFiles}</b>\n` +
+      `• Accessed (24h): <b>${recentlyAccessed}</b>\n\n` +
+      `<b>Shortener Services</b>\n` +
+      `• Primary: ${shortenerLabel(primaryHealth)}\n` +
+      `• Backup: ${shortenerLabel(backupHealth)}\n\n` +
+      `<b>Server</b>\n` +
+      `• Uptime: <b>${uptime}</b>\n` +
+      `• Memory: <b>${memUsedMB} MB</b> (RSS: ${rssMB} MB)\n` +
+      `• Node: <b>${process.version}</b>\n` +
+      `• Platform: <b>${process.platform} ${process.arch}</b>`;
+
+    if (statusMsg.ok) {
+      await editTelegramMessage(chatId, statusMsg.messageId, text);
+    }
+    return res.status(200).send('OK');
+  }
 
   if (/^\/ping/i.test(rawText)) {
     const start = Date.now();
     const msg = await sendTelegramMessage(chatId, `Pinging...`);
     if (msg.ok) {
-      await editTelegramMessage(chatId, msg.messageId, `Pong!\nLatency: <b>${Date.now() - start}ms</b>`);
+      const latency = Date.now() - start;
+      const { pingDatabase, formatUptime } = await import('../bot-helpers.js');
+      const dbPing = await pingDatabase();
+
+      const uptime = formatUptime(process.uptime());
+      const mem = process.memoryUsage();
+      const memUsedMB = (mem.heapUsed / 1024 / 1024).toFixed(1);
+      const memTotalMB = (mem.heapTotal / 1024 / 1024).toFixed(1);
+      const rssMB = (mem.rss / 1024 / 1024).toFixed(1);
+
+      const dbIcon = dbPing.ok ? '✅' : '❌';
+      const dbLabel = dbPing.mock ? 'In-Memory (Mock)' : (dbPing.ok ? `Connected (${dbPing.latency}ms)` : 'Disconnected');
+
+      const text = `🏓 <b>Pong!</b>\n\n` +
+        `• API Latency: <b>${latency}ms</b>\n` +
+        `• Server Uptime: <b>${uptime}</b>\n` +
+        `• Memory: <b>${memUsedMB} / ${memTotalMB} MB</b> (RSS: ${rssMB} MB)\n` +
+        `• DB Status: ${dbIcon} <b>${dbLabel}</b>\n` +
+        `• Node: <b>${process.version}</b>\n` +
+        `• Platform: <b>${process.platform} ${process.arch}</b>`;
+
+      await editTelegramMessage(chatId, msg.messageId, text);
     }
     return res.status(200).send('OK');
   }
