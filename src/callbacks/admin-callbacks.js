@@ -340,7 +340,11 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
   }
 
   if (action === 'dashboard') {
+    await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
+    await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+    await sessions.deleteOne({ _id: `admin:broadcast_draft:${chatId}` });
     await renderDashboard(chatId, messageId);
+    return res.status(200).send('OK');
   } else if (action === 'stats') {
     const { getUserStats } = await import('../bot-users.js');
     const s = await getUserStats();
@@ -367,9 +371,16 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       { upsert: true }
     );
     await editTelegramMessage(chatId, messageId, `<b>Broadcast Message</b>\n\nTotal Registered Users: <b>${s.totalUsers}</b>\n\nPlease send or forward any message you want to broadcast to all users.\n\nSupports: text, photos, videos, documents, audio, animations, stickers, forwarded channel posts, inline buttons, and web link previews.\n\nSend /cancel to abort.`, {
-      inline_keyboard: navButtons('admin:dashboard')
+      inline_keyboard: [
+        [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:broadcast_cancel_prompt' }]
+      ]
     });
     await logHistory('broadcast_prompt', 'tg');
+  } else if (action === 'broadcast_cancel_prompt' || action === 'broadcast_cancel_draft') {
+    await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
+    await sessions.deleteOne({ _id: `admin:broadcast_draft:${chatId}` });
+    await renderDashboard(chatId, messageId);
+    return res.status(200).send('OK');
   } else if (action === 'broadcast_cancel') {
     const { cancelBroadcast } = await import('../bot-users.js');
     cancelBroadcast();

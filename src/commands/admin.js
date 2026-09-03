@@ -208,10 +208,14 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
   const waDoc = await sessions.findOne({ _id: `admin:waiting_action:${chatId}` });
   const waitingAction = waDoc && waDoc.expiresAt > new Date() ? waDoc.val : null;
   if (waitingAction) {
-    if (rawText === '/cancel') {
+    if (rawText.startsWith('/')) {
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
-      await sendTelegramMessage(chatId, `✅ Cancelled.`);
-      return res.status(200).send('OK');
+      if (rawText === '/cancel') {
+        await sendTelegramMessage(chatId, `✅ Cancelled.`);
+        return res.status(200).send('OK');
+      }
+      // If admin typed any other command (e.g. /start, /setting, /ping), exit waiting state and run command
+      return null;
     }
 
     if (waitingAction === 'temp_token_input') {
@@ -299,7 +303,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
           [{ text: toSmallCaps('Send Test Preview to Me'), callback_data: 'admin:broadcast_test' }],
           [
             { text: toSmallCaps('Confirm & Send to All'), callback_data: 'admin:broadcast_confirm' },
-            { text: toSmallCaps('Cancel'), callback_data: 'admin:dashboard' }
+            { text: toSmallCaps('Cancel'), callback_data: 'admin:broadcast_cancel_draft' }
           ]
         ]
       });

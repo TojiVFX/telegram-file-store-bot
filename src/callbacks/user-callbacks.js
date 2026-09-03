@@ -188,6 +188,13 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       ]
     });
   } else if (action === 'back_start') {
+    if (admin) {
+      const sessions = await getCollection('sessions');
+      await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
+      await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+      await sessions.deleteOne({ _id: `admin:broadcast_draft:${chatId}` });
+    }
+
     const s = await getSettings();
     let startMsg = s.startText || `👋 <b>Welcome to Filestore Bot!</b>\n\nI can store files and provide permanent sharing links. Use the buttons below or commands to explore.`;
     if (s.startText) {

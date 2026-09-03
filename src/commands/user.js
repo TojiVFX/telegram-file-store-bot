@@ -266,7 +266,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         [{ text: toSmallCaps('Send Test Preview to Me'), callback_data: 'admin:broadcast_test' }],
         [
           { text: toSmallCaps('Confirm & Send to All'), callback_data: 'admin:broadcast_confirm' },
-          { text: toSmallCaps('Cancel'), callback_data: 'admin:dashboard' }
+          { text: toSmallCaps('Cancel'), callback_data: 'admin:broadcast_cancel_draft' }
         ]
       ]
     });
