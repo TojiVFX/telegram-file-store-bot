@@ -6,13 +6,95 @@ import {
   getBotUsername, getDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser
 } from '../bot-helpers.js';
 import {
-  getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode
+  getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
+  isBulkStoreActive, setBulkStoreActive, addToStoreSession, getStoreSession, clearStoreSession, generateLinksExportText, generateRawLinksText
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral } from '../bot-users.js';
 
 export async function processAdminMessage(chatId, rawText, message, req, res) {
   const sessions = await getCollection('sessions');
+  const bulkActive = await isBulkStoreActive(chatId);
+  if (bulkActive) {
+    if (rawText === '/cancel') {
+      await setBulkStoreActive(chatId, false);
+      await clearStoreSession(chatId);
+      await sendTelegramMessage(chatId, `✅ <b>Bulk Store cancelled.</b>`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]]
+      });
+      return res.status(200).send('OK');
+    }
+
+    if (rawText === '/done') {
+      const codes = await getStoreSession(chatId);
+      await setBulkStoreActive(chatId, false);
+      await clearStoreSession(chatId);
+      if (!codes.length) {
+        await sendTelegramMessage(chatId, `⚠️ <b>No files were stored in this session.</b>`, {
+          inline_keyboard: [[{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]]
+        });
+        return res.status(200).send('OK');
+      }
+
+      const bot = await getBotUsername();
+      const filesColl = await getCollection('files');
+      const storedRecords = await filesColl.find({ _id: { $in: codes } }).toArray();
+
+      const rawBlock = generateRawLinksText(codes, bot);
+      const txtContent = generateLinksExportText(storedRecords.length ? storedRecords : codes.map(c => ({ _id: c })), bot, 'Bulk Stored Files');
+      const buffer = Buffer.from(txtContent, 'utf-8');
+      const filename = `bulk_store_${codes.length}_links_${new Date().toISOString().slice(0, 10)}.txt`;
+
+      await sendTelegramMessage(chatId, `📋 <b>Bulk Store Complete! (${codes.length} Files Stored)</b>\n\nTap the box below to copy all links at once:\n<pre>${rawBlock}</pre>`, {
+        inline_keyboard: [
+          [{ text: toSmallCaps('Store More Files'), callback_data: 'admin:bulk_store_start' }],
+          [{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]
+        ]
+      });
+
+      const { sendTelegramFileBuffer } = await import('../bot-common.js');
+      await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>Exported ${codes.length} Links (.txt)</b>`);
+      return res.status(200).send('OK');
+    }
+
+    const hasMedia = message.document || message.video || message.audio || (message.photo && message.photo.length > 0);
+    if (hasMedia) {
+      const dbChannelId = await getDbChannelId();
+      if (!dbChannelId) {
+        await setBulkStoreActive(chatId, false);
+        await clearStoreSession(chatId);
+        await sendTelegramMessage(chatId, `❌ <b>Database Channel is not configured.</b>\n\nPlease set it in the bot settings first.`);
+        return res.status(200).send('OK');
+      }
+
+      let type = message.document ? 'document' : message.video ? 'video' : message.audio ? 'audio' : message.photo ? 'photo' : 'file';
+      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
+      if (copyResult.ok) {
+        const code = generateFileCode();
+        await storeFile(code, {
+          dbChannelId,
+          dbMessageId: copyResult.messageId,
+          type: type,
+          fileId: message.document?.file_id || message.video?.file_id || message.audio?.file_id || message.photo?.[0]?.file_id
+        });
+        const count = await addToStoreSession(chatId, code);
+        const bot = await getBotUsername();
+        const link = `https://t.me/${bot}?start=${code}`;
+
+        await sendTelegramMessage(chatId, `📥 <b>File ${count} Stored!</b>\nCode: <code>${code}</code>\nLink: <code>${link}</code>\n\nSend another file, or tap below when finished:`, {
+          inline_keyboard: [
+            [{ text: toSmallCaps(`Done & Get All Links (${count})`), callback_data: 'admin:bulk_store_done' }],
+            [{ text: toSmallCaps('Cancel'), callback_data: 'admin:bulk_store_cancel' }]
+          ]
+        });
+        return res.status(200).send('OK');
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Failed to store file.</b>\n\nMake sure the bot is an administrator in the DB channel and has permission to post messages.`);
+        return res.status(200).send('OK');
+      }
+    }
+  }
+
   const batchSession = await getBatchSession(chatId);
 
   if (batchSession) {
@@ -63,8 +145,12 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
           await storeBatch(batchCode, dbChannelId, collectedIds);
           await clearBatchSession(chatId);
           const botUsername = await getBotUsername();
-          await sendTelegramMessage(chatId, `✅ <b>Batch Created!</b>\n\nFiles: <b>${collectedIds.length}</b>\nLink: https://t.me/${botUsername}?start=${batchCode}`, {
-            inline_keyboard: [[{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]]
+          await sendTelegramMessage(chatId, `✅ <b>Batch Created!</b>\n\nFiles: <b>${collectedIds.length}</b>\nLink: <code>https://t.me/${botUsername}?start=${batchCode}</code>\n<i>(Tap link to copy)</i>`, {
+            inline_keyboard: [
+              [{ text: toSmallCaps('Generate Temp Link'), callback_data: `admin:temp_token_for:${batchCode}` }],
+              [{ text: toSmallCaps('Create Another Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
+              [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]
+            ]
           });
           return res.status(200).send('OK');
         } else {
@@ -252,6 +338,58 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       return res.status(200).send('OK');
     }
 
+    if (waitingAction === 'export_custom_duration') {
+      const { parseDurationString, getFilesWithinDuration, generateLinksExportText, generateRawLinksText, formatDurationLabel } = await import('../filestore.js');
+      const lower = rawText.trim().toLowerCase();
+      const isBatchOnly = lower.includes('batch');
+      const isFileOnly = lower.includes('file');
+      const filterType = isBatchOnly ? 'batch' : isFileOnly ? 'media' : 'all';
+
+      // Strip words like 'batches', 'batch', 'files', 'file' to isolate duration number
+      const cleanInput = lower.replace(/\b(batches|batch|files|file)\b/g, '').trim();
+      let seconds = parseDurationString(cleanInput);
+
+      // If user sent a plain number, treat as minutes
+      if (!seconds && /^\d+$/.test(cleanInput)) {
+        seconds = parseInt(cleanInput, 10) * 60;
+      }
+
+      if (!seconds || seconds <= 0) {
+        await sendTelegramMessage(chatId, `❌ <b>Invalid duration.</b>\n\nPlease send e.g. <code>15m</code>, <code>30</code>, <code>1h</code>, or <code>30m batch</code>, or send /cancel to abort.`);
+        return res.status(200).send('OK');
+      }
+
+      await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
+
+      const records = await getFilesWithinDuration(seconds, filterType);
+      const durationLabel = formatDurationLabel(seconds);
+      const typeLabel = isBatchOnly ? 'Batches' : isFileOnly ? 'Single Files' : 'Links';
+
+      if (!records.length) {
+        await sendTelegramMessage(chatId, `⚠️ <i>No ${typeLabel.toLowerCase()} found created within the last ${durationLabel}.</i>`, {
+          inline_keyboard: [[{ text: toSmallCaps('Back to Export Hub'), callback_data: 'admin:export_hub' }]]
+        });
+        return res.status(200).send('OK');
+      }
+
+      const bot = await getBotUsername();
+      const title = `${typeLabel} in Last ${durationLabel}`;
+      const txtContent = generateLinksExportText(records, bot, title);
+      const buffer = Buffer.from(txtContent, 'utf-8');
+      const filename = `filestore_${filterType}_${Math.round(seconds / 60)}m_${new Date().toISOString().slice(0, 10)}.txt`;
+
+      if (records.length <= 30) {
+        const rawBlock = generateRawLinksText(records, bot);
+        await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to copy all links at once:\n<pre>${rawBlock}</pre>`);
+      }
+
+      const { sendTelegramFileBuffer } = await import('../bot-common.js');
+      await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b> (${records.length} records)`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back to Export Hub'), callback_data: 'admin:export_hub' }]]
+      });
+      return res.status(200).send('OK');
+    }
+
     if (waitingAction === 'broadcast') {
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
 
@@ -391,10 +529,11 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
           fileId: message.document?.file_id || message.video?.file_id || message.audio?.file_id || message.photo?.[0]?.file_id
         });
         const bot = await getBotUsername();
-        await sendTelegramMessage(chatId, `✅ <b>File Stored!</b>\n\nLink: https://t.me/${bot}?start=${code}`, {
+        await sendTelegramMessage(chatId, `✅ <b>File Stored!</b>\n\nLink: <code>https://t.me/${bot}?start=${code}</code>\n<i>(Tap link to copy)</i>`, {
           inline_keyboard: [
             [{ text: toSmallCaps('Generate Temp Link'), callback_data: `admin:temp_token_for:${code}` }],
-            [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]
+            [{ text: toSmallCaps('Store Another File'), callback_data: 'admin:store_start' }, { text: toSmallCaps('Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }],
+            [{ text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }, { text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]
           ]
         });
       } else {

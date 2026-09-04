@@ -193,6 +193,9 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
       await sessions.deleteOne({ _id: `admin:broadcast_draft:${chatId}` });
+      const { setBulkStoreActive, clearStoreSession } = await import('../filestore.js');
+      await setBulkStoreActive(chatId, false);
+      await clearStoreSession(chatId);
     }
 
     const s = await getSettings();

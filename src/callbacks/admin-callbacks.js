@@ -2,7 +2,7 @@ import {
   getCollection, getSettings, updateSettings, toSmallCaps, editTelegramMessage, answerCallbackQuery, sendTelegramMessage, logHistory, deleteTelegramMessage, sendTelegramVideo, sendTelegramPhoto, esc
 } from '../bot-common.js';
 import {
-  getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId, getAdminDashboardKeyboard, getDbChannelReadinessError
+  getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId, getAdminDashboardKeyboard, getExportLinksKeyboard, getDbChannelReadinessError
 } from '../bot-helpers.js';
 
 // ─── Shared nav row ─────────────────────────────────────────────────────────────
@@ -343,6 +343,9 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
     await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
     await sessions.deleteOne({ _id: `admin:broadcast_draft:${chatId}` });
+    const { setBulkStoreActive, clearStoreSession } = await import('../filestore.js');
+    await setBulkStoreActive(chatId, false);
+    await clearStoreSession(chatId);
     await renderDashboard(chatId, messageId);
     return res.status(200).send('OK');
   } else if (action === 'stats') {
@@ -469,12 +472,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       inline_keyboard: navButtons('admin:user_mgmt')
     });
   } else if (action === 'file_mgmt') {
-    const text = `<b>File Management</b>\n\nCreate permanent or temporary sharing links, store files, view leaderboard, or backup database:`;
+    const text = `<b>File Management</b>\n\nCreate permanent or temporary sharing links, bulk store files, export link lists, or backup database:`;
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [
         [{ text: toSmallCaps('Create Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps('Store Single'), callback_data: 'admin:store_start' }],
+        [{ text: toSmallCaps('Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }, { text: toSmallCaps('Export Links Hub'), callback_data: 'admin:export_hub' }],
         [{ text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }, { text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }],
-        [{ text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }],
+        [{ text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
+        [{ text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }],
         ...navButtons('admin:dashboard')
       ]
     });
@@ -552,7 +557,185 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     }
 
     await editTelegramMessage(chatId, messageId, report, {
-      inline_keyboard: navButtons('admin:top_files')
+      inline_keyboard: [
+        [{ text: toSmallCaps('Copy All Links (Text)'), callback_data: 'admin:today_copy_text' }, { text: toSmallCaps('Export Today (.txt)'), callback_data: 'admin:export_today_txt' }],
+        ...navButtons('admin:top_files')
+      ]
+    });
+    return res.status(200).send('OK');
+  } else if (action === 'bulk_store_start') {
+    const dbError = await getDbChannelReadinessError();
+    if (dbError) {
+      await editTelegramMessage(chatId, messageId, dbError, { inline_keyboard: navButtons('admin:file_mgmt') });
+      return res.status(200).send('OK');
+    }
+
+    const { setBulkStoreActive, clearStoreSession } = await import('../filestore.js');
+    await clearStoreSession(chatId);
+    await setBulkStoreActive(chatId, true);
+
+    const text = `📦 <b>Bulk Store Mode Active</b>\n\n` +
+      `Forward or send files (documents, videos, audio, photos) one by one.\n` +
+      `Each file will be stored automatically and you will get <b>all links in one copyable list</b> and as a <b>.txt document</b> when finished.\n\n` +
+      `When done, tap <b>Done & Get All Links</b> or send /done.\nSend /cancel to abort.`;
+
+    await editTelegramMessage(chatId, messageId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Done & Get All Links (0)'), callback_data: 'admin:bulk_store_done' }],
+        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:bulk_store_cancel' }]
+      ]
+    });
+    return res.status(200).send('OK');
+  } else if (action === 'bulk_store_done') {
+    const { getStoreSession, setBulkStoreActive, clearStoreSession, generateRawLinksText, generateLinksExportText } = await import('../filestore.js');
+    const codes = await getStoreSession(chatId);
+    if (!codes.length) {
+      await answerCallbackQuery(cq.id, 'No files stored in this session yet.', true);
+      return res.status(200).send('OK');
+    }
+
+    await setBulkStoreActive(chatId, false);
+    await clearStoreSession(chatId);
+    await answerCallbackQuery(cq.id);
+
+    const botUsername = await getBotUsername();
+    const filesColl = await getCollection('files');
+    const storedRecords = await filesColl.find({ _id: { $in: codes } }).toArray();
+
+    const rawBlock = generateRawLinksText(codes, botUsername);
+    const txtContent = generateLinksExportText(storedRecords.length ? storedRecords : codes.map(c => ({ _id: c })), botUsername, 'Bulk Stored Files');
+    const buffer = Buffer.from(txtContent, 'utf-8');
+    const filename = `bulk_store_${codes.length}_links_${new Date().toISOString().slice(0, 10)}.txt`;
+
+    await editTelegramMessage(chatId, messageId, `📋 <b>Bulk Store Complete! (${codes.length} Files Stored)</b>\n\nTap the box below to copy all links at once:\n<pre>${rawBlock}</pre>`, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Store More Files'), callback_data: 'admin:bulk_store_start' }],
+        ...navButtons('admin:file_mgmt')
+      ]
+    });
+
+    const { sendTelegramFileBuffer } = await import('../bot-common.js');
+    await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>Exported ${codes.length} Links (.txt)</b>`);
+    return res.status(200).send('OK');
+  } else if (action === 'bulk_store_cancel') {
+    const { setBulkStoreActive, clearStoreSession } = await import('../filestore.js');
+    await setBulkStoreActive(chatId, false);
+    await clearStoreSession(chatId);
+    await answerCallbackQuery(cq.id, 'Bulk Store cancelled.');
+    await editTelegramMessage(chatId, messageId, `<b>Bulk Store cancelled.</b>`, {
+      inline_keyboard: navButtons('admin:file_mgmt')
+    });
+    return res.status(200).send('OK');
+  } else if (action === 'export_all_txt') {
+    const { generateLinksExportText } = await import('../filestore.js');
+    const { sendTelegramFileBuffer } = await import('../bot-common.js');
+    const filesColl = await getCollection('files');
+    const allFiles = await filesColl.find({}).sort({ createdAt: -1 }).toArray();
+
+    if (!allFiles.length) {
+      await answerCallbackQuery(cq.id, 'No stored links found in database.', true);
+      return res.status(200).send('OK');
+    }
+
+    const botUsername = await getBotUsername();
+    const txtContent = generateLinksExportText(allFiles, botUsername, 'All Stored Links');
+    const buffer = Buffer.from(txtContent, 'utf-8');
+    const filename = `filestore_all_links_${new Date().toISOString().slice(0, 10)}.txt`;
+    const caption = `📄 <b>All Stored Links Export</b>\n\nTotal Records: <b>${allFiles.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`;
+
+    await sendTelegramFileBuffer(chatId, buffer, filename, caption);
+    await answerCallbackQuery(cq.id, 'Links exported as .txt file!');
+    return res.status(200).send('OK');
+  } else if (action === 'export_today_txt') {
+    const { getTodayFiles, generateLinksExportText } = await import('../filestore.js');
+    const { sendTelegramFileBuffer } = await import('../bot-common.js');
+    const todayFiles = await getTodayFiles();
+
+    if (!todayFiles.length) {
+      await answerCallbackQuery(cq.id, 'No links created today.', true);
+      return res.status(200).send('OK');
+    }
+
+    const botUsername = await getBotUsername();
+    const txtContent = generateLinksExportText(todayFiles, botUsername, "Today's Links");
+    const buffer = Buffer.from(txtContent, 'utf-8');
+    const filename = `filestore_today_links_${new Date().toISOString().slice(0, 10)}.txt`;
+    const caption = `📄 <b>Today's Links Export</b>\n\nTotal Links Created Today: <b>${todayFiles.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`;
+
+    await sendTelegramFileBuffer(chatId, buffer, filename, caption);
+    await answerCallbackQuery(cq.id, "Today's links exported as .txt file!");
+    return res.status(200).send('OK');
+  } else if (action === 'today_copy_text') {
+    const { getTodayFiles, generateRawLinksText } = await import('../filestore.js');
+    const todayFiles = await getTodayFiles();
+
+    if (!todayFiles.length) {
+      await answerCallbackQuery(cq.id, 'No links created today.', true);
+      return res.status(200).send('OK');
+    }
+
+    const botUsername = await getBotUsername();
+    const rawBlock = generateRawLinksText(todayFiles, botUsername);
+    await sendTelegramMessage(chatId, `📋 <b>Today's Links (${todayFiles.length})</b>\n\nTap the monospace box below to copy all links at once:\n<pre>${rawBlock}</pre>`, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Export Today (.txt)'), callback_data: 'admin:export_today_txt' }],
+        [{ text: toSmallCaps('Back to Traffic Dashboard'), callback_data: 'admin:top_files' }]
+      ]
+    });
+    await answerCallbackQuery(cq.id, 'Copyable list sent below!');
+    return res.status(200).send('OK');
+  } else if (action === 'export_hub') {
+    const text = `📄 <b>Export Links Hub</b>\n\nSelect a time duration or category to export links as a <b>.txt</b> document and get a 1-tap copyable text block:`;
+    await editTelegramMessage(chatId, messageId, text, getExportLinksKeyboard());
+    return res.status(200).send('OK');
+  } else if (action.startsWith('exp_time:')) {
+    const parts = action.split(':');
+    const seconds = parseInt(parts[1], 10) || 1800;
+    const filterType = parts[2] || 'all';
+
+    const { getFilesWithinDuration, generateLinksExportText, generateRawLinksText, formatDurationLabel } = await import('../filestore.js');
+    const { sendTelegramFileBuffer } = await import('../bot-common.js');
+
+    const records = await getFilesWithinDuration(seconds, filterType);
+    const durationLabel = formatDurationLabel(seconds);
+    const typeLabel = filterType === 'batch' ? 'Batches' : 'Links';
+
+    if (!records.length) {
+      await answerCallbackQuery(cq.id, `No ${typeLabel.toLowerCase()} found in the last ${durationLabel}.`, true);
+      return res.status(200).send('OK');
+    }
+
+    const botUsername = await getBotUsername();
+    const title = `${typeLabel} Created in Last ${durationLabel}`;
+    const txtContent = generateLinksExportText(records, botUsername, title);
+    const buffer = Buffer.from(txtContent, 'utf-8');
+    const filename = `filestore_${filterType}_${Math.round(seconds / 60)}m_${new Date().toISOString().slice(0, 10)}.txt`;
+
+    if (records.length <= 30) {
+      const rawBlock = generateRawLinksText(records, botUsername);
+      await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to copy all links at once:\n<pre>${rawBlock}</pre>`);
+    }
+
+    await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b>\n\nTotal Records: <b>${records.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`);
+    await answerCallbackQuery(cq.id, `Exported ${records.length} ${typeLabel.toLowerCase()}!`);
+    return res.status(200).send('OK');
+  } else if (action === 'exp_custom_prompt') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_action:${chatId}` },
+      { $set: { val: 'export_custom_duration', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    const text = `⏱ <b>Export Links by Custom Time</b>\n\nEnter the duration in minutes or hours to export.\n\n` +
+      `<b>Format Examples:</b>\n` +
+      `• <code>10m</code> or <code>10</code> : last 10 minutes\n` +
+      `• <code>45m</code> : last 45 minutes\n` +
+      `• <code>2h</code> : last 2 hours\n` +
+      `• <code>30m batch</code> : last 30 minutes, <b>batches only</b>\n` +
+      `• <code>15m file</code> : last 15 minutes, <b>single files only</b>\n\n` +
+      `Send /cancel to abort.`;
+
+    await editTelegramMessage(chatId, messageId, text, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:export_hub' }]]
     });
     return res.status(200).send('OK');
   } else if (action === 'temp_token_start') {
@@ -749,7 +932,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     const botUsername = await getBotUsername();
     const shareLink   = `https://t.me/${botUsername}?start=${batchCode}`;
 
-    let msgText = `<b>Batch Created!</b>\n\nFiles collected: <b>${totalCollected}</b>\nBatch code: <code>${batchCode}</code>\n\n<b>Share this link:</b>\n${shareLink}`;
+    let msgText = `<b>Batch Created!</b>\n\nFiles collected: <b>${totalCollected}</b>\nBatch code: <code>${batchCode}</code>\n\n<b>Share this link:</b>\n<code>${shareLink}</code>\n<i>(Tap link to copy)</i>`;
     if (totalCollected > 500) {
       const dropped = totalCollected - 500;
       msgText += `\n\n<b>Warning:</b> Batches are limited to 500 files. <b>${dropped}</b> files were truncated (dropped) from the end of the batch.`;
@@ -757,7 +940,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
 
     await editTelegramMessage(chatId, messageId, msgText, {
       inline_keyboard: [
-        [{ text: toSmallCaps('⏳ Generate Temp Link'), callback_data: `admin:temp_token_for:${batchCode}` }],
+        [{ text: toSmallCaps('Generate Temp Link'), callback_data: `admin:temp_token_for:${batchCode}` }],
+        [{ text: toSmallCaps('Create Another Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
         ...navButtons('admin:dashboard')
       ]
     });

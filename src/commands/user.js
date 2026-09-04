@@ -230,7 +230,131 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
                 `   • Link: ${link}\n\n`;
     }
 
-    await sendTelegramMessage(chatId, report);
+    await sendTelegramMessage(chatId, report, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Copy All Links (Text)'), callback_data: 'admin:today_copy_text' }, { text: toSmallCaps('Export Today (.txt)'), callback_data: 'admin:export_today_txt' }]
+      ]
+    });
+    return res.status(200).send('OK');
+  }
+
+  if (/^\/bulkstore/i.test(rawText) && admin) {
+    const { getDbChannelReadinessError } = await import('../bot-helpers.js');
+    const dbError = await getDbChannelReadinessError();
+    if (dbError) {
+      await sendTelegramMessage(chatId, dbError);
+      return res.status(200).send('OK');
+    }
+
+    const { setBulkStoreActive, clearStoreSession } = await import('../filestore.js');
+    await clearStoreSession(chatId);
+    await setBulkStoreActive(chatId, true);
+
+    const text = `📦 <b>Bulk Store Mode Active</b>\n\n` +
+      `Forward or send files (documents, videos, audio, photos) one by one.\n` +
+      `Each file will be stored automatically, and you will get <b>all links in one copyable list</b> and as a <b>.txt document</b> when finished.\n\n` +
+      `When done, tap <b>Done & Get All Links</b> or send /done.\nSend /cancel to abort.`;
+
+    await sendTelegramMessage(chatId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Done & Get All Links (0)'), callback_data: 'admin:bulk_store_done' }],
+        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:bulk_store_cancel' }]
+      ]
+    });
+    return res.status(200).send('OK');
+  }
+
+  if (/^\/exportlinks/i.test(rawText) && admin) {
+    const parts = rawText.trim().split(/\s+/).slice(1);
+    const { getExportLinksKeyboard } = await import('../bot-helpers.js');
+
+    if (parts.length === 0) {
+      const text = `📄 <b>Export Links Hub</b>\n\nSelect a time duration or category to export links as a <b>.txt</b> document and get a 1-tap copyable text block:\n\nYou can also run directly with arguments:\n• <code>/exportlinks 15m</code>\n• <code>/exportlinks 30m batch</code>\n• <code>/exportlinks 1h</code>\n• <code>/exportlinks today</code>`;
+      await sendTelegramMessage(chatId, text, getExportLinksKeyboard());
+      return res.status(200).send('OK');
+    }
+
+    const argStr = parts.join(' ').toLowerCase();
+    const isToday = /\btoday\b/i.test(argStr);
+    const isAll = /\ball\b/i.test(argStr);
+    const isBatchOnly = /\b(batch|batches)\b/i.test(argStr);
+    const isFileOnly = /\b(file|files)\b/i.test(argStr);
+    const filterType = isBatchOnly ? 'batch' : isFileOnly ? 'media' : 'all';
+
+    const { getTodayFiles, getFilesWithinDuration, generateLinksExportText, generateRawLinksText, formatDurationLabel, parseDurationString } = await import('../filestore.js');
+    const { sendTelegramFileBuffer } = await import('../bot-common.js');
+    const botUsername = await getBotUsername();
+
+    if (isToday) {
+      const todayFiles = await getTodayFiles();
+      const filtered = isBatchOnly ? todayFiles.filter(f => f.type === 'batch') : isFileOnly ? todayFiles.filter(f => f.type !== 'batch') : todayFiles;
+      if (!filtered.length) {
+        await sendTelegramMessage(chatId, `⚠️ <i>No ${isBatchOnly ? 'batches' : 'links'} created today.</i>`);
+        return res.status(200).send('OK');
+      }
+      const title = `Today's ${isBatchOnly ? 'Batches' : 'Links'}`;
+      const txtContent = generateLinksExportText(filtered, botUsername, title);
+      const buffer = Buffer.from(txtContent, 'utf-8');
+      const filename = `filestore_today_${filterType}_${new Date().toISOString().slice(0, 10)}.txt`;
+
+      if (filtered.length <= 30) {
+        const rawBlock = generateRawLinksText(filtered, botUsername);
+        await sendTelegramMessage(chatId, `📋 <b>${title} (${filtered.length})</b>\n\nTap box to copy all links:\n<pre>${rawBlock}</pre>`);
+      }
+
+      await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${filtered.length} records)`);
+      return res.status(200).send('OK');
+    }
+
+    if (isAll) {
+      const filesColl = await getCollection('files');
+      const query = {};
+      if (filterType !== 'all') query.type = filterType;
+      const allFiles = await filesColl.find(query).sort({ createdAt: -1 }).toArray();
+      if (!allFiles.length) {
+        await sendTelegramMessage(chatId, `⚠️ <i>No stored records found in database.</i>`);
+        return res.status(200).send('OK');
+      }
+      const title = `All Stored ${isBatchOnly ? 'Batches' : 'Links'}`;
+      const txtContent = generateLinksExportText(allFiles, botUsername, title);
+      const buffer = Buffer.from(txtContent, 'utf-8');
+      const filename = `filestore_all_${filterType}_${new Date().toISOString().slice(0, 10)}.txt`;
+      await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${allFiles.length} records)`);
+      return res.status(200).send('OK');
+    }
+
+    // Parse time duration (e.g. 15m, 30m, 1h, 120, 2h)
+    const cleanDuration = argStr.replace(/\b(batch|batches|files|file)\b/g, '').trim();
+    let seconds = parseDurationString(cleanDuration);
+    if (!seconds && /^\d+$/.test(cleanDuration)) {
+      seconds = parseInt(cleanDuration, 10) * 60;
+    }
+
+    if (!seconds || seconds <= 0) {
+      await sendTelegramMessage(chatId, `❌ <b>Invalid time parameter!</b>\n\n<b>Usage Examples:</b>\n• <code>/exportlinks 15m</code> (last 15 minutes)\n• <code>/exportlinks 30m batch</code> (last 30 minutes, batches only)\n• <code>/exportlinks 1h</code> (last 1 hour)\n• <code>/exportlinks today</code> (today's links)\n• <code>/exportlinks all</code> (entire database)`);
+      return res.status(200).send('OK');
+    }
+
+    const records = await getFilesWithinDuration(seconds, filterType);
+    const durationLabel = formatDurationLabel(seconds);
+    const typeLabel = isBatchOnly ? 'Batches' : isFileOnly ? 'Single Files' : 'Links';
+
+    if (!records.length) {
+      await sendTelegramMessage(chatId, `⚠️ <i>No ${typeLabel.toLowerCase()} found created within the last ${durationLabel}.</i>`);
+      return res.status(200).send('OK');
+    }
+
+    const title = `${typeLabel} in Last ${durationLabel}`;
+    const txtContent = generateLinksExportText(records, botUsername, title);
+    const buffer = Buffer.from(txtContent, 'utf-8');
+    const filename = `filestore_${filterType}_${Math.round(seconds / 60)}m_${new Date().toISOString().slice(0, 10)}.txt`;
+
+    if (records.length <= 30) {
+      const rawBlock = generateRawLinksText(records, botUsername);
+      await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to copy all links at once:\n<pre>${rawBlock}</pre>`);
+    }
+
+    await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b> (${records.length} records)`);
     return res.status(200).send('OK');
   }
 

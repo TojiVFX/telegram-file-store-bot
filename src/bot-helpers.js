@@ -139,6 +139,35 @@ export function getAdminDashboardKeyboard() {
   };
 }
 
+export function getExportLinksKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: toSmallCaps('Last 15 Mins'), callback_data: 'admin:exp_time:900:all' },
+        { text: toSmallCaps('Last 30 Mins'), callback_data: 'admin:exp_time:1800:all' }
+      ],
+      [
+        { text: toSmallCaps('Last 1 Hour'), callback_data: 'admin:exp_time:3600:all' },
+        { text: toSmallCaps('Last 6 Hours'), callback_data: 'admin:exp_time:21600:all' }
+      ],
+      [
+        { text: toSmallCaps('Batches (Last 30m)'), callback_data: 'admin:exp_time:1800:batch' },
+        { text: toSmallCaps('Batches (Last 1h)'), callback_data: 'admin:exp_time:3600:batch' }
+      ],
+      [
+        { text: toSmallCaps("Today's Links"), callback_data: 'admin:export_today_txt' },
+        { text: toSmallCaps('All Time Links'), callback_data: 'admin:export_all_txt' }
+      ],
+      [
+        { text: toSmallCaps('Custom Duration'), callback_data: 'admin:exp_custom_prompt' }
+      ],
+      [
+        { text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }
+      ]
+    ]
+  };
+}
+
 export async function buildStartMenuButtons(admin) {
   const buttons = [
     [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]

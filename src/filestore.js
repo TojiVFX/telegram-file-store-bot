@@ -161,6 +161,106 @@ export async function clearBatchSession(chatId) {
   await sessions.deleteOne({ _id: key });
 }
 
+// ─── Bulk Store Session ─────────────────────────────────────────────────────
+// Tracks accumulated file codes across multiple individual /store operations
+// so all links can be shown together at the end.
+
+export async function addToStoreSession(chatId, code) {
+  const sessions = await getCollection('sessions');
+  const key = `admin:store:session:${chatId}`;
+  await sessions.updateOne(
+    { _id: key },
+    { $push: { codes: code }, $set: { expiresAt: new Date(Date.now() + 1800 * 1000) } },
+    { upsert: true }
+  );
+  const doc = await sessions.findOne({ _id: key });
+  return doc?.codes?.length || 0;
+}
+
+export async function getStoreSession(chatId) {
+  const sessions = await getCollection('sessions');
+  const key = `admin:store:session:${chatId}`;
+  const doc = await sessions.findOne({ _id: key });
+  if (doc && doc.expiresAt > new Date()) return doc.codes || [];
+  return [];
+}
+
+export async function clearStoreSession(chatId) {
+  const sessions = await getCollection('sessions');
+  const key = `admin:store:session:${chatId}`;
+  await sessions.deleteOne({ _id: key });
+}
+
+export async function isBulkStoreActive(chatId) {
+  const sessions = await getCollection('sessions');
+  const doc = await sessions.findOne({ _id: `admin:bulk_store:active:${chatId}` });
+  return !!(doc && doc.expiresAt > new Date());
+}
+
+export async function setBulkStoreActive(chatId, active = true) {
+  const sessions = await getCollection('sessions');
+  const key = `admin:bulk_store:active:${chatId}`;
+  if (active) {
+    await sessions.updateOne(
+      { _id: key },
+      { $set: { val: 1, expiresAt: new Date(Date.now() + 1800 * 1000) } },
+      { upsert: true }
+    );
+  } else {
+    await sessions.deleteOne({ _id: key });
+  }
+}
+
+export function generateLinksExportText(files, botUsername, title = 'STORED LINKS') {
+  const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  let out = `======================================================\n`;
+  out += `TELEGRAM FILE STORE BOT - ${title.toUpperCase()}\n`;
+  out += `Generated: ${nowStr}\n`;
+  out += `Total Records: ${files.length}\n`;
+  out += `======================================================\n\n`;
+
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const code = f._id || f;
+    const type = f.type || 'file';
+    const downloads = f.accessCount || 0;
+    const created = f.createdAt ? String(f.createdAt).slice(0, 19).replace('T', ' ') : 'N/A';
+    const link = `https://t.me/${botUsername}?start=${code}`;
+
+    out += `${i + 1}. [${type.toUpperCase()}] ${code}\n`;
+    out += `   Downloads: ${downloads}\n`;
+    out += `   Created:   ${created}\n`;
+    out += `   Link:      ${link}\n\n`;
+  }
+  return out;
+}
+
+export function generateRawLinksText(files, botUsername) {
+  return files.map(f => `https://t.me/${botUsername}?start=${f._id || f}`).join('\n');
+}
+
+export async function getFilesWithinDuration(seconds, filterType = null) {
+  try {
+    const files = await getCollection('files');
+    const sinceDate = new Date(Date.now() - seconds * 1000).toISOString();
+    const query = { createdAt: { $gte: sinceDate } };
+    if (filterType && filterType !== 'all') {
+      query.type = filterType;
+    }
+    return await files.find(query).sort({ createdAt: -1 }).toArray();
+  } catch (err) {
+    log('error', 'getFilesWithinDuration failed', { errorMessage: err.message });
+    return [];
+  }
+}
+
+export function formatDurationLabel(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} Mins`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} Hours`;
+  return `${Math.round(seconds / 86400)} Days`;
+}
+
 export async function runWeeklyCleanup() {
   const files = await getCollection('files');
   const allFiles = await files.find({}).toArray();
