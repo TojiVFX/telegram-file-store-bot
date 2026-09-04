@@ -1164,8 +1164,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     }
 
     const { setBundleSession } = await import('../filestore.js');
-    await setBundleSession(chatId, { step: 'collect', qualities: [], title: '' });
-    await editTelegramMessage(chatId, messageId, `🎛 <b>Create Multi-Quality Bundle</b>\n\nSend or forward each video resolution for this release (e.g. 480p, 720p, 1080p).\n\n💡 <i>The bot auto-detects video resolution and file size!</i>\n\nSend /done when finished, or /cancel to abort.`, {
+    await setBundleSession(chatId, { step: 'first', qualities: [], title: '', sessionMsgId: messageId });
+    await editTelegramMessage(chatId, messageId, `🎛 <b>Create Multi-Quality Bundle</b>\n\nSend the <b>first message link</b> (or forward the first video):\nExample: <code>https://t.me/c/1234567890/101</code>\n\n<i>💡 You can also send both links together:</i>\n<code>https://t.me/c/.../101 https://t.me/c/.../104</code>\n\nSend /done when finished, or /cancel to abort.`, {
       inline_keyboard: [
         [{ text: toSmallCaps('Finish Bundle'), callback_data: 'admin:bundle_done' }],
         [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
@@ -1173,7 +1173,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     });
     return res.status(200).send('OK');
   } else if (action === 'bundle_done') {
-    const { getBundleSession, storeBundle, generateBundleCode, clearBundleSession } = await import('../filestore.js');
+    const { getBundleSession, storeBundle, generateBundleCode, clearBundleSession, sortQualities } = await import('../filestore.js');
     const bSession = await getBundleSession(chatId);
     if (!bSession || !bSession.qualities?.length) {
       await answerCallbackQuery(cq.id, 'No files added to bundle yet.', true);
@@ -1184,17 +1184,18 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     const backupDbChannelId = await getBackupDbChannelId();
     const bundleCode = generateBundleCode();
     const title = bSession.title || bSession.qualities[0].fileName || 'Multi-Quality Release';
+    const sortedQualities = sortQualities(bSession.qualities);
 
-    await storeBundle(bundleCode, title, dbChannelId, bSession.qualities, { userId: chatId }, { backupDbChannelId });
+    await storeBundle(bundleCode, title, dbChannelId, sortedQualities, { userId: chatId }, { backupDbChannelId });
     await clearBundleSession(chatId);
 
     const bot = await getBotUsername();
     const shareLink = `https://t.me/${bot}?start=${bundleCode}`;
-    const qList = bSession.qualities.map(q => `• <b>${q.quality}</b> (${q.fileSizeLabel})`).join('\n');
+    const qList = sortedQualities.map(q => `• <b>${q.quality}</b> (${q.fileSizeLabel})`).join('\n');
 
     const text = `🎛 <b>Multi-Quality Bundle Created!</b>\n\n` +
       `<b>Title:</b> ${esc(title)}\n` +
-      `<b>Resolutions Included (${bSession.qualities.length}):</b>\n${qList}\n\n` +
+      `<b>Resolutions Included (${sortedQualities.length}):</b>\n${qList}\n\n` +
       `<b>Share Link:</b>\n<code>${shareLink}</code>\n<i>(Tap link to copy)</i>`;
 
     await editTelegramMessage(chatId, messageId, text, {

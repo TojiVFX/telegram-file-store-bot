@@ -177,26 +177,126 @@ export function generateBundleCode() {
   return generateCode('bundle');
 }
 
+export function cleanMediaFileName(rawName) {
+  if (!rawName || typeof rawName !== 'string') return '';
+
+  let name = rawName.trim();
+
+  // 1. Strip file extension (.mkv, .mp4, .avi, .ts, .webm, .m4v, .mov, .flv, etc.)
+  name = name.replace(/\.(mkv|mp4|avi|ts|webm|m4v|mov|flv|wmv|3gp)$/i, '');
+
+  // 2. Strip bracketed release group prefix at the start, e.g. [SubsPlease], [Erai-raws], [Judas], (ASW)
+  name = name.replace(/^(\[[^\]]+\]|\([^)]+\))\s*/g, '');
+
+  // 3. Strip bracketed CRC hashes or tags at the end, e.g. [F4B3C5], [1080p], (720p), etc.
+  name = name.replace(/\s*(\[[0-9A-Fa-f]{6,8}\]|\b[0-9A-Fa-f]{8}\b)\s*$/g, '');
+
+  // 4. Replace dots and underscores with spaces
+  name = name.replace(/[._]+/g, ' ');
+
+  // 5. Strip common video/audio encoding tags, source tags, and resolution keywords
+  const noiseRegex = /\b(2160p|1080p|720p|480p|360p|4k|uhd|fhd|hd|sd|hevc|x264|x265|h264|h265|avc|10bit|8bit|web-?dl|webrip|web|bluray|blu-?ray|brrip|bdrip|dvdrip|hdtv|pdtv|dsr|aac|flac|mp3|ac3|eac3|ddp\d*|remux)\b/gi;
+  name = name.replace(noiseRegex, ' ');
+
+  // 6. Strip standalone empty brackets like [] or ()
+  name = name.replace(/\[\s*\]|\(\s*\)/g, ' ');
+
+  // 7. Clean up multiple spaces, leading/trailing hyphens/colons/whitespace
+  name = name.replace(/\s{2,}/g, ' ');
+  name = name.replace(/^[\s\-–—:]+|[\s\-–—:]+$/g, '').trim();
+
+  return name;
+}
+
+export function extractMediaTitle(message) {
+  if (!message) return 'Multi-Quality Release';
+
+  const rawFileName = message.document?.file_name || message.video?.file_name || '';
+  const cleanName = cleanMediaFileName(rawFileName);
+
+  const caption = message.caption || message.text || '';
+
+  // Extract episode metadata from caption (e.g. "📟 Episode - 1" or "Ep: 05")
+  let epLabel = '';
+  const epMatch = caption.match(/(?:Episode|Ep|EP)\s*[-:]*\s*(\d+)/i);
+  if (epMatch) {
+    epLabel = `Episode ${epMatch[1]}`;
+  }
+
+  // Extract language metadata from caption (e.g. "🎧 Language - Hindi")
+  let langLabel = '';
+  const langMatch = caption.match(/(?:Language|Lang|Audio)\s*[-:]*\s*([a-zA-Z\s]+?)(?=\n|$|[,\/&])/i);
+  if (langMatch) {
+    const rawLang = langMatch[1].trim();
+    if (rawLang && rawLang.length <= 20) {
+      langLabel = rawLang;
+    }
+  }
+
+  // If we have a clean filename from the file:
+  if (cleanName) {
+    let finalTitle = cleanName;
+
+    // Check if cleanName already has an episode indicator (e.g. "S02E01", "E01", "Ep 1", "Episode 1", "- 01")
+    const hasEpInName = /(?:S\d+)?E\d+|\b(?:Episode|Ep)\.?\s*\d+|-\s*\d+\b/i.test(finalTitle);
+
+    if (!hasEpInName && epLabel) {
+      finalTitle += ` - ${epLabel}`;
+    }
+
+    if (langLabel && !new RegExp(`\\b${langLabel}\\b`, 'i').test(finalTitle)) {
+      finalTitle += ` [${langLabel}]`;
+    }
+
+    return finalTitle;
+  }
+
+  // Fallback: check forwarded channel title
+  const forwardTitle = message.forward_from_chat?.title || message.forward_origin?.chat?.title || '';
+  const cleanFwdTitle = forwardTitle ? forwardTitle.replace(/\s*\|.*$/, '').trim() : '';
+
+  if (epLabel) {
+    const base = cleanFwdTitle ? `${cleanFwdTitle} - ${epLabel}` : epLabel;
+    return langLabel ? `${base} [${langLabel}]` : base;
+  }
+
+  if (cleanFwdTitle) {
+    return langLabel ? `${cleanFwdTitle} [${langLabel}]` : cleanFwdTitle;
+  }
+
+  return 'Multi-Quality Release';
+}
+
 export function detectMediaQuality(message) {
+  if (!message) return 'Standard';
+
   const text = (message.caption || message.text || '').toLowerCase();
   const docName = (message.document?.file_name || message.video?.file_name || '').toLowerCase();
   const combined = `${docName} ${text}`;
 
+  // 1. Explicit resolution tags in caption or filename (highest precision)
+  if (/\b(2160p|4k)\b/i.test(combined)) return '4K';
+  if (/\b1080p\b/i.test(combined)) return '1080p';
+  if (/\b720p\b/i.test(combined)) return '720p';
+  if (/\b480p\b/i.test(combined)) return '480p';
+  if (/\b360p\b/i.test(combined)) return '360p';
+
+  // 2. Video pixel dimensions from Telegram video metadata
   const height = message.video?.height;
   const width = message.video?.width;
   const effectiveHeight = height && width ? Math.min(height, width) : (height || 0);
 
-  if (effectiveHeight >= 2000 || /2160p|4k|uhd/i.test(combined)) return '4K';
-  if (effectiveHeight >= 1000 || /1080p|fhd/i.test(combined)) return '1080p';
-  if (effectiveHeight >= 700 || /720p|hd/i.test(combined)) return '720p';
-  if (effectiveHeight >= 450 || /480p|sd/i.test(combined)) return '480p';
-  if (effectiveHeight >= 300 || /360p/i.test(combined)) return '360p';
+  if (effectiveHeight >= 2000) return '4K';
+  if (effectiveHeight >= 1000) return '1080p';
+  if (effectiveHeight >= 700) return '720p';
+  if (effectiveHeight >= 450) return '480p';
+  if (effectiveHeight >= 300) return '360p';
 
-  if (/2160p|4k/i.test(combined)) return '4K';
-  if (/1080p/i.test(combined)) return '1080p';
-  if (/720p/i.test(combined)) return '720p';
-  if (/480p/i.test(combined)) return '480p';
-  if (/360p/i.test(combined)) return '360p';
+  // 3. Secondary tags (UHD, FHD, HD, SD)
+  if (/\buhd\b/i.test(combined)) return '4K';
+  if (/\bfhd\b/i.test(combined)) return '1080p';
+  if (/\bhd\b/i.test(combined)) return '720p';
+  if (/\bsd\b/i.test(combined)) return '480p';
 
   return 'Standard';
 }
@@ -210,13 +310,25 @@ export function formatBytes(bytes) {
   return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+export function sortQualities(qualities) {
+  if (!Array.isArray(qualities)) return [];
+  const ORDER = { '360p': 1, '480p': 2, '720p': 3, '1080p': 4, '4k': 5, '4K': 5, '2160p': 5 };
+  return [...qualities].sort((a, b) => {
+    const oa = ORDER[a.quality] || 99;
+    const ob = ORDER[b.quality] || 99;
+    if (oa !== ob) return oa - ob;
+    return (a.fileSize || 0) - (b.fileSize || 0);
+  });
+}
+
 export async function storeBundle(bundleCode, title, dbChannelId, qualities, creator = {}, backupData = {}) {
   const files = await getCollection('files');
+  const sorted = sortQualities(qualities);
   const updateData = {
     type: 'bundle',
     title: title || 'Multi-Quality Release',
     dbChannelId,
-    qualities,
+    qualities: sorted,
     createdAt: new Date().toISOString(),
     accessCount: 0
   };
@@ -350,10 +462,13 @@ export function generateLinksExportText(files, botUsername, title = 'STORED LINK
     const created = f.createdAt ? String(f.createdAt).slice(0, 19).replace('T', ' ') : 'N/A';
     const link = `https://t.me/${botUsername}?start=${code}`;
     const bundleInfo = f.type === 'bundle' && Array.isArray(f.qualities) ? ` (${f.qualities.map(q => q.quality).join(', ')})` : '';
+    const fileQualityInfo = f.quality && f.fileSizeLabel ? ` (${f.quality} • ${f.fileSizeLabel})` : (f.quality ? ` (${f.quality})` : (f.fileSizeLabel ? ` (${f.fileSizeLabel})` : ''));
 
-    out += `${i + 1}. [${type.toUpperCase()}] ${code}${bundleInfo}\n`;
-    if (f.title && f.type === 'bundle') {
+    out += `${i + 1}. [${type.toUpperCase()}] ${code}${bundleInfo}${f.type !== 'bundle' ? fileQualityInfo : ''}\n`;
+    if (f.title) {
       out += `   Title:     ${f.title}\n`;
+    } else if (f.fileName) {
+      out += `   File:      ${f.fileName}\n`;
     }
     out += `   Downloads: ${downloads}\n`;
     out += `   Created:   ${created}\n`;

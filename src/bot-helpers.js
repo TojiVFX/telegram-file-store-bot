@@ -370,6 +370,104 @@ export async function extractChannelMessage(message) {
   return null;
 }
 
+export async function forwardMessage(toChatId, fromChatId, msgId, protectContent = false) {
+  const token = getToken();
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const body = {
+      chat_id: toChatId,
+      from_chat_id: fromChatId,
+      message_id: msgId,
+      protect_content: protectContent,
+    };
+    const response = await fetch(`https://api.telegram.org/bot${token}/forwardMessage`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      log('error', 'forwardMessage failed', { toChatId, fromChatId, msgId, telegramError: data });
+      return { ok: false, reason: data.description || 'unknown_error', telegramError: data };
+    }
+    return { ok: true, message: data.result, messageId: data.result?.message_id };
+  } catch (err) {
+    log('error', 'forwardMessage network error', { errorMessage: err.message, msgId });
+    return { ok: false, reason: 'network_error' };
+  }
+}
+
+export async function extractChannelMessageRange(rawText) {
+  if (!rawText || typeof rawText !== 'string') return null;
+
+  // Match private channel links: t.me/c/1234567890/101
+  const privateRegex = /t\.me\/c\/(\d+)\/(\d+)/g;
+  const privateMatches = [...rawText.matchAll(privateRegex)];
+
+  if (privateMatches.length >= 2) {
+    const c1 = privateMatches[0][1];
+    const c2 = privateMatches[1][1];
+    if (c1 === c2) {
+      const id1 = parseInt(privateMatches[0][2], 10);
+      const id2 = parseInt(privateMatches[1][2], 10);
+      const firstMsgId = Math.min(id1, id2);
+      const lastMsgId = Math.max(id1, id2);
+      return {
+        channelId: Number(`-100${c1}`),
+        firstMsgId,
+        lastMsgId,
+        totalCount: lastMsgId - firstMsgId + 1
+      };
+    }
+  }
+
+  // Match public channel links: t.me/username/101
+  const publicRegex = /t\.me\/([a-zA-Z][a-zA-Z0-9_]{3,})\/(\d+)/g;
+  const publicMatches = [];
+  let m;
+  while ((m = publicRegex.exec(rawText)) !== null) {
+    if (m[1] !== 'c') {
+      publicMatches.push(m);
+    }
+  }
+
+  if (publicMatches.length >= 2) {
+    const u1 = publicMatches[0][1].toLowerCase();
+    const u2 = publicMatches[1][1].toLowerCase();
+    if (u1 === u2) {
+      const id1 = parseInt(publicMatches[0][2], 10);
+      const id2 = parseInt(publicMatches[1][2], 10);
+      const firstMsgId = Math.min(id1, id2);
+      const lastMsgId = Math.max(id1, id2);
+
+      const token = getToken();
+      let channelId = null;
+      try {
+        const resp = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: `@${publicMatches[0][1]}` }),
+        });
+        const data = await resp.json();
+        if (data.ok && data.result?.type === 'channel') {
+          channelId = data.result.id;
+        }
+      } catch (err) {
+        log('error', 'extractChannelMessageRange: getChat failed', { username: u1, errorMessage: err.message });
+      }
+
+      return {
+        channelId: channelId || `@${publicMatches[0][1]}`,
+        firstMsgId,
+        lastMsgId,
+        totalCount: lastMsgId - firstMsgId + 1
+      };
+    }
+  }
+
+  return null;
+}
+
 export function getForceSubChannelsList(forceSubscribeChannelsRaw, globalMode = 'normal') {
   if (!forceSubscribeChannelsRaw) {
     return [];

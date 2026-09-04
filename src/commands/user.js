@@ -123,6 +123,74 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     return res.status(200).send('OK');
   }
 
+  if (/^\/bundle/i.test(rawText) && canGenerate) {
+    const dbChannelId = await getDbChannelId();
+    if (!dbChannelId) {
+      const mainBotUsername = await getMainBotUsername();
+      const setLink = `https://t.me/${mainBotUsername}?start=setting`;
+      await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
+      return res.status(200).send('OK');
+    }
+
+    if (!(await isBotAdmin(dbChannelId))) {
+      const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
+      await sendTelegramMessage(chatId, helpMsg);
+      return res.status(200).send('OK');
+    }
+
+    const { extractChannelMessageRange, extractChannelMessage } = await import('../bot-helpers.js');
+
+    // 1. Check if user sent range directly with command: /bundle <link1> <link2>
+    const range = await extractChannelMessageRange(rawText);
+    if (range) {
+      const { processBundleRange } = await import('../commands/admin.js');
+      await processBundleRange(chatId, range, null);
+      return res.status(200).send('OK');
+    }
+
+    // 2. Check if user sent single first link with command: /bundle <link1>
+    const { setBundleSession } = await import('../filestore.js');
+    const single = await extractChannelMessage(message);
+
+    if (single) {
+      const promptMsg = await sendTelegramMessage(chatId, `🎛 <b>Create Multi-Quality Bundle</b>\n\n` +
+        `✅ <b>First Message Saved:</b> <code>#${single.msgId}</code>\n\n` +
+        `Now send the <b>target message link</b> (or forward the last video):\n` +
+        `Example: <code>https://t.me/c/.../${single.msgId + 2}</code>`, {
+        inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
+      });
+
+      await setBundleSession(chatId, {
+        step: 'last',
+        srcChannelId: single.channelId,
+        srcFirstMsgId: single.msgId,
+        qualities: [],
+        title: '',
+        sessionMsgId: promptMsg?.result?.message_id
+      });
+      return res.status(200).send('OK');
+    }
+
+    // 3. Plain /bundle interactive start:
+    const promptMsg = await sendTelegramMessage(chatId, `🎛 <b>Create Multi-Quality Bundle</b>\n\n` +
+      `Send the <b>first message link</b> (or forward the first video):\n` +
+      `Example: <code>https://t.me/c/1234567890/101</code>\n\n` +
+      `<i>💡 You can also send both links together:</i>\n` +
+      `<code>https://t.me/c/.../101 https://t.me/c/.../104</code>`, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
+      ]
+    });
+
+    await setBundleSession(chatId, {
+      step: 'first',
+      qualities: [],
+      title: '',
+      sessionMsgId: promptMsg?.result?.message_id
+    });
+    return res.status(200).send('OK');
+  }
+
   if (/^\/batch/i.test(rawText) && canGenerate) {
     const dbChannelId = await getDbChannelId();
     if (!dbChannelId) {
@@ -168,7 +236,9 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
   }
 
   if (/^\/cancel/i.test(rawText) && admin) {
+    const { clearBundleSession } = await import('../filestore.js');
     await clearBatchSession(chatId);
+    await clearBundleSession(chatId);
     await checkAndClearAdminWaiting(chatId);
     await sendTelegramMessage(chatId, `✅ Cancelled.`);
     return res.status(200).send('OK');
