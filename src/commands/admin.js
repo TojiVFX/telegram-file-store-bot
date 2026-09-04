@@ -338,11 +338,12 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       return res.status(200).send('OK');
     }
 
-    if (waitingAction === 'export_custom_duration') {
+    if (waitingAction.startsWith('export_custom_duration')) {
+      const presetType = waitingAction.split(':')[1] || 'all';
       const { parseDurationString, getFilesWithinDuration, generateLinksExportText, generateRawLinksText, formatDurationLabel } = await import('../filestore.js');
       const lower = rawText.trim().toLowerCase();
-      const isBatchOnly = lower.includes('batch');
-      const isFileOnly = lower.includes('file');
+      const isBatchOnly = lower.includes('batch') || presetType === 'batch';
+      const isFileOnly = (!isBatchOnly && lower.includes('file')) || presetType === 'media';
       const filterType = isBatchOnly ? 'batch' : isFileOnly ? 'media' : 'all';
 
       // Strip words like 'batches', 'batch', 'files', 'file' to isolate duration number

@@ -139,33 +139,51 @@ export function getAdminDashboardKeyboard() {
   };
 }
 
-export function getExportLinksKeyboard() {
+export function getExportHubKeyboard() {
   return {
     inline_keyboard: [
       [
-        { text: toSmallCaps('Last 15 Mins'), callback_data: 'admin:exp_time:900:all' },
-        { text: toSmallCaps('Last 30 Mins'), callback_data: 'admin:exp_time:1800:all' }
+        { text: toSmallCaps('Single Files'), callback_data: 'admin:export_type:media' },
+        { text: toSmallCaps('Batches'), callback_data: 'admin:export_type:batch' }
       ],
       [
-        { text: toSmallCaps('Last 1 Hour'), callback_data: 'admin:exp_time:3600:all' },
-        { text: toSmallCaps('Last 6 Hours'), callback_data: 'admin:exp_time:21600:all' }
-      ],
-      [
-        { text: toSmallCaps('Batches (Last 30m)'), callback_data: 'admin:exp_time:1800:batch' },
-        { text: toSmallCaps('Batches (Last 1h)'), callback_data: 'admin:exp_time:3600:batch' }
-      ],
-      [
-        { text: toSmallCaps("Today's Links"), callback_data: 'admin:export_today_txt' },
-        { text: toSmallCaps('All Time Links'), callback_data: 'admin:export_all_txt' }
-      ],
-      [
-        { text: toSmallCaps('Custom Duration'), callback_data: 'admin:exp_custom_prompt' }
+        { text: toSmallCaps('All Links (Combined)'), callback_data: 'admin:export_type:all' }
       ],
       [
         { text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }
       ]
     ]
   };
+}
+
+export function getExportTimeKeyboard(filterType = 'all') {
+  const typeLabel = filterType === 'batch' ? 'Batches' : filterType === 'media' ? 'Files' : 'Links';
+  return {
+    inline_keyboard: [
+      [
+        { text: toSmallCaps('Last 15 Mins'), callback_data: `admin:exp_time:900:${filterType}` },
+        { text: toSmallCaps('Last 30 Mins'), callback_data: `admin:exp_time:1800:${filterType}` }
+      ],
+      [
+        { text: toSmallCaps('Last 1 Hour'), callback_data: `admin:exp_time:3600:${filterType}` },
+        { text: toSmallCaps('Last 6 Hours'), callback_data: `admin:exp_time:21600:${filterType}` }
+      ],
+      [
+        { text: toSmallCaps(`Today's ${typeLabel}`), callback_data: `admin:exp_today:${filterType}` },
+        { text: toSmallCaps(`All Time ${typeLabel}`), callback_data: `admin:exp_all:${filterType}` }
+      ],
+      [
+        { text: toSmallCaps('Custom Duration'), callback_data: `admin:exp_custom_prompt:${filterType}` }
+      ],
+      [
+        { text: toSmallCaps('Back to Export Hub'), callback_data: 'admin:export_hub' }
+      ]
+    ]
+  };
+}
+
+export function getExportLinksKeyboard() {
+  return getExportHubKeyboard();
 }
 
 export async function buildStartMenuButtons(admin) {

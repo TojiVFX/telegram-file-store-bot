@@ -2,7 +2,7 @@ import {
   getCollection, getSettings, updateSettings, toSmallCaps, editTelegramMessage, answerCallbackQuery, sendTelegramMessage, logHistory, deleteTelegramMessage, sendTelegramVideo, sendTelegramPhoto, esc
 } from '../bot-common.js';
 import {
-  getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId, getAdminDashboardKeyboard, getExportLinksKeyboard, getDbChannelReadinessError
+  getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId, getAdminDashboardKeyboard, getExportHubKeyboard, getExportTimeKeyboard, getExportLinksKeyboard, getDbChannelReadinessError
 } from '../bot-helpers.js';
 
 // ─── Shared nav row ─────────────────────────────────────────────────────────────
@@ -685,8 +685,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     await answerCallbackQuery(cq.id, 'Copyable list sent below!');
     return res.status(200).send('OK');
   } else if (action === 'export_hub') {
-    const text = `📄 <b>Export Links Hub</b>\n\nSelect a time duration or category to export links as a <b>.txt</b> document and get a 1-tap copyable text block:`;
-    await editTelegramMessage(chatId, messageId, text, getExportLinksKeyboard());
+    const text = `📄 <b>Export Links Hub</b>\n\nSelect what type of links you want to export:\n\n• <b>Single Files:</b> Individual uploaded file & media links\n• <b>Batches:</b> Multi-file collection links\n• <b>All Links:</b> Every file and batch combined`;
+    await editTelegramMessage(chatId, messageId, text, getExportHubKeyboard());
+    return res.status(200).send('OK');
+  } else if (action.startsWith('export_type:')) {
+    const type = action.split(':')[1] || 'all';
+    const typeTitle = type === 'batch' ? '📦 <b>Export Batch Links</b>' : type === 'media' ? '📁 <b>Export Single Files</b>' : '📄 <b>Export All Links (Combined)</b>';
+    const text = `${typeTitle}\n\nSelect a time duration or category to export as a <b>.txt</b> document and get a 1-tap copyable text block:`;
+    await editTelegramMessage(chatId, messageId, text, getExportTimeKeyboard(type));
     return res.status(200).send('OK');
   } else if (action.startsWith('exp_time:')) {
     const parts = action.split(':');
@@ -698,7 +704,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
 
     const records = await getFilesWithinDuration(seconds, filterType);
     const durationLabel = formatDurationLabel(seconds);
-    const typeLabel = filterType === 'batch' ? 'Batches' : 'Links';
+    const typeLabel = filterType === 'batch' ? 'Batches' : filterType === 'media' ? 'Single Files' : 'Links';
 
     if (!records.length) {
       await answerCallbackQuery(cq.id, `No ${typeLabel.toLowerCase()} found in the last ${durationLabel}.`, true);
@@ -706,7 +712,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     }
 
     const botUsername = await getBotUsername();
-    const title = `${typeLabel} Created in Last ${durationLabel}`;
+    const title = `${typeLabel} in Last ${durationLabel}`;
     const txtContent = generateLinksExportText(records, botUsername, title);
     const buffer = Buffer.from(txtContent, 'utf-8');
     const filename = `filestore_${filterType}_${Math.round(seconds / 60)}m_${new Date().toISOString().slice(0, 10)}.txt`;
@@ -719,23 +725,85 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b>\n\nTotal Records: <b>${records.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`);
     await answerCallbackQuery(cq.id, `Exported ${records.length} ${typeLabel.toLowerCase()}!`);
     return res.status(200).send('OK');
-  } else if (action === 'exp_custom_prompt') {
+  } else if (action.startsWith('exp_today:')) {
+    const filterType = action.split(':')[1] || 'all';
+    const isBatchOnly = filterType === 'batch';
+    const isFileOnly = filterType === 'media';
+
+    const { getTodayFiles, generateLinksExportText, generateRawLinksText } = await import('../filestore.js');
+    const { sendTelegramFileBuffer } = await import('../bot-common.js');
+    const todayFiles = await getTodayFiles();
+    const filtered = isBatchOnly ? todayFiles.filter(f => f.type === 'batch') : isFileOnly ? todayFiles.filter(f => f.type !== 'batch') : todayFiles;
+    const typeLabel = isBatchOnly ? 'Batches' : isFileOnly ? 'Single Files' : 'Links';
+
+    if (!filtered.length) {
+      await answerCallbackQuery(cq.id, `No ${typeLabel.toLowerCase()} created today.`, true);
+      return res.status(200).send('OK');
+    }
+
+    const botUsername = await getBotUsername();
+    const title = `Today's ${typeLabel}`;
+    const txtContent = generateLinksExportText(filtered, botUsername, title);
+    const buffer = Buffer.from(txtContent, 'utf-8');
+    const filename = `filestore_today_${filterType}_${new Date().toISOString().slice(0, 10)}.txt`;
+
+    if (filtered.length <= 30) {
+      const rawBlock = generateRawLinksText(filtered, botUsername);
+      await sendTelegramMessage(chatId, `📋 <b>${title} (${filtered.length})</b>\n\nTap box to copy all links:\n<pre>${rawBlock}</pre>`);
+    }
+
+    await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${filtered.length} records)`);
+    await answerCallbackQuery(cq.id, `Exported ${filtered.length} ${typeLabel.toLowerCase()}!`);
+    return res.status(200).send('OK');
+  } else if (action.startsWith('exp_all:')) {
+    const filterType = action.split(':')[1] || 'all';
+    const isBatchOnly = filterType === 'batch';
+    const isFileOnly = filterType === 'media';
+
+    const { generateLinksExportText, generateRawLinksText } = await import('../filestore.js');
+    const { sendTelegramFileBuffer } = await import('../bot-common.js');
+    const filesColl = await getCollection('files');
+    const query = {};
+    if (filterType !== 'all') query.type = filterType;
+    const allFiles = await filesColl.find(query).sort({ createdAt: -1 }).toArray();
+    const typeLabel = isBatchOnly ? 'Batches' : isFileOnly ? 'Single Files' : 'Links';
+
+    if (!allFiles.length) {
+      await answerCallbackQuery(cq.id, `No ${typeLabel.toLowerCase()} found in database.`, true);
+      return res.status(200).send('OK');
+    }
+
+    const botUsername = await getBotUsername();
+    const title = `All Stored ${typeLabel}`;
+    const txtContent = generateLinksExportText(allFiles, botUsername, title);
+    const buffer = Buffer.from(txtContent, 'utf-8');
+    const filename = `filestore_all_${filterType}_${new Date().toISOString().slice(0, 10)}.txt`;
+
+    if (allFiles.length <= 30) {
+      const rawBlock = generateRawLinksText(allFiles, botUsername);
+      await sendTelegramMessage(chatId, `📋 <b>${title} (${allFiles.length})</b>\n\nTap box to copy all links:\n<pre>${rawBlock}</pre>`);
+    }
+
+    await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${allFiles.length} records)`);
+    await answerCallbackQuery(cq.id, `Exported ${allFiles.length} ${typeLabel.toLowerCase()}!`);
+    return res.status(200).send('OK');
+  } else if (action.startsWith('exp_custom_prompt:')) {
+    const filterType = action.split(':')[1] || 'all';
     await sessions.updateOne(
       { _id: `admin:waiting_action:${chatId}` },
-      { $set: { val: 'export_custom_duration', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { $set: { val: `export_custom_duration:${filterType}`, expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    const text = `⏱ <b>Export Links by Custom Time</b>\n\nEnter the duration in minutes or hours to export.\n\n` +
+    const typeLabel = filterType === 'batch' ? 'Batches' : filterType === 'media' ? 'Single Files' : 'Links';
+    const text = `⏱ <b>Export ${typeLabel} by Custom Time</b>\n\nEnter the duration in minutes or hours to export.\n\n` +
       `<b>Format Examples:</b>\n` +
       `• <code>10m</code> or <code>10</code> : last 10 minutes\n` +
       `• <code>45m</code> : last 45 minutes\n` +
-      `• <code>2h</code> : last 2 hours\n` +
-      `• <code>30m batch</code> : last 30 minutes, <b>batches only</b>\n` +
-      `• <code>15m file</code> : last 15 minutes, <b>single files only</b>\n\n` +
+      `• <code>2h</code> : last 2 hours\n\n` +
       `Send /cancel to abort.`;
 
     await editTelegramMessage(chatId, messageId, text, {
-      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:export_hub' }]]
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: `admin:export_type:${filterType}` }]]
     });
     return res.status(200).send('OK');
   } else if (action === 'temp_token_start') {
