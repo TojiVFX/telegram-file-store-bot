@@ -171,6 +171,119 @@ export async function clearBatchSession(chatId) {
   await sessions.deleteOne({ _id: key });
 }
 
+// ─── Multi-Quality Bundle Store ─────────────────────────────────────────────
+
+export function generateBundleCode() {
+  return generateCode('bundle');
+}
+
+export function detectMediaQuality(message) {
+  const text = (message.caption || message.text || '').toLowerCase();
+  const docName = (message.document?.file_name || message.video?.file_name || '').toLowerCase();
+  const combined = `${docName} ${text}`;
+
+  const height = message.video?.height;
+  const width = message.video?.width;
+  const effectiveHeight = height && width ? Math.min(height, width) : (height || 0);
+
+  if (effectiveHeight >= 2000 || /2160p|4k|uhd/i.test(combined)) return '4K';
+  if (effectiveHeight >= 1000 || /1080p|fhd/i.test(combined)) return '1080p';
+  if (effectiveHeight >= 700 || /720p|hd/i.test(combined)) return '720p';
+  if (effectiveHeight >= 450 || /480p|sd/i.test(combined)) return '480p';
+  if (effectiveHeight >= 300 || /360p/i.test(combined)) return '360p';
+
+  if (/2160p|4k/i.test(combined)) return '4K';
+  if (/1080p/i.test(combined)) return '1080p';
+  if (/720p/i.test(combined)) return '720p';
+  if (/480p/i.test(combined)) return '480p';
+  if (/360p/i.test(combined)) return '360p';
+
+  return 'Standard';
+}
+
+export function formatBytes(bytes) {
+  if (!bytes || isNaN(bytes)) return 'Unknown Size';
+  const b = parseInt(bytes, 10);
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(0)} MB`;
+  return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+export async function storeBundle(bundleCode, title, dbChannelId, qualities, creator = {}, backupData = {}) {
+  const files = await getCollection('files');
+  const updateData = {
+    type: 'bundle',
+    title: title || 'Multi-Quality Release',
+    dbChannelId,
+    qualities,
+    createdAt: new Date().toISOString(),
+    accessCount: 0
+  };
+  if (backupData.backupDbChannelId) {
+    updateData.backupDbChannelId = backupData.backupDbChannelId;
+  }
+  await files.updateOne(
+    { _id: bundleCode },
+    { $set: updateData },
+    { upsert: true }
+  );
+
+  logActivity({
+    eventType: 'bundle_create',
+    userId: creator.userId,
+    username: creator.username,
+    firstName: creator.firstName,
+    targetCode: bundleCode,
+    targetType: 'bundle',
+    details: `Created bundle ${bundleCode} (${qualities.length} resolutions)`,
+    metadata: { count: qualities.length, dbChannelId, backupDbChannelId: backupData.backupDbChannelId }
+  }).catch(() => {});
+}
+
+export async function getBundle(bundleCode) {
+  const files = await getCollection('files');
+  return await files.findOne({ _id: bundleCode });
+}
+
+export async function setBundleSession(chatId, state) {
+  const sessions = await getCollection('sessions');
+  const key = `admin:bundle:session:${chatId}`;
+  const expiresAt = new Date(Date.now() + 600 * 1000);
+  await sessions.updateOne(
+    { _id: key },
+    { $set: { ...state, expiresAt } },
+    { upsert: true }
+  );
+}
+
+export async function getBundleSession(chatId) {
+  const sessions = await getCollection('sessions');
+  const key = `admin:bundle:session:${chatId}`;
+  const doc = await sessions.findOne({ _id: key });
+  if (doc && doc.expiresAt > new Date()) {
+    return doc;
+  }
+  return null;
+}
+
+export async function addQualityToBundle(chatId, qualityItem) {
+  const sessions = await getCollection('sessions');
+  const key = `admin:bundle:session:${chatId}`;
+  await sessions.updateOne(
+    { _id: key },
+    { $push: { qualities: qualityItem } }
+  );
+  const doc = await sessions.findOne({ _id: key });
+  return doc?.qualities?.length || 0;
+}
+
+export async function clearBundleSession(chatId) {
+  const sessions = await getCollection('sessions');
+  const key = `admin:bundle:session:${chatId}`;
+  await sessions.deleteOne({ _id: key });
+}
+
 // ─── Bulk Store Session ─────────────────────────────────────────────────────
 // Tracks accumulated file codes across multiple individual /store operations
 // so all links can be shown together at the end.
@@ -236,8 +349,12 @@ export function generateLinksExportText(files, botUsername, title = 'STORED LINK
     const downloads = f.accessCount || 0;
     const created = f.createdAt ? String(f.createdAt).slice(0, 19).replace('T', ' ') : 'N/A';
     const link = `https://t.me/${botUsername}?start=${code}`;
+    const bundleInfo = f.type === 'bundle' && Array.isArray(f.qualities) ? ` (${f.qualities.map(q => q.quality).join(', ')})` : '';
 
-    out += `${i + 1}. [${type.toUpperCase()}] ${code}\n`;
+    out += `${i + 1}. [${type.toUpperCase()}] ${code}${bundleInfo}\n`;
+    if (f.title && f.type === 'bundle') {
+      out += `   Title:     ${f.title}\n`;
+    }
     out += `   Downloads: ${downloads}\n`;
     out += `   Created:   ${created}\n`;
     out += `   Link:      ${link}\n\n`;
@@ -333,6 +450,130 @@ export async function runRetroactiveMirror(primaryChannelId, backupChannelId, li
     processed: unmirrored.length,
     mirroredSuccess,
     mirroredFailed
+  };
+}
+
+export async function scanAndRepairBrokenLinks(primaryChannelId, backupChannelId, limit = 50, onProgress = null) {
+  const { checkChannelMessageExists, copyIntoDbChannel } = await import('./bot-helpers.js');
+  const files = await getCollection('files');
+
+  const records = await files.find({}).limit(limit).toArray();
+
+  let healthy = 0;
+  let healed = 0;
+  let unrecoverable = 0;
+
+  for (let i = 0; i < records.length; i++) {
+    const item = records[i];
+    if (onProgress) {
+      await onProgress(i + 1, records.length, { healthy, healed, unrecoverable });
+    }
+
+    if (item.type === 'batch') {
+      if (Array.isArray(item.dbMessageIds) && item.dbMessageIds.length) {
+        let batchModified = false;
+        const newDbIds = [...item.dbMessageIds];
+        let allHealthy = true;
+
+        for (let j = 0; j < item.dbMessageIds.length; j++) {
+          const pMsgId = item.dbMessageIds[j];
+          const status = await checkChannelMessageExists(primaryChannelId, pMsgId);
+          if (!status.alive) {
+            allHealthy = false;
+            const bMsgId = item.backupDbMessageIds?.[j];
+            if (backupChannelId && bMsgId) {
+              const bStatus = await checkChannelMessageExists(backupChannelId, bMsgId);
+              if (bStatus.alive) {
+                const copyRes = await copyIntoDbChannel(primaryChannelId, backupChannelId, bMsgId);
+                if (copyRes?.ok && copyRes?.messageId) {
+                  newDbIds[j] = copyRes.messageId;
+                  batchModified = true;
+                }
+              }
+            }
+          }
+          await new Promise(r => setTimeout(r, 40));
+        }
+
+        if (batchModified) {
+          await files.updateOne({ _id: item._id }, { $set: { dbMessageIds: newDbIds } });
+          healed++;
+        } else if (allHealthy) {
+          healthy++;
+        } else {
+          unrecoverable++;
+        }
+      }
+    } else if (item.type === 'bundle') {
+      if (Array.isArray(item.qualities) && item.qualities.length) {
+        let bundleModified = false;
+        const newQualities = [...item.qualities];
+        let allHealthy = true;
+
+        for (let j = 0; j < item.qualities.length; j++) {
+          const q = item.qualities[j];
+          const status = await checkChannelMessageExists(primaryChannelId, q.dbMessageId);
+          if (!status.alive) {
+            allHealthy = false;
+            const bMsgId = q.backupDbMessageId;
+            const bChannel = q.backupDbChannelId || item.backupDbChannelId || backupChannelId;
+            if (bChannel && bMsgId) {
+              const bStatus = await checkChannelMessageExists(bChannel, bMsgId);
+              if (bStatus.alive) {
+                const copyRes = await copyIntoDbChannel(primaryChannelId, bChannel, bMsgId);
+                if (copyRes?.ok && copyRes?.messageId) {
+                  newQualities[j] = { ...q, dbMessageId: copyRes.messageId };
+                  bundleModified = true;
+                }
+              }
+            }
+          }
+          await new Promise(r => setTimeout(r, 40));
+        }
+
+        if (bundleModified) {
+          await files.updateOne({ _id: item._id }, { $set: { qualities: newQualities } });
+          healed++;
+        } else if (allHealthy) {
+          healthy++;
+        } else {
+          unrecoverable++;
+        }
+      }
+    } else if (item.dbMessageId) {
+      // Single file
+      const status = await checkChannelMessageExists(primaryChannelId, item.dbMessageId);
+      if (status.alive) {
+        healthy++;
+      } else {
+        const bMsgId = item.backupDbMessageId;
+        const bChannel = item.backupDbChannelId || backupChannelId;
+        if (bChannel && bMsgId) {
+          const bStatus = await checkChannelMessageExists(bChannel, bMsgId);
+          if (bStatus.alive) {
+            const copyRes = await copyIntoDbChannel(primaryChannelId, bChannel, bMsgId);
+            if (copyRes?.ok && copyRes?.messageId) {
+              await files.updateOne({ _id: item._id }, { $set: { dbMessageId: copyRes.messageId } });
+              healed++;
+            } else {
+              unrecoverable++;
+            }
+          } else {
+            unrecoverable++;
+          }
+        } else {
+          unrecoverable++;
+        }
+      }
+      await new Promise(r => setTimeout(r, 40));
+    }
+  }
+
+  return {
+    totalScanned: records.length,
+    healthy,
+    healed,
+    unrecoverable
   };
 }
 

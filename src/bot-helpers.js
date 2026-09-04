@@ -299,6 +299,33 @@ export async function copyFromDbChannel(toChatId, dbChannelId, msgId, protectCon
   return botContext.run({ token: getMainToken() }, () => copyMessage(toChatId, dbChannelId, msgId, protectContent));
 }
 
+export async function checkChannelMessageExists(channelId, messageId) {
+  const token = getMainToken();
+  if (!token) return { alive: false, reason: 'missing_token' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: channelId,
+        message_id: messageId,
+        reply_markup: {}
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      return { alive: true };
+    }
+    const desc = (data.description || '').toLowerCase();
+    if (desc.includes('message is not modified')) {
+      return { alive: true };
+    }
+    return { alive: false, reason: data.description || 'not_found' };
+  } catch (err) {
+    return { alive: false, reason: err.message };
+  }
+}
+
 // ─── extractChannelMessage ────────────────────────────────────────────────────
 export async function extractChannelMessage(message) {
   if (message.forward_from_chat?.type === 'channel') {

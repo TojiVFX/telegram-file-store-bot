@@ -7,7 +7,8 @@ import {
 } from '../bot-helpers.js';
 import {
   getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
-  isBulkStoreActive, setBulkStoreActive, addToStoreSession, getStoreSession, clearStoreSession, generateLinksExportText, generateRawLinksText
+  isBulkStoreActive, setBulkStoreActive, addToStoreSession, getStoreSession, clearStoreSession, generateLinksExportText, generateRawLinksText,
+  generateBundleCode, storeBundle, getBundleSession, setBundleSession, addQualityToBundle, clearBundleSession, detectMediaQuality, formatBytes
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral } from '../bot-users.js';
@@ -214,6 +215,120 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         await sendTelegramMessage(chatId, `📥 <b>File added!</b> (Total: ${count})`, {
           inline_keyboard: [
             [{ text: toSmallCaps('Finish Batch'), callback_data: 'admin:batch_done' }],
+            [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
+          ]
+        });
+        return res.status(200).send('OK');
+      }
+    }
+  }
+
+  const bundleSession = await getBundleSession(chatId);
+  if (bundleSession) {
+    if (rawText === '/cancel') {
+      await clearBundleSession(chatId);
+      await sendTelegramMessage(chatId, `✅ <b>Bundle session cancelled.</b>`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]]
+      });
+      return res.status(200).send('OK');
+    }
+
+    if (rawText === '/done') {
+      const bSession = await getBundleSession(chatId);
+      if (!bSession || !bSession.qualities?.length) {
+        await sendTelegramMessage(chatId, `⚠️ <b>No files added to bundle yet.</b> Please send video files first or send /cancel.`);
+        return res.status(200).send('OK');
+      }
+
+      const dbChannelId = await getDbChannelId();
+      const backupDbChannelId = await getBackupDbChannelId();
+      const bundleCode = generateBundleCode();
+      const title = bSession.title || bSession.qualities[0].fileName || 'Multi-Quality Release';
+
+      await storeBundle(bundleCode, title, dbChannelId, bSession.qualities, { userId: chatId }, { backupDbChannelId });
+      await clearBundleSession(chatId);
+
+      const bot = await getBotUsername();
+      const shareLink = `https://t.me/${bot}?start=${bundleCode}`;
+      const qList = bSession.qualities.map(q => `• <b>${q.quality}</b> (${q.fileSizeLabel})`).join('\n');
+
+      const text = `🎛 <b>Multi-Quality Bundle Created!</b>\n\n` +
+        `<b>Title:</b> ${esc(title)}\n` +
+        `<b>Resolutions Included (${bSession.qualities.length}):</b>\n${qList}\n\n` +
+        `<b>Share Link:</b>\n<code>${shareLink}</code>\n<i>(Tap link to copy)</i>`;
+
+      await sendTelegramMessage(chatId, text, {
+        inline_keyboard: [
+          [{ text: toSmallCaps('Create Another Bundle'), callback_data: 'admin:bundle_start' }],
+          [{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]
+        ]
+      });
+      return res.status(200).send('OK');
+    }
+
+    const hasFile = message.document || message.video || message.audio;
+
+    if (!hasFile && rawText && !rawText.startsWith('/')) {
+      await setBundleSession(chatId, { ...bundleSession, title: rawText.trim() });
+      await sendTelegramMessage(chatId, `✏️ <b>Title set to:</b> <code>${esc(rawText.trim())}</code>\n\nNow send or forward your video resolutions (480p, 720p, 1080p), or tap <b>[Finish Bundle]</b> when done:`, {
+        inline_keyboard: [
+          [{ text: toSmallCaps('Finish Bundle'), callback_data: 'admin:bundle_done' }],
+          [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
+        ]
+      });
+      return res.status(200).send('OK');
+    }
+
+    if (hasFile) {
+      const dbChannelId = await getDbChannelId();
+      if (!dbChannelId) {
+        await sendTelegramMessage(chatId, `❌ <b>DB Channel not configured!</b>`);
+        return res.status(200).send('OK');
+      }
+
+      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
+      if (copyResult.ok) {
+        let backupMsgId = null;
+        const backupDbChannelId = await getBackupDbChannelId();
+        if (backupDbChannelId) {
+          const bRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id);
+          if (bRes.ok && bRes.messageId) backupMsgId = bRes.messageId;
+        }
+
+        const quality = detectMediaQuality(message);
+        const rawSize = message.video?.file_size || message.document?.file_size || 0;
+        const sizeLabel = formatBytes(rawSize);
+        const fileName = message.document?.file_name || message.video?.file_name || message.caption || `${quality} Video`;
+
+        const qItem = {
+          quality,
+          fileSize: rawSize,
+          fileSizeLabel: sizeLabel,
+          dbMessageId: copyResult.messageId,
+          backupDbMessageId: backupMsgId,
+          fileName
+        };
+
+        const totalCount = await addQualityToBundle(chatId, qItem);
+
+        let currentTitle = bundleSession.title;
+        if (!currentTitle) {
+          const cap = message.caption || '';
+          const epMatch = cap.match(/Episode\s*[-:]*\s*(\d+)/i);
+          const langMatch = cap.match(/Language\s*[-:]*\s*([a-zA-Z]+)/i);
+          if (epMatch) {
+            currentTitle = `Episode ${epMatch[1]}` + (langMatch ? ` [${langMatch[1]}]` : '');
+          } else if (message.document?.file_name || message.video?.file_name) {
+            currentTitle = (message.document?.file_name || message.video?.file_name).replace(/\.(mkv|mp4|avi|webm)$/i, '');
+          } else {
+            currentTitle = 'Multi-Quality Release';
+          }
+          await setBundleSession(chatId, { ...bundleSession, title: currentTitle });
+        }
+
+        await sendTelegramMessage(chatId, `📥 <b>Added:</b> <code>${quality} • ${sizeLabel}</code>\n📌 <b>Title:</b> <code>${esc(currentTitle || 'Not set')}</code>\nTotal Resolutions: <b>${totalCount}</b>\n\nSend the next resolution, or tap <b>[Finish Bundle]</b> below:\n<i>(💡 Send any text message to rename the title)</i>`, {
+          inline_keyboard: [
+            [{ text: toSmallCaps('Finish Bundle'), callback_data: 'admin:bundle_done' }],
             [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
           ]
         });

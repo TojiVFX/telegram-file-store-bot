@@ -5,7 +5,7 @@ import {
 import {
   getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard, buildStartMenuButtons
 } from '../bot-helpers.js';
-import { getBatch, getFile, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount } from '../filestore.js';
+import { getBatch, getFile, getBundle, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral, getAdminId } from '../bot-users.js';
 import { logActivity } from '../bot-logs.js';
 
@@ -208,6 +208,70 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         return res.status(200).send('OK');
       }
     }
+  }
+
+  if (payload?.startsWith('bundle_')) {
+    const bundle = await getBundle(payload);
+    if (!bundle) {
+      const s = await getSettings();
+      await sendTelegramMessage(chatId, `❌ Not found.`, null, s?.protectContent === '1');
+      return res.status(200).send('OK');
+    }
+
+    logActivity({
+      eventType: 'bundle_access',
+      userId: chatId,
+      username: message.from?.username,
+      firstName: message.from?.first_name,
+      targetCode: payload,
+      targetType: 'bundle',
+      details: `Accessed bundle ${payload}`,
+    }).catch(() => {});
+    incrementAccessCount(payload);
+
+    const s = await getSettings();
+    const isAutoDelete = s?.autoDeleteEnabled === '1';
+    const timerSec = parseInt(s?.autoDeleteTimer, 10) || 300;
+    const timerLabel = timerSec < 60 ? `${timerSec}s` : timerSec < 3600 ? `${Math.round(timerSec / 60)}m` : `${Math.round(timerSec / 3600)}h`;
+
+    const title = bundle.title || 'Multi-Quality Video';
+    const qualities = bundle.qualities || [];
+
+    let text = `🎬 <b>${esc(title)}</b>\n\n` +
+      `Select your preferred video resolution to download:\n` +
+      (isAutoDelete ? `\n⚠️ <i>Auto-Delete active: Files will delete in ${timerLabel} after delivery.</i>` : '');
+
+    const buttons = [];
+    for (let i = 0; i < qualities.length; i += 2) {
+      const row = [];
+      const q1 = qualities[i];
+      row.push({
+        text: toSmallCaps(`${q1.quality} • ${q1.fileSizeLabel}`),
+        callback_data: `user:dl_q:${payload}:${i}`
+      });
+      if (qualities[i + 1]) {
+        const q2 = qualities[i + 1];
+        row.push({
+          text: toSmallCaps(`${q2.quality} • ${q2.fileSizeLabel}`),
+          callback_data: `user:dl_q:${payload}:${i + 1}`
+        });
+      }
+      buttons.push(row);
+    }
+
+    if (qualities.length > 1) {
+      buttons.push([
+        { text: toSmallCaps('Download All Qualities'), callback_data: `user:dl_q_all:${payload}` }
+      ]);
+    }
+
+    const protect = s?.protectContent === '1';
+    if (s?.bannerDelivery) {
+      await sendTelegramPhoto(chatId, s.bannerDelivery, text, { inline_keyboard: buttons }, protect);
+    } else {
+      await sendTelegramMessage(chatId, text, { inline_keyboard: buttons }, protect);
+    }
+    return res.status(200).send('OK');
   }
 
   if (payload?.startsWith('batch_')) {

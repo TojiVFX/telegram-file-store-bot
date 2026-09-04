@@ -201,9 +201,11 @@ export async function renderStorageAudit(chatId, messageId = null) {
   const buttons = [];
   if (!backupCid) {
     buttons.push([{ text: toSmallCaps('Set Backup Channel'), callback_data: 'admin:set_backup_channel_prompt' }]);
+    buttons.push([{ text: toSmallCaps('Scan & Heal Links'), callback_data: 'admin:scan_heal_links' }]);
   } else {
     buttons.push([
-      { text: toSmallCaps('Change Backup Channel'), callback_data: 'admin:set_backup_channel_prompt' }
+      { text: toSmallCaps('Change Backup Channel'), callback_data: 'admin:set_backup_channel_prompt' },
+      { text: toSmallCaps('Scan & Heal Links'), callback_data: 'admin:scan_heal_links' }
     ]);
     if (stats.unmirrored > 0) {
       buttons.push([
@@ -235,8 +237,10 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
                               action === 'fs_noop' ||
                               action.startsWith('fs_set_premium:') ||
                               action === 'batch_done' ||
+                              action === 'bundle_done' ||
                               action === 'run_retro_mirror' ||
-                              action === 'promote_backup_exec';
+                              action === 'promote_backup_exec' ||
+                              action === 'scan_heal_links';
 
   if (!requiresCustomToast) {
     answerCallbackQuery(cq.id).catch(() => {});
@@ -535,11 +539,12 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
     const text = `<b>File Management</b>\n\nCreate permanent or temporary sharing links, bulk store files, export link lists, or backup database:`;
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [
-        [{ text: toSmallCaps('Create Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps('Store Single'), callback_data: 'admin:store_start' }],
-        [{ text: toSmallCaps('Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }, { text: toSmallCaps('Export Links Hub'), callback_data: 'admin:export_hub' }],
-        [{ text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }, { text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }],
-        [{ text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
-        [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }, { text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }],
+        [{ text: toSmallCaps('Create Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps('Quality Bundle'), callback_data: 'admin:bundle_start' }],
+        [{ text: toSmallCaps('Store Single'), callback_data: 'admin:store_start' }, { text: toSmallCaps('Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }],
+        [{ text: toSmallCaps('Export Links Hub'), callback_data: 'admin:export_hub' }, { text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }],
+        [{ text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }, { text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }],
+        [{ text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }, { text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }],
+        [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
         ...navButtons('admin:dashboard')
       ]
     });
@@ -599,6 +604,23 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       backupDbChannelId: ''
     });
     await answerCallbackQuery(cq.id, 'Backup channel successfully promoted to Primary!', true);
+    await renderStorageAudit(chatId, messageId);
+    return res.status(200).send('OK');
+  } else if (action === 'scan_heal_links') {
+    const { getDbChannelId, getBackupDbChannelId } = await import('../bot-helpers.js');
+    const { scanAndRepairBrokenLinks } = await import('../filestore.js');
+    const primaryCid = await getDbChannelId();
+    const backupCid = await getBackupDbChannelId();
+
+    if (!primaryCid) {
+      await answerCallbackQuery(cq.id, 'Primary DB Channel not configured!', true);
+      return res.status(200).send('OK');
+    }
+
+    await editTelegramMessage(chatId, messageId, `🩺 <b>Scanning stored links...</b>\n\nTesting messages and auto-repairing from backup if needed.\nPlease wait a moment.`);
+
+    const report = await scanAndRepairBrokenLinks(primaryCid, backupCid, 50);
+    await answerCallbackQuery(cq.id, `Healthy: ${report.healthy}, Healed: ${report.healed}, Dead: ${report.unrecoverable}`, true);
     await renderStorageAudit(chatId, messageId);
     return res.status(200).send('OK');
   } else if (action === 'backup_db') {
@@ -1134,9 +1156,59 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
       ]
     });
     return res.status(200).send('OK');
+  } else if (action === 'bundle_start') {
+    const dbError = await getDbChannelReadinessError();
+    if (dbError) {
+      await editTelegramMessage(chatId, messageId, dbError, { inline_keyboard: navButtons('admin:file_mgmt') });
+      return res.status(200).send('OK');
+    }
+
+    const { setBundleSession } = await import('../filestore.js');
+    await setBundleSession(chatId, { step: 'collect', qualities: [], title: '' });
+    await editTelegramMessage(chatId, messageId, `🎛 <b>Create Multi-Quality Bundle</b>\n\nSend or forward each video resolution for this release (e.g. 480p, 720p, 1080p).\n\n💡 <i>The bot auto-detects video resolution and file size!</i>\n\nSend /done when finished, or /cancel to abort.`, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Finish Bundle'), callback_data: 'admin:bundle_done' }],
+        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
+      ]
+    });
+    return res.status(200).send('OK');
+  } else if (action === 'bundle_done') {
+    const { getBundleSession, storeBundle, generateBundleCode, clearBundleSession } = await import('../filestore.js');
+    const bSession = await getBundleSession(chatId);
+    if (!bSession || !bSession.qualities?.length) {
+      await answerCallbackQuery(cq.id, 'No files added to bundle yet.', true);
+      return res.status(200).send('OK');
+    }
+
+    const dbChannelId = await getDbChannelId();
+    const backupDbChannelId = await getBackupDbChannelId();
+    const bundleCode = generateBundleCode();
+    const title = bSession.title || bSession.qualities[0].fileName || 'Multi-Quality Release';
+
+    await storeBundle(bundleCode, title, dbChannelId, bSession.qualities, { userId: chatId }, { backupDbChannelId });
+    await clearBundleSession(chatId);
+
+    const bot = await getBotUsername();
+    const shareLink = `https://t.me/${bot}?start=${bundleCode}`;
+    const qList = bSession.qualities.map(q => `• <b>${q.quality}</b> (${q.fileSizeLabel})`).join('\n');
+
+    const text = `🎛 <b>Multi-Quality Bundle Created!</b>\n\n` +
+      `<b>Title:</b> ${esc(title)}\n` +
+      `<b>Resolutions Included (${bSession.qualities.length}):</b>\n${qList}\n\n` +
+      `<b>Share Link:</b>\n<code>${shareLink}</code>\n<i>(Tap link to copy)</i>`;
+
+    await editTelegramMessage(chatId, messageId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Generate Temp Link'), callback_data: `admin:temp_token_for:${bundleCode}` }],
+        [{ text: toSmallCaps('Create Another Bundle'), callback_data: 'admin:bundle_start' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
+        ...navButtons('admin:dashboard')
+      ]
+    });
+    return res.status(200).send('OK');
   } else if (action === 'cancel_session') {
-    const { clearBatchSession, checkAndClearAdminWaiting } = await import('../filestore.js');
+    const { clearBatchSession, clearBundleSession, checkAndClearAdminWaiting } = await import('../filestore.js');
     await clearBatchSession(chatId);
+    await clearBundleSession(chatId);
     await checkAndClearAdminWaiting(chatId);
     await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
     await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });

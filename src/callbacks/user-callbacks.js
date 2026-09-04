@@ -220,5 +220,78 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       await editTelegramMessage(chatId, messageId, startMsg, { inline_keyboard: styledButtons });
     }
   }
+
+  if (action.startsWith('dl_q:')) {
+    const parts = action.split(':');
+    const bundleCode = parts[1];
+    const qIndex = parseInt(parts[2], 10);
+
+    const { getBundle, incrementAccessCount } = await import('../filestore.js');
+    const bundle = await getBundle(bundleCode);
+    if (!bundle || !bundle.qualities?.[qIndex]) {
+      await answerCallbackQuery(cq.id, 'File or quality not found.', true);
+      return res.status(200).send('OK');
+    }
+
+    const q = bundle.qualities[qIndex];
+    await answerCallbackQuery(cq.id, `Sending ${q.quality}...`);
+
+    const s = await getSettings();
+    const protect = s?.protectContent === '1';
+    const { copyFromDbChannel, scheduleAutoDelete } = await import('../bot-helpers.js');
+    const { sendTelegramMessage } = await import('../bot-common.js');
+
+    let sentMsgId = null;
+    let resCopy = await copyFromDbChannel(chatId, bundle.dbChannelId, q.dbMessageId, protect);
+    if ((!resCopy?.ok || !resCopy?.messageId) && (bundle.backupDbChannelId || q.backupDbChannelId) && q.backupDbMessageId) {
+      const backupCid = q.backupDbChannelId || bundle.backupDbChannelId;
+      resCopy = await copyFromDbChannel(chatId, backupCid, q.backupDbMessageId, protect);
+    }
+    if (resCopy?.ok && resCopy?.messageId) {
+      sentMsgId = resCopy.messageId;
+      await scheduleAutoDelete(chatId, [sentMsgId], bundleCode);
+    } else {
+      await sendTelegramMessage(chatId, `❌ <b>Failed to deliver file</b> (Storage message missing or unreadable).`);
+    }
+
+    incrementAccessCount(bundleCode);
+    return res.status(200).send('OK');
+  }
+
+  if (action.startsWith('dl_q_all:')) {
+    const bundleCode = action.split(':').slice(1).join(':');
+    const { getBundle, incrementAccessCount } = await import('../filestore.js');
+    const bundle = await getBundle(bundleCode);
+    if (!bundle || !bundle.qualities?.length) {
+      await answerCallbackQuery(cq.id, 'Bundle not found.', true);
+      return res.status(200).send('OK');
+    }
+
+    await answerCallbackQuery(cq.id, 'Delivering all resolutions...');
+
+    const s = await getSettings();
+    const protect = s?.protectContent === '1';
+    const { copyFromDbChannel, scheduleAutoDelete } = await import('../bot-helpers.js');
+
+    const sentIds = [];
+    for (const q of bundle.qualities) {
+      let resCopy = await copyFromDbChannel(chatId, bundle.dbChannelId, q.dbMessageId, protect);
+      if ((!resCopy?.ok || !resCopy?.messageId) && (bundle.backupDbChannelId || q.backupDbChannelId) && q.backupDbMessageId) {
+        const backupCid = q.backupDbChannelId || bundle.backupDbChannelId;
+        resCopy = await copyFromDbChannel(chatId, backupCid, q.backupDbMessageId, protect);
+      }
+      if (resCopy?.ok && resCopy?.messageId) {
+        sentIds.push(resCopy.messageId);
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    if (sentIds.length > 0) {
+      await scheduleAutoDelete(chatId, sentIds, bundleCode);
+    }
+    incrementAccessCount(bundleCode);
+    return res.status(200).send('OK');
+  }
+
   return res.status(200).send('OK');
 }

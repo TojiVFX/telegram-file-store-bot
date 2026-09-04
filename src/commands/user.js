@@ -90,6 +90,39 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
   const canGenerate = admin;
 
+  if (/^\/(bundle|quality)/i.test(rawText) && canGenerate) {
+    const customTitle = rawText.replace(/^\/(bundle|quality)/i, '').trim();
+    const dbChannelId = await getDbChannelId();
+    if (!dbChannelId) {
+      const mainBotUsername = await getMainBotUsername();
+      const setLink = `https://t.me/${mainBotUsername}?start=setting`;
+
+      await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
+      return res.status(200).send('OK');
+    }
+
+    if (!(await isBotAdmin(dbChannelId))) {
+      const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
+      await sendTelegramMessage(chatId, helpMsg);
+      return res.status(200).send('OK');
+    }
+
+    const { setBundleSession } = await import('../filestore.js');
+    await setBundleSession(chatId, { step: 'collect', qualities: [], title: customTitle || '' });
+
+    const titleNote = customTitle
+      ? `📌 <b>Release Title:</b> <code>${esc(customTitle)}</code>\n\n`
+      : `📌 <b>Release Title:</b> <i>Not set</i> (type the anime/movie name anytime to set it)\n\n`;
+
+    await sendTelegramMessage(chatId, `🎛 <b>Create Multi-Quality Bundle</b>\n\n${titleNote}Send or forward each video resolution for this release (e.g. 480p, 720p, 1080p).\n\n💡 <i>The bot auto-detects video resolution and file size!</i>\n\nSend /done when finished, or /cancel to abort.`, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Finish Bundle'), callback_data: 'admin:bundle_done' }],
+        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
+      ]
+    });
+    return res.status(200).send('OK');
+  }
+
   if (/^\/batch/i.test(rawText) && canGenerate) {
     const dbChannelId = await getDbChannelId();
     if (!dbChannelId) {
@@ -529,6 +562,52 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
   if (/^\/auditlinks/i.test(rawText) && admin) {
     const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
     await renderStorageAudit(chatId);
+    return res.status(200).send('OK');
+  }
+
+  if (/^\/scanbroken/i.test(rawText) && admin) {
+    const parts = rawText.trim().split(/\s+/);
+    const limit = parseInt(parts[1], 10) || 50;
+
+    const { getDbChannelId, getBackupDbChannelId } = await import('../bot-helpers.js');
+    const { scanAndRepairBrokenLinks } = await import('../filestore.js');
+
+    const primaryCid = await getDbChannelId();
+    const backupCid = await getBackupDbChannelId();
+
+    if (!primaryCid) {
+      await sendTelegramMessage(chatId, `❌ <b>Primary DB Channel not configured!</b>`);
+      return res.status(200).send('OK');
+    }
+
+    const statusMsg = await sendTelegramMessage(chatId, `🩺 <b>Scanning stored links... (Limit: ${limit})</b>\nPlease wait.`);
+
+    let lastEdit = Date.now();
+    const report = await scanAndRepairBrokenLinks(primaryCid, backupCid, limit, async (curr, total, stats) => {
+      if (Date.now() - lastEdit > 3000 || curr === total) {
+        lastEdit = Date.now();
+        const pct = Math.round((curr / total) * 100);
+        const filled = Math.round(pct / 10);
+        const bar = '█'.repeat(filled) + '▒'.repeat(10 - filled);
+        const progText = `🩺 <b>Scanning stored links...</b>\n\nProgress: <code>${bar}</code> ${pct}% (${curr}/${total})\n• Healthy: <b>${stats.healthy}</b>\n• Auto-Healed: <b>${stats.healed}</b>\n• Dead: <b>${stats.unrecoverable}</b>`;
+        if (statusMsg.ok) {
+          await editTelegramMessage(chatId, statusMsg.messageId, progText).catch(() => {});
+        }
+      }
+    });
+
+    const finalText = `🩺 <b>Link Health & Auto-Repair Report</b>\n\n` +
+      `• Records Scanned: <b>${report.totalScanned}</b>\n` +
+      `• Healthy Links: <b>${report.healthy}</b>\n` +
+      `• Auto-Healed from Backup: <b>${report.healed}</b> (Restored!)\n` +
+      `• Dead / Unrecoverable: <b>${report.unrecoverable}</b>\n\n` +
+      (report.healed > 0 ? `<i>✅ ${report.healed} broken links were automatically repaired using your backup channel!</i>` : `<i>All scanned links are currently intact and accessible.</i>`);
+
+    if (statusMsg.ok) {
+      await editTelegramMessage(chatId, statusMsg.messageId, finalText, {
+        inline_keyboard: [[{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }]]
+      });
+    }
     return res.status(200).send('OK');
   }
 
