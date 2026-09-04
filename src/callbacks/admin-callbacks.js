@@ -166,6 +166,64 @@ async function renderFsCfg(chatId, messageId, cfgType) {
   await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
 }
 
+export async function renderStorageAudit(chatId, messageId = null) {
+  const { getDbChannelId, getBackupDbChannelId, isBotAdmin } = await import('../bot-helpers.js');
+  const { getStorageAuditStats } = await import('../filestore.js');
+
+  const primaryCid = await getDbChannelId();
+  const backupCid = await getBackupDbChannelId();
+
+  const primaryAdmin = primaryCid ? await isBotAdmin(primaryCid) : false;
+  const backupAdmin = backupCid ? await isBotAdmin(backupCid) : false;
+
+  const stats = await getStorageAuditStats();
+  const redundancyPct = stats.total > 0 ? Math.round((stats.mirrored / stats.total) * 100) : 100;
+
+  let text = `🛡 <b>Storage & Redundancy Audit</b>\n\n` +
+    `• <b>Primary DB Channel:</b> <code>${primaryCid || 'Not Set'}</code>\n` +
+    `  Status: <b>${primaryAdmin ? '✅ Admin (Active)' : '❌ Not Admin / Missing'}</b>\n\n` +
+    `• <b>Backup DB Channel:</b> <code>${backupCid || 'Not Configured'}</code>\n` +
+    `  Status: <b>${backupCid ? (backupAdmin ? '✅ Admin (Active)' : '❌ Bot Not Admin') : '⚠️ Inactive'}</b>\n\n` +
+    `📊 <b>Redundancy Health:</b>\n` +
+    `• Total Stored Records: <b>${stats.total}</b>\n` +
+    `• Mirrored in Backup: <b>${stats.mirrored}</b>\n` +
+    `• Unmirrored Records: <b>${stats.unmirrored}</b>\n` +
+    `• Failover Coverage: <b>${redundancyPct}%</b>\n\n`;
+
+  if (!backupCid) {
+    text += `<i>💡 Tip: Set a backup channel to automatically duplicate all stored files and prevent link breakage if your primary channel is struck or banned.</i>`;
+  } else if (stats.unmirrored > 0) {
+    text += `<i>⚠️ There are ${stats.unmirrored} record(s) not yet mirrored to your backup channel. Tap below to mirror them retroactively.</i>`;
+  } else {
+    text += `<i>✅ All stored records are fully synchronized and protected against bans.</i>`;
+  }
+
+  const buttons = [];
+  if (!backupCid) {
+    buttons.push([{ text: toSmallCaps('Set Backup Channel'), callback_data: 'admin:set_backup_channel_prompt' }]);
+  } else {
+    buttons.push([
+      { text: toSmallCaps('Change Backup Channel'), callback_data: 'admin:set_backup_channel_prompt' }
+    ]);
+    if (stats.unmirrored > 0) {
+      buttons.push([
+        { text: toSmallCaps(`Sync Unmirrored (${stats.unmirrored})`), callback_data: 'admin:run_retro_mirror' }
+      ]);
+    }
+    buttons.push([
+      { text: toSmallCaps('Promote Backup to Primary'), callback_data: 'admin:promote_backup_confirm' }
+    ]);
+  }
+  buttons.push(...navButtons('admin:file_mgmt'));
+
+  const keyboard = { inline_keyboard: buttons };
+  if (messageId) {
+    await editTelegramMessage(chatId, messageId, text, keyboard);
+  } else {
+    await sendTelegramMessage(chatId, text, keyboard);
+  }
+}
+
 export async function handleAdminCallback(chatId, messageId, action, cq, res) {
   const requiresCustomToast = action.startsWith('fs_fsub_toggle:') ||
                               action.startsWith('fs_fsub_del_confirm:') ||
@@ -176,7 +234,9 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
                               action === 'fs_set_fsmode' ||
                               action === 'fs_noop' ||
                               action.startsWith('fs_set_premium:') ||
-                              action === 'batch_done';
+                              action === 'batch_done' ||
+                              action === 'run_retro_mirror' ||
+                              action === 'promote_backup_exec';
 
   if (!requiresCustomToast) {
     answerCallbackQuery(cq.id).catch(() => {});
@@ -479,10 +539,68 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
         [{ text: toSmallCaps('Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }, { text: toSmallCaps('Export Links Hub'), callback_data: 'admin:export_hub' }],
         [{ text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }, { text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }],
         [{ text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
-        [{ text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }],
+        [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }, { text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }],
         ...navButtons('admin:dashboard')
       ]
     });
+  } else if (action === 'storage_audit') {
+    await renderStorageAudit(chatId, messageId);
+    return res.status(200).send('OK');
+  } else if (action === 'set_backup_channel_prompt') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'backup_db_channel', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    const promptText = `🛡 <b>Configure Backup DB Channel</b>\n\n` +
+      `Forward any post from your secondary/backup database channel, or type the channel ID directly (e.g. <code>-100123456789</code>).\n\n` +
+      `⚠️ <i>Make sure this bot is already added as an Admin in that channel with 'Post Messages' permissions.</i>\n\n` +
+      `Send /cancel to abort.`;
+    await editTelegramMessage(chatId, messageId, promptText, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:storage_audit' }]]
+    });
+    return res.status(200).send('OK');
+  } else if (action === 'run_retro_mirror') {
+    const { getDbChannelId, getBackupDbChannelId } = await import('../bot-helpers.js');
+    const { runRetroactiveMirror } = await import('../filestore.js');
+    const primaryCid = await getDbChannelId();
+    const backupCid = await getBackupDbChannelId();
+
+    if (!primaryCid || !backupCid) {
+      await answerCallbackQuery(cq.id, 'Both primary and backup channels must be configured!', true);
+      return res.status(200).send('OK');
+    }
+
+    await editTelegramMessage(chatId, messageId, `⏳ <b>Mirroring unmirrored records to backup channel...</b>\n\nPlease wait a moment while files are copied.`);
+    const mirrorResult = await runRetroactiveMirror(primaryCid, backupCid, 100);
+    await answerCallbackQuery(cq.id, `Mirrored: ${mirrorResult.mirroredSuccess}, Failed: ${mirrorResult.mirroredFailed}`, true);
+    await renderStorageAudit(chatId, messageId);
+    return res.status(200).send('OK');
+  } else if (action === 'promote_backup_confirm') {
+    const text = `⚠️ <b>EMERGENCY FAILOVER / PROMOTE BACKUP</b>\n\n` +
+      `This action will promote your current <b>Backup DB Channel</b> to become the <b>Primary DB Channel</b>.\n\n` +
+      `Use this if your primary channel was copyright-struck, deleted, or permanently banned.\n\n` +
+      `Are you sure you want to proceed?`;
+    const buttons = [
+      [{ text: toSmallCaps('Confirm: Promote Backup to Primary'), callback_data: 'admin:promote_backup_exec' }],
+      [{ text: toSmallCaps('Cancel'), callback_data: 'admin:storage_audit' }]
+    ];
+    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+    return res.status(200).send('OK');
+  } else if (action === 'promote_backup_exec') {
+    const { getBackupDbChannelId } = await import('../bot-helpers.js');
+    const backupCid = await getBackupDbChannelId();
+    if (!backupCid) {
+      await answerCallbackQuery(cq.id, 'No backup channel configured!', true);
+      return res.status(200).send('OK');
+    }
+    await updateSettings({
+      dbChannelId: backupCid,
+      backupDbChannelId: ''
+    });
+    await answerCallbackQuery(cq.id, 'Backup channel successfully promoted to Primary!', true);
+    await renderStorageAudit(chatId, messageId);
+    return res.status(200).send('OK');
   } else if (action === 'backup_db') {
     const { sendTelegramFileBuffer } = await import('../bot-common.js');
     const filesColl = await getCollection('files');
@@ -995,7 +1113,9 @@ export async function handleAdminCallback(chatId, messageId, action, cq, res) {
 
     const totalCollected = batchSession.collectedIds.length;
     const finalIds = batchSession.collectedIds.slice(0, 500);
-    await storeBatch(batchCode, dbChannelId, finalIds);
+    const backupDbChannelId = await getBackupDbChannelId();
+    const finalBackupIds = Array.isArray(batchSession.backupCollectedIds) ? batchSession.backupCollectedIds.slice(0, 500) : [];
+    await storeBatch(batchCode, dbChannelId, finalIds, {}, { backupDbChannelId, backupDbMessageIds: finalBackupIds });
     await clearBatchSession(chatId);
     const botUsername = await getBotUsername();
     const shareLink   = `https://t.me/${botUsername}?start=${batchCode}`;

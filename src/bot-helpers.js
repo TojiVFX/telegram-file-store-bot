@@ -25,6 +25,14 @@ export async function getDbChannelId() {
   return raw ? Number(raw) : null;
 }
 
+export async function getBackupDbChannelId() {
+  const s = await getSettings();
+  if (s?.backupDbChannelId) return Number(s.backupDbChannelId);
+
+  const raw = (process.env.TELEGRAM_BACKUP_DB_CHANNEL_ID || process.env.BACKUP_DB_CHANNEL_ID || '').trim();
+  return raw ? Number(raw) : null;
+}
+
 export async function getBotId() {
   const token = getToken();
   return token.split(':')[0];
@@ -491,7 +499,7 @@ export async function showLoadingAnimation(chatId) {
 
 // ─── deliverBatch ─────────────────────────────────────────────────────────────
 export async function deliverBatch(toChatId, batch, protectContent = false, batchCode = null, onProgress = null) {
-  const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId } = batch;
+  const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId, backupDbChannelId, backupDbMessageIds } = batch;
   const sentMessageIds = [];
   let failedCount = 0;
 
@@ -500,8 +508,15 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     : (dbFirstMsgId && dbLastMsgId ? dbLastMsgId - dbFirstMsgId + 1 : 0);
 
   if (Array.isArray(dbMessageIds)) {
-    for (const msgId of dbMessageIds) {
-      const res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+    for (let i = 0; i < dbMessageIds.length; i++) {
+      const msgId = dbMessageIds[i];
+      let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+
+      // Seamless failover to backup DB channel if primary message fails
+      if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds[i]) {
+        res = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[i], protectContent);
+      }
+
       if (res?.ok && res?.messageId) {
         sentMessageIds.push(res.messageId);
       } else {
@@ -515,7 +530,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
   }
   else if (dbFirstMsgId && dbLastMsgId) {
     for (let msgId = dbFirstMsgId; msgId <= dbLastMsgId; msgId++) {
-      const res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+      let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
       if (res?.ok && res?.messageId) {
         sentMessageIds.push(res.messageId);
       } else {

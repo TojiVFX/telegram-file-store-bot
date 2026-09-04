@@ -300,7 +300,10 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
 
       if (f.dbChannelId && f.dbMessageId) {
         const { copyFromDbChannel } = await import('../bot-helpers.js');
-        const resCopy = await copyFromDbChannel(chatId, f.dbChannelId, f.dbMessageId, protect);
+        let resCopy = await copyFromDbChannel(chatId, f.dbChannelId, f.dbMessageId, protect);
+        if ((!resCopy?.ok || !resCopy?.messageId) && f.backupDbChannelId && f.backupDbMessageId) {
+          resCopy = await copyFromDbChannel(chatId, f.backupDbChannelId, f.backupDbMessageId, protect);
+        }
         if (resCopy?.ok && resCopy?.messageId) sentMsgId = resCopy.messageId;
       } else {
         let resSend;

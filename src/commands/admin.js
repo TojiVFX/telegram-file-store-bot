@@ -3,7 +3,7 @@ import {
   getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc
 } from '../bot-common.js';
 import {
-  getBotUsername, getDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser
+  getBotUsername, getDbChannelId, getBackupDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser
 } from '../bot-helpers.js';
 import {
   getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
@@ -70,10 +70,19 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       let type = message.document ? 'document' : message.video ? 'video' : message.audio ? 'audio' : message.photo ? 'photo' : 'file';
       const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
       if (copyResult.ok) {
+        let backupMessageId = null;
+        const backupDbChannelId = await getBackupDbChannelId();
+        if (backupDbChannelId) {
+          const backupRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id);
+          if (backupRes?.ok) backupMessageId = backupRes.messageId;
+        }
+
         const code = generateFileCode();
         await storeFile(code, {
           dbChannelId,
           dbMessageId: copyResult.messageId,
+          backupDbChannelId: backupMessageId ? backupDbChannelId : undefined,
+          backupDbMessageId: backupMessageId || undefined,
           type: type,
           fileId: message.document?.file_id || message.video?.file_id || message.audio?.file_id || message.photo?.[0]?.file_id
         });
@@ -113,12 +122,20 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
           await sendTelegramMessage(chatId, `❌ <b>Failed to copy message.</b>\nReason: ${copyResult.reason}`);
           return res.status(200).send('OK');
         }
+        let backupFirstId = null;
+        const backupDbChannelId = await getBackupDbChannelId();
+        if (backupDbChannelId) {
+          const bRes = await copyIntoDbChannel(backupDbChannelId, extracted.channelId, extracted.msgId);
+          if (bRes.ok && bRes.messageId) backupFirstId = bRes.messageId;
+        }
         await setBatchSession(chatId, {
-          step:          'last',
-          collectedIds:  [copyResult.messageId],
-          srcChannelId:  extracted.channelId,
-          srcFirstMsgId: extracted.msgId,
-          dbFirstMsgId:  copyResult.messageId,
+          step:               'last',
+          collectedIds:       [copyResult.messageId],
+          backupCollectedIds: backupFirstId ? [backupFirstId] : [],
+          srcChannelId:       extracted.channelId,
+          srcFirstMsgId:      extracted.msgId,
+          dbFirstMsgId:       copyResult.messageId,
+          backupDbFirstMsgId: backupFirstId,
         });
         await sendTelegramMessage(chatId, `` +
           `✅ <b>First message saved!</b>\n\n` +
@@ -133,16 +150,23 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
              await sendTelegramMessage(chatId, `⚠️ <b>Range too large!</b>\n\nYou can only add up to 500 files at once. This range is <b>${totalFiles}</b> files.`);
              return res.status(200).send('OK');
           }
+          const backupDbChannelId = await getBackupDbChannelId();
           for (let srcId = batchSession.srcFirstMsgId + 1; srcId <= extracted.msgId; srcId++) {
             const r = await copyIntoDbChannel(dbChannelId, batchSession.srcChannelId, srcId);
-            if (r.ok && r.messageId) await addIdToBatch(chatId, r.messageId);
+            let backupId = null;
+            if (backupDbChannelId && r.ok) {
+              const bRes = await copyIntoDbChannel(backupDbChannelId, batchSession.srcChannelId, srcId);
+              if (bRes.ok && bRes.messageId) backupId = bRes.messageId;
+            }
+            if (r.ok && r.messageId) await addIdToBatch(chatId, r.messageId, backupId);
             if (totalFiles > 5) await new Promise((r) => setTimeout(r, 50));
           }
           const updatedSession = await getBatchSession(chatId);
           const collectedIds = updatedSession?.collectedIds || [];
+          const backupCollectedIds = updatedSession?.backupCollectedIds || [];
           const { storeBatch, generateBatchCode } = await import('../filestore.js');
           const batchCode = generateBatchCode();
-          await storeBatch(batchCode, dbChannelId, collectedIds);
+          await storeBatch(batchCode, dbChannelId, collectedIds, {}, { backupDbChannelId, backupDbMessageIds: backupCollectedIds });
           await clearBatchSession(chatId);
           const botUsername = await getBotUsername();
           await sendTelegramMessage(chatId, `✅ <b>Batch Created!</b>\n\nFiles: <b>${collectedIds.length}</b>\nLink: <code>https://t.me/${botUsername}?start=${batchCode}</code>\n<i>(Tap link to copy)</i>`, {
@@ -175,7 +199,13 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
       const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
       if (copyResult.ok) {
-        const count = await addIdToBatch(chatId, copyResult.messageId);
+        let backupMsgId = null;
+        const backupDbChannelId = await getBackupDbChannelId();
+        if (backupDbChannelId) {
+          const bRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id);
+          if (bRes.ok && bRes.messageId) backupMsgId = bRes.messageId;
+        }
+        const count = await addIdToBatch(chatId, copyResult.messageId, backupMsgId);
 
         if (batchSession.step !== 'collect') {
            await updateBatchSessionMeta(chatId, { step: 'collect' });
@@ -242,6 +272,38 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
           [{ text: toSmallCaps("Cancel"), callback_data: "admin:cancel_session" }]
         ]
       });
+      return res.status(200).send('OK');
+    }
+
+    if (waitingFor === 'backup_db_channel') {
+      const forwardChat   = message.forward_from_chat;
+      const forwardOrigin = message.forward_origin;
+      const typedId        = rawText.trim();
+
+      let targetCid;
+      if (forwardChat?.type === 'channel') {
+        targetCid = forwardChat.id;
+      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
+        targetCid = forwardOrigin.chat.id;
+      } else if (/^-100\d+$/.test(typedId)) {
+        targetCid = typedId;
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the backup channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).`);
+        return res.status(200).send('OK');
+      }
+
+      if (!(await isBotAdmin(targetCid))) {
+        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this backup channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
+        return res.status(200).send('OK');
+      }
+
+      await updateSettings({ backupDbChannelId: String(targetCid) });
+      await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+
+      await sendTelegramMessage(chatId, `✅ <b>Backup DB Channel Configured!</b>\n\nChannel ID: <code>${targetCid}</code>\n\nAll newly stored files and batches will now automatically be mirrored to this channel.`);
+
+      const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
+      await renderStorageAudit(chatId);
       return res.status(200).send('OK');
     }
 
@@ -522,10 +584,19 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     if (type) {
       const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
       if (copyResult.ok) {
+        let backupMessageId = null;
+        const backupDbChannelId = await getBackupDbChannelId();
+        if (backupDbChannelId) {
+          const backupRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id);
+          if (backupRes?.ok) backupMessageId = backupRes.messageId;
+        }
+
         const code = generateFileCode();
         await storeFile(code, {
           dbChannelId,
           dbMessageId: copyResult.messageId,
+          backupDbChannelId: backupMessageId ? backupDbChannelId : undefined,
+          backupDbMessageId: backupMessageId || undefined,
           type: type,
           fileId: message.document?.file_id || message.video?.file_id || message.audio?.file_id || message.photo?.[0]?.file_id
         });

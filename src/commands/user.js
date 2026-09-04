@@ -526,6 +526,12 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     return res.status(200).send('OK');
   }
 
+  if (/^\/auditlinks/i.test(rawText) && admin) {
+    const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
+    await renderStorageAudit(chatId);
+    return res.status(200).send('OK');
+  }
+
   if (/^\/ping/i.test(rawText)) {
     const start = Date.now();
     const msg = await sendTelegramMessage(chatId, `Pinging...`);

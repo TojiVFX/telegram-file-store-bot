@@ -74,18 +74,21 @@ export function generateBatchCode() {
   return generateCode('batch');
 }
 
-export async function storeBatch(batchCode, dbChannelId, dbMessageIds, creator = {}) {
+export async function storeBatch(batchCode, dbChannelId, dbMessageIds, creator = {}, backupData = {}) {
   const files = await getCollection('files');
+  const updateData = {
+    type: 'batch',
+    dbChannelId,
+    dbMessageIds,
+    createdAt: new Date().toISOString(),
+  };
+  if (backupData.backupDbChannelId && Array.isArray(backupData.backupDbMessageIds) && backupData.backupDbMessageIds.length) {
+    updateData.backupDbChannelId = backupData.backupDbChannelId;
+    updateData.backupDbMessageIds = backupData.backupDbMessageIds;
+  }
   await files.updateOne(
     { _id: batchCode },
-    {
-      $set: {
-        type: 'batch',
-        dbChannelId,
-        dbMessageIds,
-        createdAt: new Date().toISOString(),
-      }
-    },
+    { $set: updateData },
     { upsert: true }
   );
 
@@ -98,7 +101,7 @@ export async function storeBatch(batchCode, dbChannelId, dbMessageIds, creator =
     targetCode: batchCode,
     targetType: 'batch',
     details: `Created batch ${batchCode} (${count} items)`,
-    metadata: { count, dbChannelId }
+    metadata: { count, dbChannelId, backupDbChannelId: backupData.backupDbChannelId }
   }).catch(() => {});
 }
 
@@ -108,7 +111,7 @@ export async function getBatch(batchCode) {
 }
 
 export async function setBatchSession(chatId, state) {
-  const { collectedIds, ...meta } = state;
+  const { collectedIds, backupCollectedIds, ...meta } = state;
   const sessions = await getCollection('sessions');
   const key = `admin:batch:session:${chatId}`;
   const expiresAt = new Date(Date.now() + 600 * 1000);
@@ -116,6 +119,9 @@ export async function setBatchSession(chatId, state) {
   const updateData = { ...meta, expiresAt };
   if (Object.prototype.hasOwnProperty.call(state, 'collectedIds')) {
     updateData.collectedIds = collectedIds || [];
+  }
+  if (Object.prototype.hasOwnProperty.call(state, 'backupCollectedIds')) {
+    updateData.backupCollectedIds = backupCollectedIds || [];
   }
 
   await sessions.updateOne(
@@ -134,12 +140,16 @@ export async function updateBatchSessionMeta(chatId, metaPatch) {
   );
 }
 
-export async function addIdToBatch(chatId, messageId) {
+export async function addIdToBatch(chatId, messageId, backupMessageId = null) {
   const sessions = await getCollection('sessions');
   const key = `admin:batch:session:${chatId}`;
+  const pushData = { collectedIds: messageId };
+  if (backupMessageId) {
+    pushData.backupCollectedIds = backupMessageId;
+  }
   await sessions.updateOne(
     { _id: key },
-    { $push: { collectedIds: messageId } }
+    { $push: pushData }
   );
   const doc = await sessions.findOne({ _id: key });
   return doc && doc.collectedIds ? doc.collectedIds.length : 0;
@@ -259,6 +269,71 @@ export function formatDurationLabel(seconds) {
   if (seconds < 3600) return `${Math.round(seconds / 60)} Mins`;
   if (seconds < 86400) return `${Math.round(seconds / 3600)} Hours`;
   return `${Math.round(seconds / 86400)} Days`;
+}
+
+export async function getStorageAuditStats() {
+  const files = await getCollection('files');
+  const total = await files.countDocuments({});
+  const mirrored = await files.countDocuments({
+    backupDbChannelId: { $exists: true, $ne: null }
+  });
+  return {
+    total,
+    mirrored,
+    unmirrored: Math.max(0, total - mirrored)
+  };
+}
+
+export async function runRetroactiveMirror(primaryChannelId, backupChannelId, limit = 50) {
+  const { copyIntoDbChannel } = await import('./bot-helpers.js');
+  const files = await getCollection('files');
+
+  const unmirrored = await files.find({
+    $or: [{ backupDbChannelId: { $exists: false } }, { backupDbChannelId: null }]
+  }).limit(limit).toArray();
+
+  let mirroredSuccess = 0;
+  let mirroredFailed = 0;
+
+  for (const item of unmirrored) {
+    if (item.type === 'batch' && Array.isArray(item.dbMessageIds)) {
+      const backupIds = [];
+      for (const msgId of item.dbMessageIds) {
+        const res = await copyIntoDbChannel(backupChannelId, primaryChannelId, msgId);
+        if (res?.ok && res?.messageId) {
+          backupIds.push(res.messageId);
+        }
+        await new Promise(r => setTimeout(r, 60));
+      }
+      if (backupIds.length > 0) {
+        await files.updateOne(
+          { _id: item._id },
+          { $set: { backupDbChannelId: backupChannelId, backupDbMessageIds: backupIds } }
+        );
+        mirroredSuccess++;
+      } else {
+        mirroredFailed++;
+      }
+    } else if (item.dbMessageId) {
+      const res = await copyIntoDbChannel(backupChannelId, primaryChannelId, item.dbMessageId);
+      if (res?.ok && res?.messageId) {
+        await files.updateOne(
+          { _id: item._id },
+          { $set: { backupDbChannelId: backupChannelId, backupDbMessageId: res.messageId } }
+        );
+        mirroredSuccess++;
+      } else {
+        mirroredFailed++;
+      }
+      await new Promise(r => setTimeout(r, 60));
+    }
+  }
+
+  return {
+    processed: unmirrored.length,
+    mirroredSuccess,
+    mirroredFailed
+  };
 }
 
 export async function runWeeklyCleanup() {
