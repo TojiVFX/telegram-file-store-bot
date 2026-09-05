@@ -1,9 +1,19 @@
 import express from 'express';
+import { timingSafeEqual } from 'crypto';
 import telegramHandler from './routes/telegram.js';
 
 const app = express();
 
+app.disable('x-powered-by');
+
 app.set('trust proxy', 1);
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 
 app.use(express.json());
 
@@ -11,9 +21,23 @@ const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
+function checkAdminAuth(req) {
+  const secret = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+  if (!secret) return false;
+  const provided = req.query.secret || req.headers['x-telegram-bot-api-secret-token'];
+  if (!provided || typeof provided !== 'string') return false;
+  const secretBuf = Buffer.from(secret);
+  const providedBuf = Buffer.from(provided);
+  if (secretBuf.length !== providedBuf.length) return false;
+  return timingSafeEqual(secretBuf, providedBuf);
+}
+
 app.post('/webhook/telegram*', asyncHandler(telegramHandler));   // ← updates go here
 
 app.get('/getMe', asyncHandler(async (req, res) => {
+  if (!checkAdminAuth(req)) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
   const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim().replace(/^bot/i, '');
   if (!token) {
     return res.status(500).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN is not configured' });
@@ -24,18 +48,19 @@ app.get('/getMe', asyncHandler(async (req, res) => {
 }));
 
 app.get('/setWebhook', asyncHandler(async (req, res) => {
+  if (!checkAdminAuth(req)) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
   const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim().replace(/^bot/i, '');
   if (!token) {
     return res.status(500).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN is not configured' });
   }
 
-  // Determine domain dynamically: prefer BOT_DOMAIN, fallback to host header
   let domain = (process.env.BOT_DOMAIN || '').trim();
   if (!domain) {
-    const host = req.headers.host || new URL(req.url, 'https://example.com').host;
-    const proto = req.headers['x-forwarded-proto'] || 'https';
-    domain = `${proto}://${host}`;
-  } else if (!domain.startsWith('http://') && !domain.startsWith('https://')) {
+    return res.status(400).json({ ok: false, error: 'BOT_DOMAIN environment variable is not configured' });
+  }
+  if (!domain.startsWith('http://') && !domain.startsWith('https://')) {
     domain = `https://${domain}`;
   }
 
@@ -80,12 +105,6 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  const hasToken = !!(process.env.TELEGRAM_BOT_TOKEN || '').trim();
-  const hasSecret = !!(process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
-  const hasMongo = !!(process.env.MONGODB_URI || '').trim();
-  const hasAdmin = !!(process.env.ADMIN_CHAT_ID || '').trim();
-  const hasChannel = !!(process.env.TELEGRAM_DB_CHANNEL_ID || '').trim();
-
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -229,30 +248,6 @@ app.get('/', (req, res) => {
       </div>
     </div>
 
-    <div class="section-title">Environment Variables Status</div>
-    <div class="grid">
-      <div class="item">
-        <span class="item-name">TELEGRAM_BOT_TOKEN</span>
-        <span class="${hasToken ? 'tag-ok' : 'tag-warn'}">${hasToken ? 'Configured' : 'Missing'}</span>
-      </div>
-      <div class="item">
-        <span class="item-name">TELEGRAM_WEBHOOK_SECRET</span>
-        <span class="${hasSecret ? 'tag-ok' : 'tag-warn'}">${hasSecret ? 'Configured' : 'Missing'}</span>
-      </div>
-      <div class="item">
-        <span class="item-name">MONGODB_URI</span>
-        <span class="${hasMongo ? 'tag-ok' : 'tag-warn'}">${hasMongo ? 'Connected' : 'In-Memory Fallback'}</span>
-      </div>
-      <div class="item">
-        <span class="item-name">ADMIN_CHAT_ID</span>
-        <span class="${hasAdmin ? 'tag-ok' : 'tag-warn'}">${hasAdmin ? 'Configured' : 'Missing'}</span>
-      </div>
-      <div class="item">
-        <span class="item-name">TELEGRAM_DB_CHANNEL_ID</span>
-        <span class="${hasChannel ? 'tag-ok' : 'tag-warn'}">${hasChannel ? 'Configured' : 'Optional (Settings UI)'}</span>
-      </div>
-    </div>
-
     <div class="section-title">Features & Capabilities</div>
     <div class="grid">
       <div class="item">
@@ -271,11 +266,9 @@ app.get('/', (req, res) => {
       </div>
     </div>
 
-    <div class="section-title">Quick Endpoints & Commands</div>
+    <div class="section-title">Service Endpoints</div>
     <div class="actions">
       <a class="btn btn-primary" href="/health" target="_blank">Health Check (/health)</a>
-      <a class="btn" href="/getMe" target="_blank">Bot Info (/getMe)</a>
-      <a class="btn" href="/setWebhook" target="_blank">Register Webhook (/setWebhook)</a>
     </div>
 
     <div class="footer">

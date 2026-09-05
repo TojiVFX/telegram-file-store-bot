@@ -1,17 +1,17 @@
+import { randomInt } from 'crypto';
 import { getCollection, getSettings, log } from './bot-common.js';
 import { logActivity } from './bot-logs.js';
 
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
 /**
- * Shared random-code generator backing both generateFileCode() and
- * generateBatchCode() below, so the two can't drift apart (a third, private
- * copy of this same logic used to live in callbacks/admin-callbacks.js).
+ * Shared cryptographically secure random-code generator backing generateFileCode(),
+ * generateBatchCode(), generateTempTokenCode(), and generateBundleCode().
  */
 function generateCode(prefix, length = 12) {
   let result = '';
   for (let i = 0; i < length; i++) {
-    result += CODE_CHARS.charAt(Math.floor(Math.random() * CODE_CHARS.length));
+    result += CODE_CHARS.charAt(randomInt(0, CODE_CHARS.length));
   }
   return `${prefix}_${result}`;
 }
@@ -1046,22 +1046,67 @@ export async function getTempToken(tokenCode) {
 }
 
 export async function consumeTempToken(tokenCode, consumerChatId = null, consumerInfo = {}) {
-  const tempTokens = await getCollection('temp_tokens');
-  const updateOp = {
-    $inc: { useCount: 1 },
-    $set: { lastAccessedAt: new Date().toISOString() }
-  };
-  await tempTokens.updateOne({ _id: tokenCode }, updateOp);
+  const cleanCode = String(tokenCode || '').trim();
+  if (!cleanCode) return { ok: false, reason: 'missing_token' };
 
-  logActivity({
-    eventType: 'temp_token_access',
-    userId: consumerChatId,
-    username: consumerInfo.username,
-    firstName: consumerInfo.firstName,
-    targetCode: tokenCode,
-    targetType: 'temp_token',
-    details: `Accessed temporary token ${tokenCode}`,
-  }).catch(() => {});
+  const tempTokens = await getCollection('temp_tokens');
+  const now = new Date();
+
+  // Atomically claim a use slot for an active, unrevoked token within its use limit
+  const result = await tempTokens.findOneAndUpdate(
+    {
+      _id: cleanCode,
+      revoked: { $ne: true },
+      expiresAt: { $gt: now },
+      $or: [
+        { maxUses: null },
+        { maxUses: { $exists: false } },
+        { $expr: { $lt: ['$useCount', '$maxUses'] } }
+      ]
+    },
+    {
+      $inc: { useCount: 1 },
+      $set: { lastAccessedAt: now.toISOString() }
+    },
+    { returnDocument: 'after' }
+  );
+
+  const updatedDoc = result && (result.value !== undefined ? result.value : result);
+  if (updatedDoc) {
+    logActivity({
+      eventType: 'temp_token_access',
+      userId: consumerChatId,
+      username: consumerInfo?.username,
+      firstName: consumerInfo?.firstName,
+      targetCode: cleanCode,
+      targetType: 'temp_token',
+      details: `Accessed temporary token ${cleanCode}`,
+      metadata: {
+        useCount: updatedDoc.useCount,
+        maxUses: updatedDoc.maxUses,
+      }
+    }).catch(() => {});
+
+    return { ok: true, tokenDoc: updatedDoc };
+  }
+
+  // If atomic consumption failed, query the document to determine the exact failure reason
+  const doc = await tempTokens.findOne({ _id: cleanCode });
+  if (!doc) {
+    return { ok: false, reason: 'not_found' };
+  }
+  if (doc.revoked) {
+    return { ok: false, reason: 'revoked', tokenDoc: doc };
+  }
+  const exp = new Date(doc.expiresAt);
+  if (isNaN(exp.getTime()) || exp <= now) {
+    return { ok: false, reason: 'expired', tokenDoc: doc };
+  }
+  if (doc.maxUses != null && doc.useCount >= doc.maxUses) {
+    return { ok: false, reason: 'limit_reached', tokenDoc: doc };
+  }
+
+  return { ok: false, reason: 'invalid_token', tokenDoc: doc };
 }
 
 export async function revokeTempToken(tokenCode, requesterChatId = null, isAdmin = false) {

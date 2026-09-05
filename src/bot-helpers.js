@@ -553,7 +553,8 @@ export async function checkSubscription(chatId, userId) {
           log('error', 'checkSubscription: getChatMember failed', { cid, userId, res });
         }
         const status = res.ok ? res.result?.status : null;
-        const isMember = ['creator', 'administrator', 'member'].includes(status);
+        const isMember = ['creator', 'administrator', 'member'].includes(status) ||
+          (status === 'restricted' && Boolean(res.result?.is_member));
 
         if (!isMember) {
           if (mode === 'join_request') {
@@ -669,9 +670,9 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
   }
 
   if (failedCount > 0 && sentMessageIds.length === 0) {
-    await sendTelegramMessage(toChatId, `❌ <b>Batch Unavailable</b>\n\nThe files in this batch are no longer available in storage (they may have been removed from the database channel).`);
+    await sendTelegramMessage(toChatId, `❌ <b>Batch Unavailable</b>\n\nThe files in this batch are no longer available in storage (they may have been removed from the database channel).`, null, protectContent);
   } else if (failedCount > 0) {
-    await sendTelegramMessage(toChatId, `⚠️ <b>Note:</b> ${failedCount} file(s) in this batch could not be retrieved because they were deleted from storage.`);
+    await sendTelegramMessage(toChatId, `⚠️ <b>Note:</b> ${failedCount} file(s) in this batch could not be retrieved because they were deleted from storage.`, null, protectContent);
   }
 
   if (sentMessageIds.length > 0) {
@@ -705,7 +706,7 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
     ]
   };
 
-  const warnMsg = await sendTelegramMessage(chatId, warnText, warnKb);
+  const warnMsg = await sendTelegramMessage(chatId, warnText, warnKb, s?.protectContent === '1');
   if (warnMsg?.ok && warnMsg?.messageId) ids.push(warnMsg.messageId);
 
   // Persist to MongoDB so deletions survive Render restarts / redeployments

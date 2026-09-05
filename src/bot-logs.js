@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { getCollection, esc } from './bot-common.js';
 
 // ─── Event Icons & Labels ─────────────────────────────────────────────────────
@@ -24,7 +25,7 @@ export async function logActivity(entry) {
     const logs = await getCollection('activity_logs');
     const now = new Date();
     const doc = {
-      _id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      _id: `act_${Date.now()}_${randomBytes(4).toString('hex')}`,
       timestamp: now,
       isoTime: now.toISOString(),
       eventType: entry.eventType || 'generic',

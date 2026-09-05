@@ -13,7 +13,26 @@ class InMemoryCollection {
   _matches(doc, filter) {
     if (!filter || Object.keys(filter).length === 0) return true;
     for (const [key, val] of Object.entries(filter)) {
+      if (key === '$or' && Array.isArray(val)) {
+        if (!val.some(subFilter => this._matches(doc, subFilter))) return false;
+        continue;
+      }
+      if (key === '$expr' && val && typeof val === 'object') {
+        if (val.$lt && Array.isArray(val.$lt)) {
+          const [fieldRef, targetRef] = val.$lt;
+          const field = typeof fieldRef === 'string' && fieldRef.startsWith('$') ? fieldRef.slice(1) : fieldRef;
+          const target = typeof targetRef === 'string' && targetRef.startsWith('$') ? targetRef.slice(1) : targetRef;
+          const v1 = doc[field];
+          const v2 = (typeof target === 'string' && target in doc) ? doc[target] : target;
+          if (!(v1 < v2)) return false;
+        }
+        continue;
+      }
       if (val && typeof val === 'object' && !(val instanceof Date)) {
+        if (val.$exists !== undefined) {
+          const exists = doc[key] !== undefined;
+          if (exists !== val.$exists) return false;
+        }
         if (Array.isArray(val.$in)) {
           if (!val.$in.includes(doc[key])) return false;
         }
@@ -34,6 +53,11 @@ class InMemoryCollection {
           const docVal = doc[key] instanceof Date ? doc[key] : (key === 'expiresAt' || key === 'createdAt' ? new Date(doc[key]) : doc[key]);
           const filterVal = val.$lt instanceof Date ? val.$lt : (key === 'expiresAt' || key === 'createdAt' ? new Date(val.$lt) : val.$lt);
           if (!docVal || docVal >= filterVal) return false;
+        }
+        if (val.$lte !== undefined) {
+          const docVal = doc[key] instanceof Date ? doc[key] : (key === 'expiresAt' || key === 'createdAt' ? new Date(doc[key]) : doc[key]);
+          const filterVal = val.$lte instanceof Date ? val.$lte : (key === 'expiresAt' || key === 'createdAt' ? new Date(val.$lte) : val.$lte);
+          if (!docVal || docVal > filterVal) return false;
         }
         if (val.$regex) {
           const regex = new RegExp(val.$regex);
@@ -177,6 +201,11 @@ class InMemoryCollection {
 
   async insertOne(doc) {
     const id = doc._id || String(Date.now() + Math.random());
+    if (this.docs.has(id)) {
+      const err = new Error(`E11000 duplicate key error collection: ${this.name} index: _id_ dup key: { _id: "${id}" }`);
+      err.code = 11000;
+      throw err;
+    }
     const newDoc = { ...doc, _id: id };
     this.docs.set(id, newDoc);
     return { insertedId: id };
@@ -324,26 +353,52 @@ export async function isRateLimited(id, limit = 5, window = 10) {
   const key = `rate_limit:${id}`;
   const now = new Date();
 
-  // Atomically find non-expired rate limit document and increment count.
-  const result = await coll.findOneAndUpdate(
+  // 1. Atomically increment non-expired rate limit document
+  const activeResult = await coll.findOneAndUpdate(
     { _id: key, expiresAt: { $gt: now } },
     { $inc: { count: 1 } },
     { returnDocument: 'after' }
   );
 
   // Support both newer MongoDB driver versions (direct document return) and older versions ({ value })
-  const doc = result && (result.value !== undefined ? result.value : result);
-  if (doc) {
-    return doc.count > limit;
+  const activeDoc = activeResult && (activeResult.value !== undefined ? activeResult.value : activeResult);
+  if (activeDoc) {
+    return activeDoc.count > limit;
   }
 
-  // If not found or expired, upsert and initialize/reset count and expiresAt.
-  await coll.updateOne(
-    { _id: key },
-    { $set: { count: 1, expiresAt: new Date(Date.now() + window * 1000) } },
-    { upsert: true }
+  // 2. If window expired, attempt atomic reset replacing only the expired document
+  const expiresAt = new Date(Date.now() + window * 1000);
+  const resetResult = await coll.findOneAndUpdate(
+    { _id: key, expiresAt: { $lte: now } },
+    { $set: { count: 1, expiresAt } },
+    { returnDocument: 'after' }
   );
-  return false;
+
+  const resetDoc = resetResult && (resetResult.value !== undefined ? resetResult.value : resetResult);
+  if (resetDoc) {
+    return resetDoc.count > limit;
+  }
+
+  // 3. Document does not exist yet; insert initial window
+  try {
+    await coll.insertOne({ _id: key, count: 1, expiresAt });
+    return false;
+  } catch (err) {
+    // If a concurrent request inserted or reset in the meantime (E11000 duplicate key),
+    // atomically increment the now-active window
+    if (err?.code === 11000 || String(err?.message || '').includes('E11000')) {
+      const retryResult = await coll.findOneAndUpdate(
+        { _id: key, expiresAt: { $gt: now } },
+        { $inc: { count: 1 } },
+        { returnDocument: 'after' }
+      );
+      const retryDoc = retryResult && (retryResult.value !== undefined ? retryResult.value : retryResult);
+      if (retryDoc) {
+        return retryDoc.count > limit;
+      }
+    }
+    return false;
+  }
 }
 
 // ─── Logger ───────────────────────────────────────────────────────────────────

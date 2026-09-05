@@ -108,13 +108,16 @@ export async function handleStartPayload(chatId, payload, message, admin) {
 
   // Handle Temporary Time-Limited Access Tokens
   if (payload && (payload.startsWith('temp_') || payload.startsWith('tmp_'))) {
-    const tokenRes = await getTempToken(payload);
-    if (!tokenRes.ok) {
-      if (tokenRes.reason === 'expired') {
+    const consumeRes = await consumeTempToken(payload, chatId, {
+      username: message?.from?.username,
+      firstName: message?.from?.first_name,
+    });
+    if (!consumeRes.ok) {
+      if (consumeRes.reason === 'expired') {
         await sendTelegramMessage(chatId, `❌ <b>Access Token Expired</b>\n\nThis temporary file sharing link has expired. Please request a new link from the sender.`);
-      } else if (tokenRes.reason === 'revoked') {
+      } else if (consumeRes.reason === 'revoked') {
         await sendTelegramMessage(chatId, `🚫 <b>Access Token Revoked</b>\n\nThis temporary sharing link has been revoked by its creator.`);
-      } else if (tokenRes.reason === 'limit_reached') {
+      } else if (consumeRes.reason === 'limit_reached') {
         await sendTelegramMessage(chatId, `⚠️ <b>Access Limit Reached</b>\n\nThis temporary sharing link has reached its maximum allowed access count.`);
       } else {
         await sendTelegramMessage(chatId, `❌ <b>Invalid Token</b>\n\nThis temporary file sharing link was not found.`);
@@ -122,17 +125,16 @@ export async function handleStartPayload(chatId, payload, message, admin) {
       return;
     }
 
-    const doc = tokenRes.tokenDoc;
+    const doc = consumeRes.tokenDoc;
     const remainingSec = Math.max(0, Math.round((new Date(doc.expiresAt).getTime() - Date.now()) / 1000));
     const remainingLabel = formatDuration(remainingSec);
 
-    await consumeTempToken(payload, chatId);
     await sendTelegramMessage(
       chatId,
       `⏳ <b>Temporary Access Granted</b>\n\n` +
       `Duration: <b>${doc.durationLabel}</b>\n` +
       `Time Remaining: <b>${remainingLabel}</b>\n` +
-      (doc.maxUses ? `Access Limit: <b>${(doc.useCount || 0) + 1}/${doc.maxUses}</b>\n` : '') +
+      (doc.maxUses ? `Access Limit: <b>${doc.useCount}/${doc.maxUses}</b>\n` : '') +
       `\n<i>Loading file...</i>`
     );
 
@@ -308,9 +310,10 @@ export async function handleStartPayload(chatId, payload, message, admin) {
       `────────────────────────\n` +
       `⏳ <i>Delivering files... [▒▒▒▒▒▒▒▒▒▒] 0%</i>`;
 
+    const protect = s?.protectContent === '1';
     const progressMsg = s?.bannerDelivery
-      ? await sendTelegramPhoto(chatId, s.bannerDelivery, summaryText)
-      : await sendTelegramMessage(chatId, summaryText);
+      ? await sendTelegramPhoto(chatId, s.bannerDelivery, summaryText, null, protect)
+      : await sendTelegramMessage(chatId, summaryText, null, protect);
 
     let lastProgressPct = 0;
     await deliverBatch(chatId, b, s?.protectContent === '1', payload, async (current, total) => {
