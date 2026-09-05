@@ -2,14 +2,14 @@ import { getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessag
 import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate } from '../bot-helpers.js';
 import { generateTempToken, revokeTempToken, listActiveTempTokens, formatDuration } from '../filestore.js';
 
-export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin, res) {
+export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin) {
   if (action === 'save_tip') {
     await answerCallbackQuery(
       cq.id,
       '💡 How to keep your files:\n\nTap and hold any file message, select "Forward", then choose "Saved Messages". You will keep it permanently even after auto-delete!',
       true
     );
-    return res.status(200).send('OK');
+    return;
   }
 
   // Answer instantly to dismiss the button loading spinner immediately
@@ -23,7 +23,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const gate = await buildForceSubscribeGate(chatId);
     if (gate) {
       await editTelegramMessage(chatId, messageId, gate.text, gate.replyMarkup);
-      return res.status(200).send('OK');
+      return;
     }
   }
 
@@ -41,7 +41,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       await editTelegramMessage(chatId, messageId, `❌ <b>Failed to generate temporary link.</b>\n\nTarget file or batch <code>${esc(targetCode)}</code> could not be found.`, {
         inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
       });
-      return res.status(200).send('OK');
+      return;
     }
 
     const shareLink = `https://t.me/${botUsername}?start=${genRes.token}`;
@@ -59,7 +59,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
         [{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]
       ]
     });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (action === 'my_tokens') {
@@ -68,7 +68,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       await editTelegramMessage(chatId, messageId, `ℹ️ <b>No active temporary tokens found.</b>\n\nCreate one using <code>/temptoken &lt;file_code&gt; [duration]</code>.`, {
         inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
       });
-      return res.status(200).send('OK');
+      return;
     }
 
     let text = `📋 <b>Active Temporary Access Tokens</b> (${list.length})\n\n`;
@@ -92,7 +92,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     buttons.push([{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]);
 
     await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (action.startsWith('revoke_token:')) {
@@ -102,7 +102,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       await editTelegramMessage(chatId, messageId, `❌ Failed to revoke token <code>${esc(tokenId)}</code> (${revokeRes.reason}).`, {
         inline_keyboard: [[{ text: toSmallCaps('My Tokens'), callback_data: 'user:my_tokens' }]]
       });
-      return res.status(200).send('OK');
+      return;
     }
 
     await editTelegramMessage(chatId, messageId, `✅ Token <code>${esc(tokenId)}</code> has been revoked and can no longer be accessed.`, {
@@ -111,7 +111,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
         [{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]
       ]
     });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (action === 'me') {
@@ -120,7 +120,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
        await editTelegramMessage(chatId, messageId, text, {
          inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
        });
-       return res.status(200).send('OK');
+       return;
     }
 
     const { getReferralStats, hasPremium } = await import('../bot-users.js');
@@ -230,7 +230,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const bundle = await getBundle(bundleCode);
     if (!bundle || !bundle.qualities?.[qIndex]) {
       await answerCallbackQuery(cq.id, 'File or quality not found.', true);
-      return res.status(200).send('OK');
+      return;
     }
 
     const q = bundle.qualities[qIndex];
@@ -255,7 +255,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     incrementAccessCount(bundleCode);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (action.startsWith('dl_q_all:')) {
@@ -264,7 +264,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const bundle = await getBundle(bundleCode);
     if (!bundle || !bundle.qualities?.length) {
       await answerCallbackQuery(cq.id, 'Bundle not found.', true);
-      return res.status(200).send('OK');
+      return;
     }
 
     await answerCallbackQuery(cq.id, 'Delivering all resolutions...');
@@ -290,8 +290,8 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       await scheduleAutoDelete(chatId, sentIds, bundleCode);
     }
     incrementAccessCount(bundleCode);
-    return res.status(200).send('OK');
+    return;
   }
 
-  return res.status(200).send('OK');
+  return;
 }

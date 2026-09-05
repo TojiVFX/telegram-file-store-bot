@@ -60,7 +60,7 @@ async function alertAdminShortenerDown() {
   );
 }
 
-export async function handleStartPayload(chatId, payload, message, admin, res) {
+export async function handleStartPayload(chatId, payload, message, admin) {
   const botUsername = await getBotUsername();
   const sessions = await getCollection('sessions');
 
@@ -70,7 +70,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       const cd = checkRequestCooldown(chatId);
       if (cd.limited) {
         await sendTelegramMessage(chatId, `⏳ <b>Please Wait</b>\n\nYou can request another file in <b>${cd.remainingSec}s</b> to prevent server flood.`);
-        return res.status(200).send('OK');
+        return;
       }
       updateRequestCooldown(chatId);
     }
@@ -98,7 +98,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       } else {
         await sendTelegramMessage(chatId, customMsg, { inline_keyboard: buttons });
       }
-      return res.status(200).send('OK');
+      return;
     }
 
     // User is fully subscribed! Complete pending referral if this user arrived via referral link
@@ -119,7 +119,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       } else {
         await sendTelegramMessage(chatId, `❌ <b>Invalid Token</b>\n\nThis temporary file sharing link was not found.`);
       }
-      return res.status(200).send('OK');
+      return;
     }
 
     const doc = tokenRes.tokenDoc;
@@ -136,7 +136,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
       `\n<i>Loading file...</i>`
     );
 
-    return handleStartPayload(chatId, doc.targetCode, message, admin, res);
+    return handleStartPayload(chatId, doc.targetCode, message, admin);
   }
 
   if (payload && (payload.startsWith('batch_') || payload.startsWith('file_'))) {
@@ -196,7 +196,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
             null,
             s?.protectContent === '1'
           );
-          return res.status(200).send('OK');
+          return;
         }
 
         const kb = { inline_keyboard: [[{ text: toSmallCaps('Verify Token'), url: short }]] };
@@ -205,7 +205,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
         if (s?.bannerVerify) await sendTelegramPhoto(chatId, s.bannerVerify, text, kb, protect);
         else if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
         else await sendTelegramMessage(chatId, text, kb, protect);
-        return res.status(200).send('OK');
+        return;
       }
     }
   }
@@ -215,7 +215,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     if (!bundle) {
       const s = await getSettings();
       await sendTelegramMessage(chatId, `❌ Not found.`, null, s?.protectContent === '1');
-      return res.status(200).send('OK');
+      return;
     }
 
     logActivity({
@@ -271,7 +271,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     } else {
       await sendTelegramMessage(chatId, text, { inline_keyboard: buttons }, protect);
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   if (payload?.startsWith('batch_')) {
@@ -279,7 +279,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     if (!b) {
       const s = await getSettings();
       await sendTelegramMessage(chatId, `❌ Not found.`, null, s?.protectContent === '1');
-      return res.status(200).send('OK');
+      return;
     }
 
     logActivity({
@@ -333,13 +333,13 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     if (progressMsg?.messageId) {
       await deleteTelegramMessage(chatId, progressMsg.messageId).catch(() => {});
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   if (payload === 'setting' && admin) {
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
     await sendTelegramMessage(chatId, text, getAdminDashboardKeyboard());
-    return res.status(200).send('OK');
+    return;
   }
 
   if (payload?.startsWith('file_')) {
@@ -386,7 +386,7 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
     } else {
       await sendTelegramMessage(chatId, `❌ Not found.`);
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   logActivity({
@@ -416,5 +416,5 @@ export async function handleStartPayload(chatId, payload, message, admin, res) {
   } else {
     await sendTelegramMessage(chatId, startMsg, { inline_keyboard: styledButtons });
   }
-  return res.status(200).send('OK');
+  return;
 }

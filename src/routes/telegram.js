@@ -28,13 +28,15 @@ export default async function handler(req, res) {
     return res.status(401).send('Unauthorized');
   }
 
+  res.status(200).send('OK');
+
   const { botContext } = await import('../bot-common.js');
-  return botContext.run({ token: getMainToken() }, () => handleUpdate(req, res));
+  return botContext.run({ token: getMainToken() }, () => handleUpdate(req));
 }
 
 const registeredCommandsCache = new Set();
 
-async function handleUpdate(req, res) {
+async function handleUpdate(req) {
   const token = getToken();
   const tokenPrefix = token ? token.slice(0, 10) : '';
   const sessions = await getCollection('sessions');
@@ -76,7 +78,7 @@ async function handleUpdate(req, res) {
       { $set: { val: '1', expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000) } },
       { upsert: true }
     );
-    return res.status(200).send('OK');
+    return;
   }
 
   if (update.chat_member) {
@@ -88,7 +90,7 @@ async function handleUpdate(req, res) {
       const pendingKey = `fsub:pending:${chatId}:${userId}`;
       await sessions.deleteOne({ _id: pendingKey });
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   if (update.my_chat_member) {
@@ -113,7 +115,7 @@ async function handleUpdate(req, res) {
         ]);
       }
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   if (update.callback_query) {
@@ -127,27 +129,34 @@ async function handleUpdate(req, res) {
     // button taps (callback_query updates) bypassed both entirely, so a
     // banned user could still act via old inline keyboards and no one was
     // ever rate-limited for callback spam.
-    if (!admin && await isBanned(chatId)) {
-      await answerCallbackQuery(cbId, '❌ You are banned from using this bot.', true);
-      return res.status(200).send('OK');
-    }
+    if (!admin) {
+      const [banned, rateLimited] = await Promise.all([
+        isBanned(chatId),
+        isRateLimited(chatId),
+      ]);
 
-    if (!admin && await isRateLimited(chatId)) {
-      log('warn', 'Rate limit exceeded (callback)', { chatId });
-      await answerCallbackQuery(cbId, '⏳ Please slow down and try again shortly.', true);
-      return res.status(200).send('OK');
+      if (banned) {
+        await answerCallbackQuery(cbId, '❌ You are banned from using this bot.', true);
+        return;
+      }
+
+      if (rateLimited) {
+        log('warn', 'Rate limit exceeded (callback)', { chatId });
+        await answerCallbackQuery(cbId, '⏳ Please slow down and try again shortly.', true);
+        return;
+      }
     }
 
     if (data.startsWith('user:')) {
       const action = data.slice(5);
-      return handleUserCallback(chatId, messageId, action, cq, from, msg, admin, res);
+      return handleUserCallback(chatId, messageId, action, cq, from, msg, admin);
     }
 
     if (data.startsWith('admin:')) {
-      if (!admin) return res.status(200).send('OK');
+      if (!admin) return;
 
       const action = data.slice(6);
-      return handleAdminCallback(chatId, messageId, action, cq, res);
+      return handleAdminCallback(chatId, messageId, action, cq);
     }
 
     if (data.startsWith('sub_check:')) {
@@ -158,7 +167,7 @@ async function handleUpdate(req, res) {
       const sub = await checkSubscription(chatId, chatId);
       if (!sub.ok) {
         await answerCallbackQuery(cbId, "❌ You still haven't joined all the required channels.", true);
-        return res.status(200).send('OK');
+        return;
       }
 
       await answerCallbackQuery(cbId, '✅ Verified!');
@@ -166,25 +175,31 @@ async function handleUpdate(req, res) {
 
       const { handleStartPayload } = await import('../commands/start.js');
       const pseudoMessage = { chat: msg.chat, from, message_id: messageId };
-      return handleStartPayload(chatId, payload, pseudoMessage, admin, res);
+      return handleStartPayload(chatId, payload, pseudoMessage, admin);
     }
 
-    return res.status(200).send('OK');
+    return;
   }
 
   const { message } = update;
-  if (!message?.chat?.id) return res.status(200).send('OK');
+  if (!message?.chat?.id) return;
 
   const chatId   = message.chat.id;
   const rawText  = (message.text?.trim() || message.caption?.trim() || '');
 
   const admin = await isAdmin(chatId);
-  if (await isBanned(chatId) && !admin) return res.status(200).send('OK');
+  if (!admin) {
+    const [banned, rateLimited] = await Promise.all([
+      isBanned(chatId),
+      isRateLimited(chatId),
+    ]);
+    if (banned) return;
 
-  if (!admin && await isRateLimited(chatId)) {
-    log('warn', 'Rate limit exceeded', { chatId });
-    return res.status(200).send('OK');
+    if (rateLimited) {
+      log('warn', 'Rate limit exceeded', { chatId });
+      return;
+    }
   }
 
-  return processMessageUpdate(chatId, rawText, message, admin, req, res);
+  return processMessageUpdate(chatId, rawText, message, admin, req);
 }

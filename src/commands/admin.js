@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc
+  getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, logHistory
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, getBackupDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser,
@@ -15,7 +15,7 @@ import {
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral } from '../bot-users.js';
 
-export async function processAdminMessage(chatId, rawText, message, req, res) {
+export async function processAdminMessage(chatId, rawText, message, req) {
   const sessions = await getCollection('sessions');
   const bulkActive = await isBulkStoreActive(chatId);
   if (bulkActive) {
@@ -25,7 +25,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       await sendTelegramMessage(chatId, `✅ <b>Bulk Store cancelled.</b>`, {
         inline_keyboard: [[{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]]
       });
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (rawText === '/done') {
@@ -36,7 +36,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         await sendTelegramMessage(chatId, `⚠️ <b>No files were stored in this session.</b>`, {
           inline_keyboard: [[{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]]
         });
-        return res.status(200).send('OK');
+        return true;
       }
 
       const bot = await getBotUsername();
@@ -57,7 +57,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
       const { sendTelegramFileBuffer } = await import('../bot-common.js');
       await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>Exported ${codes.length} Links (.txt)</b>`);
-      return res.status(200).send('OK');
+      return true;
     }
 
     const hasMedia = message.document || message.video || message.audio || (message.photo && message.photo.length > 0);
@@ -67,7 +67,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         await setBulkStoreActive(chatId, false);
         await clearStoreSession(chatId);
         await sendTelegramMessage(chatId, `❌ <b>Database Channel is not configured.</b>\n\nPlease set it in the bot settings first.`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       let type = message.document ? 'document' : message.video ? 'video' : message.audio ? 'audio' : message.photo ? 'photo' : 'file';
@@ -115,10 +115,10 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
             [{ text: toSmallCaps('Cancel'), callback_data: 'admin:bulk_store_cancel' }]
           ]
         });
-        return res.status(200).send('OK');
+        return true;
       } else {
         await sendTelegramMessage(chatId, `❌ <b>Failed to store file.</b>\n\nMake sure the bot is an administrator in the DB channel and has permission to post messages.`);
-        return res.status(200).send('OK');
+        return true;
       }
     }
   }
@@ -130,7 +130,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     if (!dbChannelId) {
       await clearBatchSession(chatId);
       await sendTelegramMessage(chatId, `❌ <b>Database Channel is not configured.</b>\n\nPlease set it in the bot settings first.`);
-      return res.status(200).send('OK');
+      return true;
     }
 
     const extracted = await extractChannelMessage(message);
@@ -139,7 +139,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         const copyResult = await copyIntoDbChannel(dbChannelId, extracted.channelId, extracted.msgId);
         if (!copyResult.ok) {
           await sendTelegramMessage(chatId, `❌ <b>Failed to copy message.</b>\nReason: ${copyResult.reason}`);
-          return res.status(200).send('OK');
+          return true;
         }
         let backupFirstId = null;
         const backupDbChannelId = await getBackupDbChannelId();
@@ -160,14 +160,14 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
           `✅ <b>First message saved!</b>\n\n` +
           `Now forward the <b>last message</b> for a range, or keep forwarding <b>individual files</b>.`
         );
-        return res.status(200).send('OK');
+        return true;
       }
       if (batchSession.step === 'last') {
         if (extracted.channelId === batchSession.srcChannelId && extracted.msgId > batchSession.srcFirstMsgId) {
           const totalFiles = extracted.msgId - batchSession.srcFirstMsgId + 1;
           if (totalFiles > 500) {
              await sendTelegramMessage(chatId, `⚠️ <b>Range too large!</b>\n\nYou can only add up to 500 files at once. This range is <b>${totalFiles}</b> files.`);
-             return res.status(200).send('OK');
+             return true;
           }
           const backupDbChannelId = await getBackupDbChannelId();
           for (let srcId = batchSession.srcFirstMsgId + 1; srcId <= extracted.msgId; srcId++) {
@@ -195,10 +195,10 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
               [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]
             ]
           });
-          return res.status(200).send('OK');
+          return true;
         } else {
           await sendTelegramMessage(chatId, `❌ <b>Invalid message for range!</b>\n\nThe last message must be from the same channel as the first message and must have a larger message ID.\n\nPlease try forwarding a valid last message from the channel, or send /cancel to abort.`);
-          return res.status(200).send('OK');
+          return true;
         }
       }
     }
@@ -213,7 +213,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
             [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
           ]
         });
-        return res.status(200).send('OK');
+        return true;
       }
 
       const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
@@ -236,7 +236,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
             [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
           ]
         });
-        return res.status(200).send('OK');
+        return true;
       }
     }
   }
@@ -253,14 +253,14 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       } else {
         await sendTelegramMessage(chatId, cancelText, cancelKb);
       }
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (rawText === '/done') {
       const bSession = await getBundleSession(chatId);
       if (!bSession || !bSession.qualities?.length) {
         await sendTelegramMessage(chatId, `⚠️ <b>No files added to bundle yet.</b> Please send video files or links first, or send /cancel.`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       const dbChannelId = await getDbChannelId();
@@ -295,7 +295,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       } else {
         await sendTelegramMessage(chatId, text, kb);
       }
-      return res.status(200).send('OK');
+      return true;
     }
 
     // Check if user sent two links in one message (e.g. "https://t.me/c/.../101 https://t.me/c/.../104")
@@ -303,7 +303,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       const range = await extractChannelMessageRange(rawText);
       if (range) {
         await processBundleRange(chatId, range, bundleSession.sessionMsgId, bundleSession.title);
-        return res.status(200).send('OK');
+        return true;
       }
     }
 
@@ -339,7 +339,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
             await setBundleSession(chatId, { ...bundleSession, step: 'last', srcChannelId: extracted.channelId, srcFirstMsgId: extracted.msgId, sessionMsgId: nMsg.result.message_id });
           }
         }
-        return res.status(200).send('OK');
+        return true;
       }
 
       if (bundleSession.step === 'last') {
@@ -351,10 +351,10 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
             totalCount: extracted.msgId - bundleSession.srcFirstMsgId + 1
           };
           await processBundleRange(chatId, range, bundleSession.sessionMsgId, bundleSession.title);
-          return res.status(200).send('OK');
+          return true;
         } else {
           await sendTelegramMessage(chatId, `❌ <b>Invalid target message!</b>\n\nTarget message must be from the same channel as the first message (#${bundleSession.srcFirstMsgId}) and have a higher message ID. Please try again or send /cancel.`);
-          return res.status(200).send('OK');
+          return true;
         }
       }
     }
@@ -376,14 +376,14 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       } else {
         await sendTelegramMessage(chatId, text, kb);
       }
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (hasFile) {
       const dbChannelId = await getDbChannelId();
       if (!dbChannelId) {
         await sendTelegramMessage(chatId, `❌ <b>DB Channel not configured!</b>`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
@@ -448,7 +448,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
             await setBundleSession(chatId, { ...bundleSession, title: currentTitle, sessionMsgId: nMsg.result.message_id });
           }
         }
-        return res.status(200).send('OK');
+        return true;
       }
     }
   }
@@ -459,7 +459,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     if (rawText === '/cancel') {
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
       await sendTelegramMessage(chatId, `✅ Cancelled.`);
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (waitingFor === 'fs_fsub_msg_forward') {
@@ -481,12 +481,12 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         targetTitle = typedId;
       } else {
         await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       if (!(await isBotAdmin(targetCid))) {
         await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       await sessions.updateOne(
@@ -503,7 +503,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
           [{ text: toSmallCaps("Cancel"), callback_data: "admin:cancel_session" }]
         ]
       });
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (waitingFor === 'backup_db_channel') {
@@ -520,12 +520,12 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         targetCid = typedId;
       } else {
         await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the backup channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       if (!(await isBotAdmin(targetCid))) {
         await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this backup channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       await updateSettings({ backupDbChannelId: String(targetCid) });
@@ -535,13 +535,13 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
       const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
       await renderStorageAudit(chatId);
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (waitingFor === 'dbChannelId') {
       if (!/^-100\d+$/.test(rawText)) {
         await sendTelegramMessage(chatId, `❌ <b>Invalid DB Channel ID!</b>\n\nChannel ID must match pattern <code>-100dddddddddd</code>. Please try again or send /cancel.`);
-        return res.status(200).send('OK');
+        return true;
       }
     } else if (waitingFor === 'forceSubscribeChannels') {
       const trimmed = rawText.trim();
@@ -550,7 +550,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         const allValid = channels.every(c => /^-100\d+$/.test(c));
         if (!allValid) {
           await sendTelegramMessage(chatId, `❌ <b>Invalid Force Subscribe Channel ID(s)!</b>\n\nMust be a comma-separated list of Channel IDs matching <code>-100dddddddddd</code>. Please try again or send /cancel.`);
-          return res.status(200).send('OK');
+          return true;
         }
       }
     }
@@ -567,7 +567,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
     if (!value) {
       await sendTelegramMessage(chatId, `❌ <b>Invalid input.</b> Please send a valid ${isBannerSetting ? 'photo or image link' : 'value'}, or send /cancel to abort.`);
-      return res.status(200).send('OK');
+      return true;
     }
     await updateSettings({ [waitingFor]: value });
     await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
@@ -581,7 +581,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     await sendTelegramMessage(chatId, `✅ Updated <b>${waitingFor}</b>!`, {
       inline_keyboard: [[{ text: toSmallCaps('Back to Settings'), callback_data: backCb }]]
     });
-    return res.status(200).send('OK');
+    return true;
   }
 
   const waDoc = await sessions.findOne({ _id: `admin:waiting_action:${chatId}` });
@@ -591,7 +591,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
       if (rawText === '/cancel') {
         await sendTelegramMessage(chatId, `✅ Cancelled.`);
-        return res.status(200).send('OK');
+        return true;
       }
       // If admin typed any other command (e.g. /start, /setting, /ping), exit waiting state and run command
       return null;
@@ -605,7 +605,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
       if (!fileDoc && !batchDoc) {
         await sendTelegramMessage(chatId, `❌ <b>File or Batch not found!</b>\n\nNo stored record matches <code>${esc(targetCode)}</code>. Please try again or send /cancel to abort.`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
@@ -628,7 +628,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         ]
       };
       await sendTelegramMessage(chatId, `⏱ <b>Select Expiration Duration</b> for <code>${esc(targetCode)}</code>:`, durKb);
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (waitingAction.startsWith('export_custom_duration')) {
@@ -650,7 +650,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
       if (!seconds || seconds <= 0) {
         await sendTelegramMessage(chatId, `❌ <b>Invalid duration.</b>\n\nPlease send e.g. <code>15m</code>, <code>30</code>, <code>1h</code>, or <code>30m batch</code>, or send /cancel to abort.`);
-        return res.status(200).send('OK');
+        return true;
       }
 
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
@@ -663,7 +663,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         await sendTelegramMessage(chatId, `⚠️ <i>No ${typeLabel.toLowerCase()} found created within the last ${durationLabel}.</i>`, {
           inline_keyboard: [[{ text: toSmallCaps('Back to Export Hub'), callback_data: 'admin:export_hub' }]]
         });
-        return res.status(200).send('OK');
+        return true;
       }
 
       const bot = await getBotUsername();
@@ -681,7 +681,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
       await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b> (${records.length} records)`, {
         inline_keyboard: [[{ text: toSmallCaps('Back to Export Hub'), callback_data: 'admin:export_hub' }]]
       });
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (waitingAction === 'broadcast') {
@@ -740,31 +740,37 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         ]
       });
 
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (waitingAction === 'ban') {
       const targetId = rawText.match(/(\d+)/)?.[1];
-      if (!targetId) return sendTelegramMessage(chatId, `❌ Invalid User ID.`);
+      if (!targetId) {
+        await sendTelegramMessage(chatId, `❌ Invalid User ID.`);
+        return true;
+      }
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
       await banUser(targetId);
-      await logHistory(`banned_tg: ${targetId}`, 'tg');
+      logHistory(`banned_tg: ${targetId}`, 'tg').catch(() => {});
       await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been banned.`, {
         inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
       });
-      return res.status(200).send('OK');
+      return true;
     }
 
     if (waitingAction === 'unban') {
       const targetId = rawText.match(/(\d+)/)?.[1];
-      if (!targetId) return sendTelegramMessage(chatId, `❌ Invalid User ID.`);
+      if (!targetId) {
+        await sendTelegramMessage(chatId, `❌ Invalid User ID.`);
+        return true;
+      }
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
       await unbanUser(targetId);
-      await logHistory(`unbanned_tg: ${targetId}`, 'tg');
+      logHistory(`unbanned_tg: ${targetId}`, 'tg').catch(() => {});
       await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been unbanned.`, {
         inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
       });
-      return res.status(200).send('OK');
+      return true;
     }
   }
 
@@ -775,7 +781,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
 
     if (!targetUserId) {
       await sendTelegramMessage(chatId, `❌ User not found.`);
-      return res.status(200).send('OK');
+      return true;
     }
 
     await sessions.updateOne(
@@ -801,14 +807,14 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
     } else {
       await sendTelegramMessage(chatId, `⭐ <b>Select Duration</b> for <code>${targetUserId}</code>:`, durationKb);
     }
-    return res.status(200).send('OK');
+    return true;
   }
 
   if (await checkAndClearAdminWaiting(chatId)) {
     const dbChannelId = await getDbChannelId();
     if (!dbChannelId) {
       await sendTelegramMessage(chatId, `❌ <b>Database Channel is not configured.</b>\n\nPlease set it in the bot settings first.`);
-      return res.status(200).send('OK');
+      return true;
     }
 
     let type = message.document ? 'document' : message.video ? 'video' : message.audio ? 'audio' : message.photo ? 'photo' : null;
@@ -861,7 +867,7 @@ export async function processAdminMessage(chatId, rawText, message, req, res) {
         await sendTelegramMessage(chatId, `❌ <b>Failed to store file.</b>\n\nMake sure the bot is an administrator in the DB channel and has permission to post messages.`);
       }
     }
-    return res.status(200).send('OK');
+    return true;
   }
 
   return null;

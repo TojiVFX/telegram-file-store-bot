@@ -9,22 +9,21 @@ import {
   generateTempToken, getTempToken, revokeTempToken, listActiveTempTokens, parseDurationString, formatDuration
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
-import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral, hasPremium, getReferralStats } from '../bot-users.js';
+import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral, hasPremium, getReferralStats, upsertUser } from '../bot-users.js';
 import { processAdminMessage } from './admin.js';
 
-export async function processMessageUpdate(chatId, rawText, message, admin, req, res) {
+export async function processMessageUpdate(chatId, rawText, message, admin, req) {
   const users = await getCollection('users');
   const sessions = await getCollection('sessions');
 
   const userExists = await users.findOne({ _id: String(chatId) });
   const isNewUser = !userExists;
 
-  const { upsertUser } = await import('../bot-users.js');
-  await upsertUser(message);
+  upsertUser(message);
 
   if (admin) {
-    const adminRes = await processAdminMessage(chatId, rawText, message, req, res);
-    if (adminRes) return adminRes;
+    const adminRes = await processAdminMessage(chatId, rawText, message, req);
+    if (adminRes) return;
   }
 
   if (/^\/start/i.test(rawText)) {
@@ -39,7 +38,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
           await savePendingReferral(referrerId, chatId);
         }
       }
-      return handleStartPayload(chatId, null, message, admin, res);
+      return handleStartPayload(chatId, null, message, admin);
     }
     if (payload?.startsWith('verify_')) {
       const tkn = payload.slice(7);
@@ -47,12 +46,12 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       const rawV = verifySession && verifySession.expiresAt > new Date() ? verifySession.val : null;
       if (!rawV) {
         await sendTelegramMessage(chatId, `❌ Link expired.`);
-        return res.status(200).send('OK');
+        return;
       }
 
       if (rawV.creatorChatId && String(rawV.creatorChatId) !== String(chatId)) {
         await sendTelegramMessage(chatId, `baka\nits not your verification token`);
-        return res.status(200).send('OK');
+        return;
       }
 
       const { payload: originalPayload, validityHours } = rawV;
@@ -83,9 +82,9 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
       await sessions.deleteOne({ _id: `verify:tkn:${tkn}` });
       await sendTelegramMessage(chatId, `✅ Verified!`);
-      return handleStartPayload(chatId, originalPayload, message, admin, res);
+      return handleStartPayload(chatId, originalPayload, message, admin);
     }
-    return handleStartPayload(chatId, payload, message, admin, res);
+    return handleStartPayload(chatId, payload, message, admin);
   }
 
   const canGenerate = admin;
@@ -98,13 +97,13 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       const setLink = `https://t.me/${mainBotUsername}?start=setting`;
 
       await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
-      return res.status(200).send('OK');
+      return;
     }
 
     if (!(await isBotAdmin(dbChannelId))) {
       const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
       await sendTelegramMessage(chatId, helpMsg);
-      return res.status(200).send('OK');
+      return;
     }
 
     const { setBundleSession } = await import('../filestore.js');
@@ -120,7 +119,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
       ]
     });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/bundle/i.test(rawText) && canGenerate) {
@@ -129,13 +128,13 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       const mainBotUsername = await getMainBotUsername();
       const setLink = `https://t.me/${mainBotUsername}?start=setting`;
       await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
-      return res.status(200).send('OK');
+      return;
     }
 
     if (!(await isBotAdmin(dbChannelId))) {
       const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
       await sendTelegramMessage(chatId, helpMsg);
-      return res.status(200).send('OK');
+      return;
     }
 
     const { extractChannelMessageRange, extractChannelMessage } = await import('../bot-helpers.js');
@@ -145,7 +144,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     if (range) {
       const { processBundleRange } = await import('../commands/admin.js');
       await processBundleRange(chatId, range, null);
-      return res.status(200).send('OK');
+      return;
     }
 
     // 2. Check if user sent single first link with command: /bundle <link1>
@@ -168,7 +167,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         title: '',
         sessionMsgId: promptMsg?.result?.message_id
       });
-      return res.status(200).send('OK');
+      return;
     }
 
     // 3. Plain /bundle interactive start:
@@ -188,7 +187,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       title: '',
       sessionMsgId: promptMsg?.result?.message_id
     });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/batch/i.test(rawText) && canGenerate) {
@@ -198,19 +197,19 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       const setLink = `https://t.me/${mainBotUsername}?start=setting`;
 
       await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
-      return res.status(200).send('OK');
+      return;
     }
 
     if (!(await isBotAdmin(dbChannelId))) {
       const mainBotUsername = await getMainBotUsername();
       const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
       await sendTelegramMessage(chatId, helpMsg);
-      return res.status(200).send('OK');
+      return;
     }
 
     await setBatchSession(chatId, { step: 'first', collectedIds: [] });
     await sendTelegramMessage(chatId, `📦 <b>Batch Mode</b>\n\nForward the first message or start sending files.`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/store/i.test(rawText) && canGenerate) {
@@ -220,19 +219,19 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
        const setLink = `https://t.me/${mainBotUsername}?start=setting`;
 
        await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
-       return res.status(200).send('OK');
+       return;
     }
 
     if (!(await isBotAdmin(dbChannelId))) {
       const mainBotUsername = await getMainBotUsername();
       const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
       await sendTelegramMessage(chatId, helpMsg);
-      return res.status(200).send('OK');
+      return;
     }
 
     await setAdminWaitingForFile(chatId);
     await sendTelegramMessage(chatId, `📁 Send the file to store.`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/cancel/i.test(rawText) && admin) {
@@ -241,7 +240,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     await clearBundleSession(chatId);
     await checkAndClearAdminWaiting(chatId);
     await sendTelegramMessage(chatId, `✅ Cancelled.`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/userstats/i.test(rawText) && admin) {
@@ -262,7 +261,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     }
 
     await sendTelegramMessage(chatId, `📊 <b>Stats</b>\n\nUsers: <b>${s.totalUsers}</b>\nBanned: <b>${s.bannedCount}</b>\nActive Today: <b>${s.todayActive}</b>\nStored Links: <b>${s.filestoreLinks}</b>\nChannels: <b>${s.filestoreChannels}</b>${chart}`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/(backup|exportdb)/i.test(rawText) && admin) {
@@ -276,7 +275,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     const caption = `💾 <b>Database Backup</b>\n\nTotal Stored Records: <b>${allFiles.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`;
 
     await sendTelegramFileBuffer(chatId, buffer, filename, caption);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/topfiles/i.test(rawText) && admin) {
@@ -294,7 +293,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
     if (!topList.length) {
       await sendTelegramMessage(chatId, header + `\n<i>No downloads recorded yet.</i>`);
-      return res.status(200).send('OK');
+      return;
     }
 
     let report = header + `\n<b>Top 10 Most Downloaded</b>\n\n`;
@@ -311,7 +310,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         [{ text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }]
       ]
     });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/todaylinks/i.test(rawText) && admin) {
@@ -321,7 +320,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
     if (!todayFiles.length) {
       await sendTelegramMessage(chatId, `<b>Links Created Today</b>\n\n<i>No links have been created today yet.</i>`);
-      return res.status(200).send('OK');
+      return;
     }
 
     let report = `<b>Links Created Today (${todayFiles.length})</b>\n\n`;
@@ -338,7 +337,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         [{ text: toSmallCaps('Copy All Links (Text)'), callback_data: 'admin:today_copy_text' }, { text: toSmallCaps('Export Today (.txt)'), callback_data: 'admin:export_today_txt' }]
       ]
     });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/bulkstore/i.test(rawText) && admin) {
@@ -346,7 +345,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     const dbError = await getDbChannelReadinessError();
     if (dbError) {
       await sendTelegramMessage(chatId, dbError);
-      return res.status(200).send('OK');
+      return;
     }
 
     const { setBulkStoreActive, clearStoreSession } = await import('../filestore.js');
@@ -364,7 +363,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         [{ text: toSmallCaps('Cancel'), callback_data: 'admin:bulk_store_cancel' }]
       ]
     });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/exportlinks/i.test(rawText) && admin) {
@@ -374,7 +373,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     if (parts.length === 0) {
       const text = `📄 <b>Export Links Hub</b>\n\nSelect a time duration or category to export links as a <b>.txt</b> document and get a 1-tap copyable text block:\n\nYou can also run directly with arguments:\n• <code>/exportlinks 15m</code>\n• <code>/exportlinks 30m batch</code>\n• <code>/exportlinks 1h</code>\n• <code>/exportlinks today</code>`;
       await sendTelegramMessage(chatId, text, getExportLinksKeyboard());
-      return res.status(200).send('OK');
+      return;
     }
 
     const argStr = parts.join(' ').toLowerCase();
@@ -393,7 +392,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       const filtered = isBatchOnly ? todayFiles.filter(f => f.type === 'batch') : isFileOnly ? todayFiles.filter(f => f.type !== 'batch') : todayFiles;
       if (!filtered.length) {
         await sendTelegramMessage(chatId, `⚠️ <i>No ${isBatchOnly ? 'batches' : 'links'} created today.</i>`);
-        return res.status(200).send('OK');
+        return;
       }
       const title = `Today's ${isBatchOnly ? 'Batches' : 'Links'}`;
       const txtContent = generateLinksExportText(filtered, botUsername, title);
@@ -406,7 +405,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       }
 
       await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${filtered.length} records)`);
-      return res.status(200).send('OK');
+      return;
     }
 
     if (isAll) {
@@ -416,14 +415,14 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       const allFiles = await filesColl.find(query).sort({ createdAt: -1 }).toArray();
       if (!allFiles.length) {
         await sendTelegramMessage(chatId, `⚠️ <i>No stored records found in database.</i>`);
-        return res.status(200).send('OK');
+        return;
       }
       const title = `All Stored ${isBatchOnly ? 'Batches' : 'Links'}`;
       const txtContent = generateLinksExportText(allFiles, botUsername, title);
       const buffer = Buffer.from(txtContent, 'utf-8');
       const filename = `filestore_all_${filterType}_${new Date().toISOString().slice(0, 10)}.txt`;
       await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${allFiles.length} records)`);
-      return res.status(200).send('OK');
+      return;
     }
 
     // Parse time duration (e.g. 15m, 30m, 1h, 120, 2h)
@@ -435,7 +434,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
     if (!seconds || seconds <= 0) {
       await sendTelegramMessage(chatId, `❌ <b>Invalid time parameter!</b>\n\n<b>Usage Examples:</b>\n• <code>/exportlinks 15m</code> (last 15 minutes)\n• <code>/exportlinks 30m batch</code> (last 30 minutes, batches only)\n• <code>/exportlinks 1h</code> (last 1 hour)\n• <code>/exportlinks today</code> (today's links)\n• <code>/exportlinks all</code> (entire database)`);
-      return res.status(200).send('OK');
+      return;
     }
 
     const records = await getFilesWithinDuration(seconds, filterType);
@@ -444,7 +443,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
     if (!records.length) {
       await sendTelegramMessage(chatId, `⚠️ <i>No ${typeLabel.toLowerCase()} found created within the last ${durationLabel}.</i>`);
-      return res.status(200).send('OK');
+      return;
     }
 
     const title = `${typeLabel} in Last ${durationLabel}`;
@@ -458,7 +457,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     }
 
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b> (${records.length} records)`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/broadcast\s+/i.test(rawText) && admin) {
@@ -497,28 +496,28 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         ]
       ]
     });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/ban\s+(\d+)/i.test(rawText) && admin) {
     const targetId = rawText.match(/\/ban\s+(\d+)/i)[1];
     await banUser(targetId);
     await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been banned.`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/unban\s+(\d+)/i.test(rawText) && admin) {
     const targetId = rawText.match(/\/unban\s+(\d+)/i)[1];
     await unbanUser(targetId);
     await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been unbanned.`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/banlist/i.test(rawText) && admin) {
     const list = await getBannedList();
     if (!list.length) await sendTelegramMessage(chatId, `No banned users.`);
     else await sendTelegramMessage(chatId, `🚫 <b>Banned Users:</b>\n\n${list.map(id => `<code>${id}</code>`).join('\n')}`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/me$/i.test(rawText.trim())) {
@@ -543,21 +542,21 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     } else {
       await sendTelegramMessage(chatId, text);
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/setting/i.test(rawText) && admin) {
     const { getAdminDashboardKeyboard } = await import('../bot-helpers.js');
     const text = `<b>Admin Dashboard</b>\n\nSelect a category to manage the bot:`;
     await sendTelegramMessage(chatId, text, getAdminDashboardKeyboard());
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/adminhelp/i.test(rawText) && admin) {
     let helpText = `<b>Admin Dashboard</b>\n\nYou can manage all bot features through the interactive dashboard. Click the button below to open it.`;
     let kb = { inline_keyboard: [[{ text: toSmallCaps('Open Dashboard'), callback_data: 'admin:dashboard' }]] };
     await sendTelegramMessage(chatId, helpText, kb);
-    return res.status(200).send('OK');
+    return;
   }
   if (/^\/status/i.test(rawText) && admin) {
     const statusMsg = await sendTelegramMessage(chatId, `🔍 <b>Checking system health...</b>`);
@@ -626,13 +625,13 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     if (statusMsg.ok) {
       await editTelegramMessage(chatId, statusMsg.messageId, text);
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/auditlinks/i.test(rawText) && admin) {
     const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
     await renderStorageAudit(chatId);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/scanbroken/i.test(rawText) && admin) {
@@ -647,7 +646,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
     if (!primaryCid) {
       await sendTelegramMessage(chatId, `❌ <b>Primary DB Channel not configured!</b>`);
-      return res.status(200).send('OK');
+      return;
     }
 
     const statusMsg = await sendTelegramMessage(chatId, `🩺 <b>Scanning stored links... (Limit: ${limit})</b>\nPlease wait.`);
@@ -678,7 +677,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         inline_keyboard: [[{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }]]
       });
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/ping/i.test(rawText)) {
@@ -708,7 +707,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
       await editTelegramMessage(chatId, msg.messageId, text);
     }
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/me/i.test(rawText)) {
@@ -716,7 +715,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
 
     if (cs.referralDisabled === '1') {
        await sendTelegramMessage(chatId, `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\n<i>Referral system is disabled on this bot.</i>`);
-       return res.status(200).send('OK');
+       return;
     }
 
     const refs = await getReferralStats(chatId);
@@ -731,7 +730,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
     const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\nStatus: <b>${premiumText}</b>\nReferrals: <b>${refs}</b>\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n<i>Share this link to earn Premium access! 3 referrals = 24h Premium.</i>`;
     await sendTelegramMessage(chatId, text);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/(temptoken|sharetemp)/i.test(rawText)) {
@@ -758,14 +757,14 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
           [{ text: toSmallCaps('My Active Tokens'), callback_data: 'user:my_tokens' }]
         ]
       });
-      return res.status(200).send('OK');
+      return;
     }
 
     if (durationInput) {
       const durationSeconds = parseDurationString(durationInput);
       if (!durationSeconds) {
         await sendTelegramMessage(chatId, `❌ <b>Invalid duration!</b>\n\nPlease specify a valid time like <code>30m</code>, <code>1h</code>, <code>6h</code>, <code>24h</code>, <code>3d</code>, or <code>7d</code>.`);
-        return res.status(200).send('OK');
+        return;
       }
 
       const maxUses = maxUsesInput && parseInt(maxUsesInput, 10) > 0 ? parseInt(maxUsesInput, 10) : null;
@@ -782,7 +781,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
         } else {
           await sendTelegramMessage(chatId, `❌ <b>Failed to generate temporary token.</b>`);
         }
-        return res.status(200).send('OK');
+        return;
       }
 
       const shareLink = `https://t.me/${botUsername}?start=${genRes.token}`;
@@ -799,7 +798,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
           [{ text: toSmallCaps('My Active Tokens'), callback_data: 'user:my_tokens' }]
         ]
       });
-      return res.status(200).send('OK');
+      return;
     }
 
     // If duration was not provided, show interactive duration selector
@@ -821,14 +820,14 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       ]
     };
     await sendTelegramMessage(chatId, `⏱ <b>Select Expiration Duration</b> for <code>${esc(targetCode)}</code>:`, durKb);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/(mytokens|temptokens)/i.test(rawText)) {
     const list = await listActiveTempTokens(admin ? null : chatId, 15);
     if (!list || list.length === 0) {
       await sendTelegramMessage(chatId, `ℹ️ <b>No active temporary tokens found.</b>\n\nCreate one using <code>/temptoken &lt;file_code&gt; [duration]</code>.`);
-      return res.status(200).send('OK');
+      return;
     }
 
     const botUsername = await getBotUsername();
@@ -851,7 +850,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
     }
 
     await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/revoketoken\s+(\S+)/i.test(rawText)) {
@@ -865,10 +864,10 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       } else {
         await sendTelegramMessage(chatId, `❌ Failed to revoke token.`);
       }
-      return res.status(200).send('OK');
+      return;
     }
     await sendTelegramMessage(chatId, `✅ Token <code>${esc(targetToken)}</code> has been revoked and can no longer be accessed.`);
-    return res.status(200).send('OK');
+    return;
   }
 
   if (/^\/help/i.test(rawText)) {
@@ -879,8 +878,8 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req,
       `- <b>Referrals:</b> Share your link from /me to earn Premium.\n` +
       `- <b>Premium:</b> Bypass verification and support the bot.\n\nNeed more help? Contact our support.`;
     await sendTelegramMessage(chatId, helpText);
-    return res.status(200).send('OK');
+    return;
   }
 
-  return res.status(200).send('OK');
+  return;
 }
