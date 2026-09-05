@@ -98,6 +98,27 @@ async function renderBannersMgmt(chatId, messageId) {
   await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
 }
 
+async function renderSponsorMgmt(chatId, messageId) {
+  const s = await getSettings();
+  const enabled = s.sponsorBtnEnabled === '1';
+  const textVal = s.sponsorBtnText ? esc(s.sponsorBtnText) : 'Not set';
+  const urlVal = s.sponsorBtnUrl ? esc(s.sponsorBtnUrl) : 'Not set';
+
+  const text = `📢 <b>Post-Delivery Sponsor / Ad Button</b>\n\n` +
+    `Attach an advertising or sponsor button to all delivered files and auto-delete notices.\n\n` +
+    `• Status: <b>${enabled ? 'ENABLED' : 'DISABLED'}</b>\n` +
+    `• Button Text: <b>${textVal}</b>\n` +
+    `• Target URL: <code>${urlVal}</code>`;
+
+  const buttons = [
+    [{ text: toSmallCaps(enabled ? 'Disable Button' : 'Enable Button'), callback_data: `admin:sponsor_toggle:${enabled ? 0 : 1}` }],
+    [{ text: toSmallCaps('Set Button Text'), callback_data: 'admin:sponsor_set_text' }, { text: toSmallCaps('Set Button URL'), callback_data: 'admin:sponsor_set_url' }],
+    [{ text: toSmallCaps('Back'), callback_data: 'admin:fs_settings' }]
+  ];
+
+  await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+}
+
 async function renderFsCfg(chatId, messageId, cfgType) {
   const s = await getSettings();
   let text = '';
@@ -531,7 +552,12 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
   } else if (action === 'ban_list') {
     const { getBannedList } = await import('../bot-users.js');
     const list = await getBannedList();
-    const text = list.length ? `<b>Banned Users:</b>\n\n${list.map(id => `<code>${id}</code>`).join('\n')}` : `No banned users.`;
+    const maxShow = 50;
+    const displayList = list.slice(0, maxShow);
+    let text = list.length ? `<b>Banned Users (${list.length}):</b>\n\n${displayList.map(id => `<code>${id}</code>`).join('\n')}` : `No banned users.`;
+    if (list.length > maxShow) {
+      text += `\n\n<i>...and ${list.length - maxShow} more banned users.</i>`;
+    }
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: navButtons('admin:user_mgmt')
     });
@@ -687,13 +713,18 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       return;
     }
 
+    const displayLimit = 20;
+    const slice = todayFiles.slice(0, displayLimit);
     let report = `<b>Links Created Today (${todayFiles.length})</b>\n\n`;
-    for (let i = 0; i < todayFiles.length; i++) {
-      const item = todayFiles[i];
+    for (let i = 0; i < slice.length; i++) {
+      const item = slice[i];
       const link = `https://t.me/${botUsername}?start=${item._id}`;
       report += `<b>${i + 1}.</b> <code>${item._id}</code> (${item.type || 'file'})\n` +
                 `   • Downloads: <b>${item.accessCount || 0}</b>\n` +
                 `   • Link: ${link}\n\n`;
+    }
+    if (todayFiles.length > displayLimit) {
+      report += `<i>Showing first ${displayLimit} of ${todayFiles.length} links. Export all as .txt or copy text below:</i>`;
     }
 
     await editTelegramMessage(chatId, messageId, report, {
@@ -1064,7 +1095,13 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
   } else if (action === 'trigger_cleanup') {
     const { runWeeklyCleanup } = await import('../filestore.js');
     const result = await runWeeklyCleanup();
-    await editTelegramMessage(chatId, messageId, `<b>Weekly Cleanup Completed</b>\n\nDeleted records created between Sunday and Monday: <b>${result.deletedRecords}</b>`, {
+    const cleanupText = `🧹 <b>System Cleanup Completed</b>\n\n` +
+      `• Expired Temp Tokens Cleared: <b>${result.cleanedTokens}</b>\n` +
+      `• Expired Sessions Cleared: <b>${result.cleanedSessions}</b>\n` +
+      `• Old Auto-Delete Jobs Cleared: <b>${result.cleanedAutoDeletes}</b>\n` +
+      `• 30-Day Activity Logs Cleared: <b>${result.cleanedLogs}</b>\n\n` +
+      `<i>Total records purged: <b>${result.totalPurged}</b>. Active stored files remain untouched.</i>`;
+    await editTelegramMessage(chatId, messageId, cleanupText, {
       inline_keyboard: navButtons('admin:file_mgmt')
     });
   } else if (action === 'auto_del_mgmt') {
@@ -1222,13 +1259,67 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const s = await getSettings();
     const envDb = (process.env.TELEGRAM_DB_CHANNEL_ID || '').trim();
     const dbChannel = envDb || s.dbChannelId || 'Not set';
-    const text = `<b>Bot Settings</b>\n\nConfigure your bot settings using the categories below.\n\n• <b>DB Channel:</b> <code>${esc(dbChannel)}</code> <i>(${envDb ? 'Environment' : 'Database'})</i>`;
+    const envLog = (process.env.LOG_CHANNEL_ID || '').trim();
+    const logChannel = envLog || s.logChannelId || 'Not set';
+    const sponsorStatus = s.sponsorBtnEnabled === '1' ? 'ENABLED' : 'DISABLED';
+
+    const text = `<b>Bot Settings</b>\n\nConfigure your bot settings using the categories below.\n\n` +
+      `• <b>DB Channel:</b> <code>${esc(dbChannel)}</code> <i>(${envDb ? 'Environment' : 'Database'})</i>\n` +
+      `• <b>Log Channel:</b> <code>${esc(logChannel)}</code> <i>(${envLog ? 'Environment' : 'Database'})</i>\n` +
+      `• <b>Sponsor Button:</b> <b>${sponsorStatus}</b>`;
     const buttons = [
       [{ text: toSmallCaps('Start Message'), callback_data: 'admin:fs_cfg:start' }, { text: toSmallCaps('Force Sub'), callback_data: 'admin:fs_cfg:fsub' }],
-      [{ text: toSmallCaps('Access Token'), callback_data: 'admin:fs_cfg:tkn' }, { text: toSmallCaps('Banners & Images'), callback_data: 'admin:banners_mgmt' }],
+      [{ text: toSmallCaps('Access Token'), callback_data: 'admin:fs_cfg:tkn' }, { text: toSmallCaps('Sponsor Button'), callback_data: 'admin:sponsor_mgmt' }],
+      [{ text: toSmallCaps('Banners & Images'), callback_data: 'admin:banners_mgmt' }, { text: toSmallCaps('Log Channel'), callback_data: 'admin:fs_set_log_channel' }],
+      [{ text: toSmallCaps('Download DB Backup (.json)'), callback_data: 'admin:manual_backup' }],
       ...navButtons('admin:dashboard')
     ];
     await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  } else if (action === 'sponsor_mgmt') {
+    await renderSponsorMgmt(chatId, messageId);
+    return;
+  } else if (action.startsWith('sponsor_toggle:')) {
+    const val = action.split(':')[1];
+    await updateSettings({ sponsorBtnEnabled: val });
+    await logHistory(`sponsor_btn_${val === '1' ? 'enabled' : 'disabled'}`, 'tg');
+    await answerCallbackQuery(cq.id, `Sponsor button ${val === '1' ? 'enabled' : 'disabled'}.`);
+    await renderSponsorMgmt(chatId, messageId);
+    return;
+  } else if (action === 'sponsor_set_text') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'sponsorBtnText', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    await editTelegramMessage(chatId, messageId, `📢 <b>Set Sponsor Button Text</b>\n\nEnter the label to appear on the button (e.g. <code>Join Main Channel</code> or <code>Sponsor Website</code>).\n\nSend /cancel to abort.`, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
+    });
+    return;
+  } else if (action === 'sponsor_set_url') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'sponsorBtnUrl', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    await editTelegramMessage(chatId, messageId, `🔗 <b>Set Sponsor Button URL</b>\n\nEnter the link destination (e.g. <code>https://t.me/your_channel</code> or <code>https://example.com</code>).\n\nSend /cancel to abort.`, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
+    });
+    return;
+  } else if (action === 'fs_set_log_channel') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'logChannelId', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    await editTelegramMessage(chatId, messageId, `📡 <b>Set Real-Time Log Channel</b>\n\nEnter the Channel ID (e.g. <code>-100123456789</code>) or <code>@channel_username</code> where live audit alerts should be sent.\n\nMake sure the bot is an <b>administrator</b> in this channel with post permissions.\n\nSend /cancel to abort.`, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
+    });
+    return;
+  } else if (action === 'manual_backup') {
+    await answerCallbackQuery(cq.id, 'Generating database backup...');
+    const { sendDatabaseBackup } = await import('../bot-helpers.js');
+    await sendDatabaseBackup(chatId);
+    return;
   } else if (action === 'banners_mgmt') {
     await renderBannersMgmt(chatId, messageId);
     return;

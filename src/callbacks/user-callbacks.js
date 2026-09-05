@@ -183,7 +183,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
 
     const { getAdminId } = await import('../bot-users.js');
     const adminId = getAdminId();
-    const contactUrl = cs?.supportContact || (adminId ? `tg://user?id=${adminId}` : 'tg://user?id=6998631274');
+    const contactUrl = cs?.supportContact || (adminId ? `tg://user?id=${adminId}` : `https://t.me/${botUsername}`);
 
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [

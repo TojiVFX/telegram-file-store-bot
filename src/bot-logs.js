@@ -1,24 +1,40 @@
 import { randomBytes } from 'crypto';
-import { getCollection, esc } from './bot-common.js';
+import { getCollection, getSettings, sendTelegramMessage, esc } from './bot-common.js';
 
 // ─── Event Icons & Labels ─────────────────────────────────────────────────────
 export const EVENT_META = {
-  file_store:         { icon: '📁', label: 'File Upload' },
-  batch_create:       { icon: '📦', label: 'Batch Created' },
-  temp_token_create:  { icon: '⏳', label: 'Token Generated' },
-  temp_token_access:  { icon: '🔓', label: 'Token Accessed' },
-  temp_token_revoke:  { icon: '🚫', label: 'Token Revoked' },
-  file_access:        { icon: '📥', label: 'File Download' },
-  batch_access:       { icon: '🗂️', label: 'Batch Download' },
-  user_start:         { icon: '👋', label: 'User Started' },
-  user_ban:           { icon: '⛔', label: 'User Banned' },
-  user_unban:         { icon: '✅', label: 'User Unbanned' },
-  broadcast:          { icon: '📢', label: 'Broadcast' },
-  cleanup:            { icon: '🧹', label: 'Cleanup' },
+  file_store:           { icon: '📁', label: 'File Upload' },
+  batch_create:         { icon: '📦', label: 'Batch Created' },
+  temp_token_create:    { icon: '⏳', label: 'Token Generated' },
+  temp_token_access:    { icon: '🔓', label: 'Token Accessed' },
+  temp_token_revoke:    { icon: '🚫', label: 'Token Revoked' },
+  token_verify_success: { icon: '🔐', label: 'Token Verified' },
+  file_access:          { icon: '📥', label: 'File Download' },
+  batch_access:         { icon: '🗂️', label: 'Batch Download' },
+  user_start:           { icon: '👋', label: 'User Started' },
+  user_ban:             { icon: '⛔', label: 'User Banned' },
+  user_unban:           { icon: '✅', label: 'User Unbanned' },
+  broadcast:            { icon: '📢', label: 'Broadcast' },
+  cleanup:              { icon: '🧹', label: 'Cleanup' },
+  system_error:         { icon: '⚠️', label: 'System Alert' },
 };
 
 /**
- * Logs an activity event to MongoDB (or mock collection)
+ * Returns configured Telegram Log Channel ID from environment or database settings
+ */
+export async function getLogChannelId() {
+  const envChannel = (process.env.LOG_CHANNEL_ID || '').trim();
+  if (envChannel) return envChannel;
+  try {
+    const s = await getSettings();
+    return (s?.logChannelId || '').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Logs an activity event to MongoDB and broadcasts real-time feed to log channel
  */
 export async function logActivity(entry) {
   try {
@@ -40,11 +56,36 @@ export async function logActivity(entry) {
     };
 
     await logs.insertOne(doc);
+
+    // Asynchronously broadcast to Real-Time Admin Log Channel if configured
+    (async () => {
+      try {
+        const logChannelId = await getLogChannelId();
+        if (logChannelId) {
+          const text = `📡 <b>Activity Log Feed</b>\n\n${formatLogEntryTelegram(doc)}`;
+          await sendTelegramMessage(logChannelId, text);
+        }
+      } catch {}
+    })();
+
     return doc;
   } catch (err) {
     console.error('Failed to log activity event:', err.message);
     return null;
   }
+}
+
+/**
+ * Helper to log and broadcast critical system alerts
+ */
+export async function logSystemAlert(title, error, metadata = {}) {
+  const details = typeof error === 'string' ? error : error?.message || 'Unknown error';
+  return logActivity({
+    eventType: 'system_error',
+    details: `${title}: ${details}`,
+    metadata,
+    status: 'error'
+  });
 }
 
 /**

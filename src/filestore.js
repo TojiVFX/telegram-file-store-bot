@@ -1,6 +1,6 @@
 import { randomInt } from 'crypto';
 import { getCollection, getSettings, log, isSafePublicUrl } from './bot-common.js';
-import { logActivity } from './bot-logs.js';
+import { logActivity, clearOldLogs } from './bot-logs.js';
 
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
@@ -693,28 +693,48 @@ export async function scanAndRepairBrokenLinks(primaryChannelId, backupChannelId
 }
 
 export async function runWeeklyCleanup() {
-  const files = await getCollection('files');
-  const allFiles = await files.find({}).toArray();
+  const now = new Date();
 
-  let deletedCount = 0;
-  const deletedIds = [];
+  // 1. Purge expired temporary access tokens
+  const tempTokens = await getCollection('temp_tokens');
+  const tokensRes = await tempTokens.deleteMany({
+    $or: [
+      { expiresAt: { $lt: now } },
+      { revoked: true, revokedAt: { $lt: new Date(Date.now() - 7 * 86400 * 1000).toISOString() } }
+    ]
+  });
+  const cleanedTokens = tokensRes?.deletedCount || 0;
 
-  for (const item of allFiles) {
-    if (!item.createdAt) continue;
-    const dt = new Date(item.createdAt);
-    const day = dt.getUTCDay();
-    if (day === 0 || day === 1) {
-      deletedIds.push(item._id);
-      deletedCount++;
-    }
-  }
+  // 2. Purge expired session documents
+  const sessions = await getCollection('sessions');
+  const sessionsRes = await sessions.deleteMany({ expiresAt: { $lt: now } });
+  const cleanedSessions = sessionsRes?.deletedCount || 0;
 
-  if (deletedIds.length > 0) {
-    await files.deleteMany({ _id: { $in: deletedIds } });
-  }
+  // 3. Purge old processed auto_deletes jobs (older than 7 days)
+  const autoDeletes = await getCollection('auto_deletes');
+  const autoDelRes = await autoDeletes.deleteMany({
+    createdAt: { $lt: new Date(Date.now() - 7 * 86400 * 1000) }
+  });
+  const cleanedAutoDeletes = autoDelRes?.deletedCount || 0;
+
+  // 4. Purge activity logs older than 30 days
+  const cleanedLogs = await clearOldLogs(30);
+
+  const totalPurged = cleanedTokens + cleanedSessions + cleanedAutoDeletes + cleanedLogs;
+
+  logActivity({
+    eventType: 'cleanup',
+    details: `Cleaned ${totalPurged} expired records (${cleanedTokens} tokens, ${cleanedSessions} sessions, ${cleanedLogs} logs)`,
+    metadata: { cleanedTokens, cleanedSessions, cleanedAutoDeletes, cleanedLogs }
+  }).catch(() => {});
 
   return {
-    deletedRecords: deletedCount,
+    ok: true,
+    cleanedTokens,
+    cleanedSessions,
+    cleanedAutoDeletes,
+    cleanedLogs,
+    totalPurged,
   };
 }
 

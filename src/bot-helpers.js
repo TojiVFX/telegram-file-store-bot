@@ -1,7 +1,8 @@
+import { randomBytes } from 'node:crypto';
 import {
   getCollection, getSettings, log, esc, getToken, isRateLimited,
   sendTelegramMessage, sendTelegramDocument, sendTelegramVideo,
-  sendTelegramAudio, sendTelegramPhoto,
+  sendTelegramAudio, sendTelegramPhoto, sendTelegramFileBuffer,
   editTelegramMessage,
   answerCallbackQuery, sendChatAction,
   deleteTelegramMessage,
@@ -682,11 +683,37 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
   return sentMessageIds;
 }
 
+export async function getSponsorButton() {
+  try {
+    const s = await getSettings();
+    if (s?.sponsorBtnEnabled !== '1') return null;
+    const text = (s?.sponsorBtnText || '').trim();
+    const url = (s?.sponsorBtnUrl || '').trim();
+    if (!text || !url) return null;
+    if (isSafePublicUrl(url) || url.startsWith('tg://') || url.startsWith('https://t.me/')) {
+      return { text: toSmallCaps(text), url };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = null) {
   if (!messageIds || (Array.isArray(messageIds) && messageIds.length === 0)) return;
 
   const s = await getSettings();
-  if (s?.autoDeleteEnabled !== '1') return;
+  const sponsorBtn = await getSponsorButton();
+
+  // If auto-delete is disabled, attach sponsor ad button if configured
+  if (s?.autoDeleteEnabled !== '1') {
+    if (sponsorBtn) {
+      await sendTelegramMessage(chatId, `✨ <b>Enjoy your download!</b>`, {
+        inline_keyboard: [[sponsorBtn]]
+      }, s?.protectContent === '1').catch(() => {});
+    }
+    return;
+  }
 
   const timerSeconds = parseInt(s?.autoDeleteTimer, 10) || 300; // default 5 mins
   const ms = timerSeconds * 1000;
@@ -701,19 +728,25 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
   const timerLabel = formatTimerLabel(timerSeconds);
 
   const warnText = `⚠️ <b>Note:</b> These file(s) will be automatically deleted in <b>${timerLabel}</b>!\n\n💡 <i>Forward them to your <b>Saved Messages</b> to keep them permanently.</i>`;
-  const warnKb = {
-    inline_keyboard: [
-      [{ text: toSmallCaps('How to Save'), callback_data: 'user:save_tip' }]
-    ]
-  };
+  const inline_keyboard = [
+    [{ text: toSmallCaps('How to Save'), callback_data: 'user:save_tip' }]
+  ];
+  if (sponsorBtn) {
+    inline_keyboard.push([sponsorBtn]);
+  }
+  const warnKb = { inline_keyboard };
 
   const warnMsg = await sendTelegramMessage(chatId, warnText, warnKb, s?.protectContent === '1');
   if (warnMsg?.ok && warnMsg?.messageId) ids.push(warnMsg.messageId);
+
+  // Generate unique atomic job ID
+  const jobId = `auto_del_${chatId}_${Date.now()}_${randomBytes(4).toString('hex')}`;
 
   // Persist to MongoDB so deletions survive Render restarts / redeployments
   try {
     const autoDeletes = await getCollection('auto_deletes');
     await autoDeletes.insertOne({
+      _id: jobId,
       chatId,
       messageIds: ids,
       fileOrBatchCode: fileOrBatchCode || null,
@@ -724,32 +757,43 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
     log('error', 'Failed to persist auto-delete job to database', { errorMessage: err.message });
   }
 
-  // Also set in-memory timeout for instant zero-delay deletion during normal operation
+  // Set in-memory timeout with atomic findOneAndDelete to prevent race condition / double messages
   setTimeout(async () => {
-    for (const msgId of ids) {
-      await deleteTelegramMessage(chatId, msgId).catch(() => {});
-    }
     try {
       const autoDeletes = await getCollection('auto_deletes');
-      await autoDeletes.deleteMany({ chatId, messageIds: { $in: ids } });
-    } catch {}
+      const claimed = await autoDeletes.findOneAndDelete({ _id: jobId });
+      const job = claimed?.value !== undefined ? claimed.value : claimed;
+      if (!job) {
+        // Already processed by background worker or another instance
+        return;
+      }
 
-    if (fileOrBatchCode) {
-      try {
-        const botUsername = await getBotUsername();
-        const reGetUrl = `https://t.me/${botUsername}?start=${fileOrBatchCode}`;
-        await sendTelegramMessage(
-          chatId,
-          `🗑️ <b>Files Deleted</b>\n\nYour file(s) have been deleted automatically according to the auto-delete timer.`,
-          {
+      for (const msgId of ids) {
+        await deleteTelegramMessage(chatId, msgId).catch(() => {});
+      }
+
+      if (fileOrBatchCode) {
+        try {
+          const botUsername = await getBotUsername();
+          const reGetUrl = `https://t.me/${botUsername}?start=${fileOrBatchCode}`;
+          const kb = {
             inline_keyboard: [
               [{ text: toSmallCaps('Get File Again'), url: reGetUrl }]
             ]
-          }
-        );
-      } catch (err) {
-        log('error', 'Failed to send auto-delete follow-up', { errorMessage: err.message });
+          };
+          if (sponsorBtn) kb.inline_keyboard.push([sponsorBtn]);
+
+          await sendTelegramMessage(
+            chatId,
+            `🗑️ <b>Files Deleted</b>\n\nYour file(s) have been deleted automatically according to the auto-delete timer.`,
+            kb
+          );
+        } catch (err) {
+          log('error', 'Failed to send auto-delete follow-up', { errorMessage: err.message });
+        }
       }
+    } catch (err) {
+      log('error', 'Auto-delete timer error', { errorMessage: err.message });
     }
   }, ms);
 }
@@ -764,28 +808,39 @@ export async function processDueAutoDeletes() {
     const dueJobs = await autoDeletes.find({ deleteAt: { $lte: now } }).limit(50).toArray();
 
     for (const job of dueJobs) {
-      if (job.chatId && Array.isArray(job.messageIds)) {
-        for (const msgId of job.messageIds) {
-          await deleteTelegramMessage(job.chatId, msgId).catch(() => {});
+      // Atomically claim the job before deleting any Telegram messages
+      const claimed = await autoDeletes.findOneAndDelete({ _id: job._id });
+      const doc = claimed?.value !== undefined ? claimed.value : claimed;
+      if (!doc) {
+        // Already claimed and processed by setTimeout or another polling worker
+        continue;
+      }
+
+      if (doc.chatId && Array.isArray(doc.messageIds)) {
+        for (const msgId of doc.messageIds) {
+          await deleteTelegramMessage(doc.chatId, msgId).catch(() => {});
         }
 
-        if (job.fileOrBatchCode) {
+        if (doc.fileOrBatchCode) {
           try {
             const botUsername = await getBotUsername();
-            const reGetUrl = `https://t.me/${botUsername}?start=${job.fileOrBatchCode}`;
+            const reGetUrl = `https://t.me/${botUsername}?start=${doc.fileOrBatchCode}`;
+            const sponsorBtn = await getSponsorButton();
+            const kb = {
+              inline_keyboard: [
+                [{ text: toSmallCaps('Get File Again'), url: reGetUrl }]
+              ]
+            };
+            if (sponsorBtn) kb.inline_keyboard.push([sponsorBtn]);
+
             await sendTelegramMessage(
-              job.chatId,
+              doc.chatId,
               `🗑️ <b>Files Deleted</b>\n\nYour file(s) have been deleted automatically according to the auto-delete timer.`,
-              {
-                inline_keyboard: [
-                  [{ text: toSmallCaps('Get File Again'), url: reGetUrl }]
-                ]
-              }
+              kb
             );
           } catch {}
         }
       }
-      await autoDeletes.deleteOne({ _id: job._id }).catch(() => {});
     }
   } catch (err) {
     log('error', 'processDueAutoDeletes error', { errorMessage: err.message });
@@ -801,6 +856,84 @@ export function startAutoDeleteWorker(intervalMs = 15000) {
   setInterval(() => {
     processDueAutoDeletes().catch(() => {});
   }, intervalMs);
+}
+
+// ─── Database Backup System ───────────────────────────────────────────────────
+export async function generateDatabaseBackupBuffer() {
+  const collectionsToExport = ['files', 'batches', 'bundles', 'users', 'channels', 'settings'];
+  const backupData = {
+    version: '1.0',
+    timestamp: new Date().toISOString(),
+    collections: {}
+  };
+
+  for (const colName of collectionsToExport) {
+    try {
+      const coll = await getCollection(colName);
+      const docs = await coll.find({}).toArray();
+      backupData.collections[colName] = docs;
+    } catch {
+      backupData.collections[colName] = [];
+    }
+  }
+
+  const jsonStr = JSON.stringify(backupData, null, 2);
+  const buffer = Buffer.from(jsonStr, 'utf-8');
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const filename = `backup_${dateStr}_${Date.now()}.json`;
+
+  return {
+    buffer,
+    filename,
+    sizeBytes: buffer.length,
+    summary: {
+      files: backupData.collections.files?.length || 0,
+      batches: backupData.collections.batches?.length || 0,
+      bundles: backupData.collections.bundles?.length || 0,
+      users: backupData.collections.users?.length || 0,
+    }
+  };
+}
+
+export async function sendDatabaseBackup(targetChatId) {
+  const backup = await generateDatabaseBackupBuffer();
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const sizeKb = (backup.sizeBytes / 1024).toFixed(1);
+
+  const caption = `💾 <b>Database Backup</b>\n\n` +
+    `📅 Date: <b>${dateStr}</b>\n` +
+    `📊 Records:\n` +
+    `• Files: <b>${backup.summary.files}</b>\n` +
+    `• Batches: <b>${backup.summary.batches}</b>\n` +
+    `• Bundles: <b>${backup.summary.bundles}</b>\n` +
+    `• Users: <b>${backup.summary.users}</b>\n` +
+    `💾 Size: <b>${sizeKb} KB</b>`;
+
+  return sendTelegramFileBuffer(targetChatId, backup.buffer, backup.filename, caption);
+}
+
+let dailyBackupWorkerStarted = false;
+export function startDailyBackupWorker() {
+  if (dailyBackupWorkerStarted) return;
+  dailyBackupWorkerStarted = true;
+
+  // Schedule daily backup every 24 hours
+  setInterval(async () => {
+    try {
+      const { getLogChannelId } = await import('./bot-logs.js');
+      const { getAdminIds } = await import('./bot-users.js');
+      const logChannelId = await getLogChannelId();
+      const adminIds = getAdminIds();
+      const targetChatId = logChannelId || (adminIds.length > 0 ? adminIds[0] : null);
+
+      if (targetChatId) {
+        await sendDatabaseBackup(targetChatId);
+        log('info', 'Automated daily database backup completed', { targetChatId });
+      }
+    } catch (err) {
+      log('error', 'Daily backup worker error', { errorMessage: err.message });
+    }
+  }, 24 * 60 * 60 * 1000);
 }
 
 export async function registerWebhook(token, webhookUrl) {
@@ -877,14 +1010,17 @@ export function formatUptime(seconds) {
 
 // ─── setMyCommands ────────────────────────────────────────────────────────────
 export async function setMyCommands() {
-  const token   = getToken();
-  const adminId = (process.env.ADMIN_CHAT_ID || '').trim();
+  const token = getToken();
   if (!token) return;
+
+  const { getAdminIds } = await import('./bot-users.js');
+  const adminIds = getAdminIds();
 
   const userCommands = [
     { command: 'start',       description: toSmallCaps('Open the main menu') },
     { command: 'temptoken',   description: toSmallCaps('Create temporary file sharing token') },
     { command: 'mytokens',    description: toSmallCaps('View active temporary tokens') },
+    { command: 'revoketoken', description: toSmallCaps('Invalidate an active token') },
     { command: 'me',          description: toSmallCaps('View your profile & referral link') },
     { command: 'ping',        description: toSmallCaps('Bot latency, uptime & system info') },
     { command: 'help',        description: toSmallCaps('How to use this bot') },
@@ -897,7 +1033,7 @@ export async function setMyCommands() {
       body: JSON.stringify({ commands: userCommands }),
     });
 
-    if (adminId) {
+    if (adminIds.length > 0) {
       const adminCommands = [
         ...userCommands,
         { command: 'setting',    description: toSmallCaps('Open admin dashboard') },
@@ -908,20 +1044,25 @@ export async function setMyCommands() {
         { command: 'backup',     description: toSmallCaps('Export database backup as JSON file') },
         { command: 'broadcast',  description: toSmallCaps('Send a message to all users') },
         { command: 'batch',      description: toSmallCaps('Create a batch link from a channel range') },
+        { command: 'bundle',     description: toSmallCaps('Create multi-quality bundle') },
         { command: 'store',      description: toSmallCaps('Store a single file') },
+        { command: 'bulkstore',  description: toSmallCaps('Bulk store files with link export') },
         { command: 'ban',        description: toSmallCaps('Ban a user by chat ID') },
         { command: 'unban',      description: toSmallCaps('Unban a user by chat ID') },
         { command: 'banlist',    description: toSmallCaps('List all banned users') },
         { command: 'adminhelp',  description: toSmallCaps('Admin command reference') },
       ];
-      await fetch(`https://api.telegram.org/bot${token}/setMyCommands`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          commands: adminCommands,
-          scope: { type: 'chat', chat_id: Number(adminId) },
-        }),
-      });
+      for (const aId of adminIds) {
+        if (!/^-?\d+$/.test(aId)) continue;
+        await fetch(`https://api.telegram.org/bot${token}/setMyCommands`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            commands: adminCommands,
+            scope: { type: 'chat', chat_id: Number(aId) },
+          }),
+        }).catch(err => log('warn', `setMyCommands failed for admin ${aId}`, { errorMessage: err.message }));
+      }
     }
   } catch (err) {
     log('error', 'setMyCommands failed', { errorMessage: err.message });

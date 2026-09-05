@@ -11,6 +11,7 @@ import {
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral, hasPremium, getReferralStats, upsertUser } from '../bot-users.js';
 import { processAdminMessage } from './admin.js';
+import { logActivity } from '../bot-logs.js';
 
 export async function processMessageUpdate(chatId, rawText, message, admin, req) {
   const users = await getCollection('users');
@@ -50,7 +51,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
       }
 
       if (rawV.creatorChatId && String(rawV.creatorChatId) !== String(chatId)) {
-        await sendTelegramMessage(chatId, `baka\nits not your verification token`);
+        await sendTelegramMessage(chatId, `❌ <b>Access Denied:</b> This verification link was generated for another user.`);
         return;
       }
 
@@ -84,6 +85,17 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
 
       await sessions.deleteOne({ _id: `verify:tkn:${tkn}` });
       await sendTelegramMessage(chatId, `✅ Verified!`);
+
+      logActivity({
+        eventType: 'token_verify_success',
+        userId: chatId,
+        username: message.from?.username,
+        firstName: message.from?.first_name,
+        targetCode: originalPayload,
+        targetType: 'token',
+        details: `Shortener token verified successfully (valid ${hours}h)`,
+      }).catch(() => {});
+
       return handleStartPayload(chatId, originalPayload, message, admin);
     }
     return handleStartPayload(chatId, payload, message, admin);
@@ -325,13 +337,18 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
       return;
     }
 
+    const displayLimit = 20;
+    const slice = todayFiles.slice(0, displayLimit);
     let report = `<b>Links Created Today (${todayFiles.length})</b>\n\n`;
-    for (let i = 0; i < todayFiles.length; i++) {
-      const item = todayFiles[i];
+    for (let i = 0; i < slice.length; i++) {
+      const item = slice[i];
       const link = `https://t.me/${botUsername}?start=${item._id}`;
       report += `<b>${i + 1}.</b> <code>${item._id}</code> (${item.type || 'file'})\n` +
                 `   • Downloads: <b>${item.accessCount || 0}</b>\n` +
                 `   • Link: ${link}\n\n`;
+    }
+    if (todayFiles.length > displayLimit) {
+      report += `<i>Showing first ${displayLimit} of ${todayFiles.length} links. Export all as .txt or copy text below:</i>`;
     }
 
     await sendTelegramMessage(chatId, report, {
@@ -501,6 +518,23 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
     return;
   }
 
+  if (/^\/backup/i.test(rawText) && admin) {
+    const statusMsg = await sendTelegramMessage(chatId, `⏳ <i>Generating full database backup...</i>`);
+    try {
+      const { sendDatabaseBackup } = await import('../bot-helpers.js');
+      const sendRes = await sendDatabaseBackup(chatId);
+      if (statusMsg?.ok && statusMsg?.messageId) {
+        await deleteTelegramMessage(chatId, statusMsg.messageId).catch(() => {});
+      }
+      if (!sendRes?.ok) {
+        await sendTelegramMessage(chatId, `❌ <b>Failed to send database backup:</b> ${sendRes?.reason || 'Unknown error'}`);
+      }
+    } catch (err) {
+      await sendTelegramMessage(chatId, `❌ <b>Database backup failed:</b> ${err.message}`);
+    }
+    return;
+  }
+
   if (/^\/ban\s+(\d+)/i.test(rawText) && admin) {
     const targetId = rawText.match(/\/ban\s+(\d+)/i)[1];
     await banUser(targetId);
@@ -517,8 +551,17 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
 
   if (/^\/banlist/i.test(rawText) && admin) {
     const list = await getBannedList();
-    if (!list.length) await sendTelegramMessage(chatId, `No banned users.`);
-    else await sendTelegramMessage(chatId, `🚫 <b>Banned Users:</b>\n\n${list.map(id => `<code>${id}</code>`).join('\n')}`);
+    if (!list.length) {
+      await sendTelegramMessage(chatId, `No banned users.`);
+      return;
+    }
+    const maxShow = 50;
+    const displayList = list.slice(0, maxShow);
+    let banText = `🚫 <b>Banned Users (${list.length}):</b>\n\n${displayList.map(id => `<code>${id}</code>`).join('\n')}`;
+    if (list.length > maxShow) {
+      banText += `\n\n<i>...and ${list.length - maxShow} more banned users.</i>`;
+    }
+    await sendTelegramMessage(chatId, banText);
     return;
   }
 

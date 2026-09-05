@@ -234,15 +234,26 @@ export async function getUserStats() {
   }
 }
 
-export function getAdminId() {
+export function getAdminIds() {
   const raw = (process.env.ADMIN_CHAT_ID || '').trim();
-  return raw ? Number(raw) : null;
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map(id => id.trim())
+    .filter(Boolean);
+}
+
+export function getAdminId() {
+  const ids = getAdminIds();
+  return ids.length > 0 ? Number(ids[0]) : null;
 }
 
 export async function isAdmin(chatId) {
-  const adminId = getAdminId();
-  if (adminId !== null && Number(chatId) === adminId) return true;
-  return false;
+  if (chatId === null || chatId === undefined) return false;
+  const ids = getAdminIds();
+  if (!ids.length) return false;
+  const strId = String(chatId).trim();
+  return ids.includes(strId);
 }
 
 export async function savePendingReferral(referrerId, newUserId) {

@@ -283,6 +283,12 @@ export async function handleStartPayload(chatId, payload, message, admin) {
       ]);
     }
 
+    const { getSponsorButton } = await import('../bot-helpers.js');
+    const sponsorBtn = await getSponsorButton();
+    if (sponsorBtn) {
+      buttons.push([sponsorBtn]);
+    }
+
     const protect = s?.protectContent === '1';
     if (s?.bannerDelivery) {
       await sendTelegramPhoto(chatId, s.bannerDelivery, text, { inline_keyboard: buttons }, protect);

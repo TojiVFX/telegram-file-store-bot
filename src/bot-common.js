@@ -178,6 +178,16 @@ class InMemoryCollection {
     return JSON.parse(JSON.stringify(target));
   }
 
+  async findOneAndDelete(filter) {
+    for (const [id, doc] of this.docs.entries()) {
+      if (this._matches(doc, filter)) {
+        this.docs.delete(id);
+        return JSON.parse(JSON.stringify(doc));
+      }
+    }
+    return null;
+  }
+
   async deleteOne(filter) {
     for (const [id, doc] of this.docs.entries()) {
       if (this._matches(doc, filter)) {
@@ -264,7 +274,7 @@ export async function getDb() {
   if (dbPromise) return dbPromise;
 
   if (!MONGODB_URI) {
-    console.warn('[AI Studio] MONGODB_URI not set — using in-memory mock database store (data resets on container restart)');
+    console.warn('[Filestore Bot] MONGODB_URI not set — using in-memory mock database store (data resets on container restart)');
     db = inMemoryDb;
     isUsingMockDb = true;
     return db;
@@ -279,41 +289,72 @@ export async function getDb() {
       // Ensure indexes are created asynchronously (fire-and-forget/non-blocking)
       database.collection('sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
         .catch(err => console.error('Error creating sessions expiresAt index:', err.message));
+      
+      // users collection indexes
       database.collection('users').createIndex({ username: 1 }, { unique: false, sparse: true })
         .catch(err => console.error('Error creating users username index:', err.message));
+      database.collection('users').createIndex({ banned: 1 })
+        .catch(err => console.error('Error creating users banned index:', err.message));
+      database.collection('users').createIndex({ isBlocked: 1 })
+        .catch(err => console.error('Error creating users isBlocked index:', err.message));
+      database.collection('users').createIndex({ lastSeen: -1 })
+        .catch(err => console.error('Error creating users lastSeen index:', err.message));
+
+      // temp_tokens indexes
       database.collection('temp_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
         .catch(err => console.error('Error creating temp_tokens expiresAt index:', err.message));
       database.collection('temp_tokens').createIndex({ createdBy: 1 })
         .catch(err => console.error('Error creating temp_tokens createdBy index:', err.message));
+
+      // activity_logs indexes
       database.collection('activity_logs').createIndex({ timestamp: -1 })
         .catch(err => console.error('Error creating activity_logs timestamp index:', err.message));
-      // Auto-purge ephemeral activity logs after 30 days to keep MongoDB Atlas free tier healthy
       database.collection('activity_logs').createIndex({ timestamp: 1 }, { expireAfterSeconds: 30 * 24 * 3600 })
         .catch(err => console.error('Error creating activity_logs TTL index:', err.message));
       database.collection('activity_logs').createIndex({ eventType: 1, timestamp: -1 })
         .catch(err => console.error('Error creating activity_logs eventType index:', err.message));
       database.collection('activity_logs').createIndex({ userId: 1, timestamp: -1 })
         .catch(err => console.error('Error creating activity_logs userId index:', err.message));
+
+      // auto_deletes index
       database.collection('auto_deletes').createIndex({ deleteAt: 1 })
         .catch(err => console.error('Error creating auto_deletes deleteAt index:', err.message));
 
+      // files collection indexes (Item 5: eliminate collection scans)
+      database.collection('files').createIndex({ createdAt: -1 })
+        .catch(err => console.error('Error creating files createdAt index:', err.message));
+      database.collection('files').createIndex({ accessCount: -1 })
+        .catch(err => console.error('Error creating files accessCount index:', err.message));
+      database.collection('files').createIndex({ type: 1, createdAt: -1 })
+        .catch(err => console.error('Error creating files type index:', err.message));
+      database.collection('files').createIndex({ backupDbChannelId: 1 })
+        .catch(err => console.error('Error creating files backupDbChannelId index:', err.message));
+
       db = database;
+      isUsingMockDb = false;
+      console.log('[Filestore Bot] Connected to MongoDB database successfully.');
       return db;
     } catch (err) {
-      console.warn('[AI Studio] MongoDB connection failed (' + err.message + ') — falling back to in-memory store');
-      db = inMemoryDb;
-      isUsingMockDb = true;
-      return db;
+      console.warn(`[Filestore Bot] MongoDB connection failed (${err.message}) — using ephemeral in-memory fallback for current request; will retry on next operation.`);
+      dbPromise = null;
+      return inMemoryDb;
     }
   })();
 
-  try {
-    return await dbPromise;
-  } catch (err) {
+  return await dbPromise;
+}
+
+export async function closeDb() {
+  if (client) {
+    try {
+      await client.close();
+      console.log('[Filestore Bot] MongoDB connection closed.');
+    } catch (err) {
+      console.error('[Filestore Bot] Error closing MongoDB client:', err.message);
+    }
+    client = null;
+    db = null;
     dbPromise = null;
-    db = inMemoryDb;
-    isUsingMockDb = true;
-    return db;
   }
 }
 

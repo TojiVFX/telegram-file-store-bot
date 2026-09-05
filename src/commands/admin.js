@@ -544,6 +544,25 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         await sendTelegramMessage(chatId, `❌ <b>Invalid DB Channel ID!</b>\n\nChannel ID must match pattern <code>-100dddddddddd</code>. Please try again or send /cancel.`);
         return true;
       }
+    } else if (waitingFor === 'logChannelId') {
+      const trimmed = rawText.trim();
+      if (!/^-100\d+$/.test(trimmed) && !/^@[a-zA-Z0-9_]{4,}$/.test(trimmed)) {
+        await sendTelegramMessage(chatId, `❌ <b>Invalid Log Channel ID!</b>\n\nMust be in format <code>-100dddddddddd</code> or <code>@channel_username</code>. Please try again or send /cancel.`);
+        return true;
+      }
+    } else if (waitingFor === 'sponsorBtnText') {
+      const trimmed = rawText.trim();
+      if (!trimmed || trimmed.length > 50) {
+        await sendTelegramMessage(chatId, `❌ <b>Invalid button text!</b> Must be between 1 and 50 characters. Please try again or send /cancel.`);
+        return true;
+      }
+    } else if (waitingFor === 'sponsorBtnUrl') {
+      const { isSafePublicUrl } = await import('../bot-common.js');
+      const trimmed = rawText.trim();
+      if (!isSafePublicUrl(trimmed) && !trimmed.startsWith('tg://') && !trimmed.startsWith('https://t.me/')) {
+        await sendTelegramMessage(chatId, `❌ <b>Invalid button URL!</b> Must be a valid public HTTP/HTTPS or Telegram URL (e.g. <code>https://t.me/...</code>). Please try again or send /cancel.`);
+        return true;
+      }
     } else if (waitingFor === 'forceSubscribeChannels') {
       const trimmed = rawText.trim();
       if (trimmed !== '') {
@@ -556,7 +575,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       }
     }
 
-    let value = rawText;
+    let value = rawText.trim();
     if (waitingFor === 'tutorialFileId') value = message.video?.file_id || message.document?.file_id;
 
     const isBannerSetting = ['startPhoto', 'bannerFsub', 'bannerVerify', 'bannerDelivery', 'bannerProfile'].includes(waitingFor);
@@ -575,6 +594,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
 
     let backCb = 'admin:fs_settings';
     if (isBannerSetting) backCb = 'admin:banners_mgmt';
+    else if (['sponsorBtnText', 'sponsorBtnUrl'].includes(waitingFor)) backCb = 'admin:sponsor_mgmt';
     else if (['startText'].includes(waitingFor)) backCb = 'admin:fs_cfg:start';
     else if (['forceSubscribeChannels', 'forceSubscribeMsg'].includes(waitingFor)) backCb = 'admin:fs_cfg:fsub';
     else if (['shortenerUrl', 'shortenerKey', 'backupShortenerUrl', 'backupShortenerKey', 'validityHours', 'tutorialFileId'].includes(waitingFor)) backCb = 'admin:fs_cfg:tkn';

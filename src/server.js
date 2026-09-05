@@ -1,6 +1,6 @@
 import app from './app.js';
 import { validateEnv } from './env-validator.js';
-import { registerWebhook, startAutoDeleteWorker } from './bot-helpers.js';
+import { registerWebhook, startAutoDeleteWorker, startDailyBackupWorker } from './bot-helpers.js';
 
 const envCheck = validateEnv();
 if (!envCheck.ok) {
@@ -14,6 +14,9 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
 
   // Start the persistent auto-delete worker
   startAutoDeleteWorker();
+
+  // Start automated daily database backup worker
+  startDailyBackupWorker();
 
   // Auto-register Telegram webhook if BOT_DOMAIN and TELEGRAM_BOT_TOKEN are configured
   const domain = (process.env.BOT_DOMAIN || '').trim();
@@ -51,8 +54,12 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
 // Graceful shutdown handling for Render deployments
 const shutdown = (signal) => {
   console.log(`[Filestore Bot] Received ${signal}. Shutting down gracefully...`);
-  server.close(() => {
+  server.close(async () => {
     console.log('[Filestore Bot] HTTP server closed.');
+    try {
+      const { closeDb } = await import('./bot-common.js');
+      await closeDb();
+    } catch {}
     process.exit(0);
   });
   // Force shutdown after 10s if connections linger

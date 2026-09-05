@@ -31,7 +31,11 @@ export default async function handler(req, res) {
   res.status(200).send('OK');
 
   const { botContext } = await import('../bot-common.js');
-  return botContext.run({ token: getMainToken() }, () => handleUpdate(req));
+  return botContext.run({ token: getMainToken() }, () => {
+    handleUpdate(req).catch(err => {
+      log('error', 'Unhandled error in handleUpdate', { errorMessage: err.message, stack: err.stack });
+    });
+  });
 }
 
 const registeredCommandsCache = new Set();
@@ -102,11 +106,12 @@ async function handleUpdate(req) {
     const adminId = getAdminId();
 
     if (newStatus === 'administrator' && chat.type === 'channel') {
-      if (promoterId === adminId) {
+      const isPromoterAdmin = await isAdmin(promoterId);
+      if (isPromoterAdmin) {
         const { sendTelegramMessage } = await import('../bot-common.js');
         const channels = await getCollection('channels');
         await Promise.all([
-          sendTelegramMessage(adminId, `✅ <b>Bot added as Admin!</b>\n\nI am now an administrator in <b>${esc(chat.title)}</b>.\n\nYou can now use /batch to create links from this channel.`),
+          sendTelegramMessage(promoterId, `✅ <b>Bot added as Admin!</b>\n\nI am now an administrator in <b>${esc(chat.title)}</b>.\n\nYou can now use /batch to create links from this channel.`),
           channels.updateOne(
             { _id: String(chat.id) },
             { $set: { title: chat.title, addedAt: new Date() } },
