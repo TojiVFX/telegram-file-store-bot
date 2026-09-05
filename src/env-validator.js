@@ -14,3 +14,12 @@ export function validateEnv() {
   }
   return { ok: true };
 }
+
+export function getEditorCredentials() {
+  const apiId = (process.env.TELEGRAM_API_ID || '').trim();
+  const apiHash = (process.env.TELEGRAM_API_HASH || '').trim();
+  if (apiId && apiHash && !isNaN(Number(apiId))) {
+    return { ok: true, apiId: Number(apiId), apiHash };
+  }
+  return { ok: false };
+}

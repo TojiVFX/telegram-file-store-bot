@@ -159,6 +159,14 @@ async function handleUpdate(req) {
       return handleAdminCallback(chatId, messageId, action, cq);
     }
 
+    if (data.startsWith('editor:')) {
+      if (!admin) return;
+
+      const action = data.slice(7);
+      const { handleEditorCallback } = await import('../commands/editor.js');
+      return handleEditorCallback(chatId, messageId, action, cq);
+    }
+
     if (data.startsWith('sub_check:')) {
       const { deleteTelegramMessage } = await import('../bot-common.js');
       const { checkSubscription } = await import('../bot-helpers.js');

@@ -17,6 +17,43 @@ import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addRef
 
 export async function processAdminMessage(chatId, rawText, message, req) {
   const sessions = await getCollection('sessions');
+
+  if (/^\/(editor|rename)/i.test(rawText)) {
+    const { startEditorSession } = await import('./editor.js');
+    await startEditorSession(chatId);
+    return true;
+  }
+
+  const editorSession = await sessions.findOne({ _id: `editor:session:${chatId}` });
+  if (editorSession && editorSession.expiresAt > new Date()) {
+    if (rawText === '/cancel') {
+      await sessions.deleteOne({ _id: `editor:session:${chatId}` });
+      await sendTelegramMessage(chatId, `❌ <b>Media Editor session cancelled.</b>`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]]
+      });
+      return true;
+    }
+
+    const hasMedia = message.document || message.video || message.audio;
+    if (hasMedia && editorSession.step === 'waiting_file') {
+      const { handleEditorIncomingFile } = await import('./editor.js');
+      const handled = await handleEditorIncomingFile(chatId, message);
+      if (handled) return true;
+    }
+
+    if (message.photo && editorSession.step === 'waiting_thumb') {
+      const { handleEditorPhotoReply } = await import('./editor.js');
+      const handled = await handleEditorPhotoReply(chatId, message);
+      if (handled) return true;
+    }
+
+    if (rawText && typeof editorSession.step === 'string' && editorSession.step.startsWith('waiting_')) {
+      const { handleEditorTextReply } = await import('./editor.js');
+      const handled = await handleEditorTextReply(chatId, rawText);
+      if (handled) return true;
+    }
+  }
+
   const bulkActive = await isBulkStoreActive(chatId);
   if (bulkActive) {
     if (rawText === '/cancel') {
