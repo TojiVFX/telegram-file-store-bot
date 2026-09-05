@@ -25,6 +25,25 @@ export const EVENT_META = {
 };
 
 /**
+ * Essential milestones and security events sent to the Telegram Log Channel.
+ * Routine high-frequency traffic (user_start, file_access, batch_access, bundle_access)
+ * is recorded in the database for stats but NOT sent to the log channel to prevent spam.
+ */
+export const CHANNEL_BROADCAST_EVENTS = new Set([
+  'new_user_joined',       // Brand new user joined the bot
+  'user_blocked_bot',     // User stopped or blocked the bot
+  'file_store',           // Admin uploaded/stored a new file
+  'batch_create',         // Admin created a batch
+  'bundle_create',        // Admin created a multi-quality bundle
+  'token_verify_success', // User solved shortener verification
+  'user_ban',             // User banned
+  'user_unban',           // User unbanned
+  'broadcast',            // Global broadcast completed/cancelled
+  'channel_connected',    // Bot added as admin in channel
+  'system_error',         // System error or shortener alert
+]);
+
+/**
  * Returns configured Telegram Log Channel ID from environment or database settings
  */
 export async function getLogChannelId() {
@@ -39,7 +58,7 @@ export async function getLogChannelId() {
 }
 
 /**
- * Logs an activity event to MongoDB and broadcasts real-time feed to log channel
+ * Logs an activity event to MongoDB and broadcasts filtered milestone events to the log channel
  */
 export async function logActivity(entry) {
   try {
@@ -62,14 +81,18 @@ export async function logActivity(entry) {
 
     await logs.insertOne(doc);
 
-    // Asynchronously broadcast to Real-Time Admin Log Channel if configured
+    // Only forward milestone events to the Telegram Log Channel (skips routine user_start / download spam)
     (async () => {
       try {
         const logChannelId = await getLogChannelId();
-        if (logChannelId) {
-          const text = `📡 <b>Activity Log Feed</b>\n\n${formatLogEntryTelegram(doc)}`;
-          await sendTelegramMessage(logChannelId, text);
-        }
+        if (!logChannelId) return;
+
+        const s = await getSettings().catch(() => ({}));
+        const shouldBroadcast = s?.logAllEvents === '1' || CHANNEL_BROADCAST_EVENTS.has(doc.eventType);
+        if (!shouldBroadcast) return;
+
+        const text = `📡 <b>Activity Log Feed</b>\n\n${formatLogEntryTelegram(doc)}`;
+        await sendTelegramMessage(logChannelId, text);
       } catch {}
     })();
 
@@ -194,9 +217,19 @@ export function formatLogEntryTelegram(log, idx = null) {
     ? d.toTimeString().split(' ')[0] + ' UTC'
     : 'Recently';
 
-  const userTag = log.username
-    ? `@${log.username}`
-    : (log.firstName ? `${log.firstName} (<code>${log.userId || 'Anon'}</code>)` : `<code>${log.userId || 'System'}</code>`);
+  let userTag = '<code>System</code>';
+  if (log.username) {
+    const cleanUser = String(log.username).replace(/^@/, '').trim();
+    userTag = `@${cleanUser}`;
+    if (log.firstName) {
+      userTag += ` (${esc(log.firstName)})`;
+    }
+  } else if (log.userId) {
+    const displayName = esc(log.firstName || 'User');
+    userTag = `<a href="tg://user?id=${log.userId}">${displayName}</a> (<code>${log.userId}</code>)`;
+  } else if (log.firstName) {
+    userTag = esc(log.firstName);
+  }
 
   let line = `${meta.icon} <b>${meta.label}</b> [<code>${timeStr}</code>]\n` +
              `   👤 <b>User:</b> ${userTag}\n`;

@@ -426,9 +426,14 @@ export async function handleStartPayload(chatId, payload, message, admin) {
   let startPhoto = null;
 
   const s = await getSettings();
+  const userMention = message.from?.username
+    ? `@${message.from.username}`
+    : `<a href="tg://user?id=${chatId}">${esc(message.from?.first_name || 'User')}</a>`;
+
   if (s.startText) {
     startMsg = s.startText
-      .replace(/{mention}/g, `<a href="tg://user?id=${chatId}">${esc(message.from?.first_name || 'User')}</a>`)
+      .replace(/{mention}/g, userMention)
+      .replace(/{username}/g, message.from?.username ? `@${message.from.username}` : userMention)
       .replace(/{first_name}/g, esc(message.from?.first_name || ''))
       .replace(/{last_name}/g, esc(message.from?.last_name || ''));
   }

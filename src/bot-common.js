@@ -602,38 +602,44 @@ export function formatReplyMarkup(replyMarkup) {
   return formatted;
 }
 
-// ─── Small Caps Safe for HTML/Commands/Placeholders ───────────────────────────
+// ─── Small Caps Safe for HTML/Commands/Usernames/Links ────────────────────────
 export function toSmallCapsSafe(text) {
   if (!text) return '';
-  const tagRegex = /(<\/?[a-zA-Z][^>]*>)/g;
-  const parts = text.split(tagRegex);
+  // Protected tokens left in normal casing:
+  // 1. Anchor tags including anchor text (<a href="...">...</a>) e.g. user deeplinks
+  // 2. Code blocks (<code>...</code>) and pre blocks (<pre>...</pre>)
+  // 3. Other HTML tags (<b>, </b>, <i>, </i>, etc.)
+  // 4. Telegram usernames (@username)
+  // 5. URLs (https://..., http://..., tg://...)
+  // 6. Bot commands (/command)
+  // 7. Placeholders ({placeholder})
+  const protectedRegex = /(<a\b[^>]*>[\s\S]*?<\/a>|<code\b[^>]*>[\s\S]*?<\/code>|<pre\b[^>]*>[\s\S]*?<\/pre>|<\/?[a-zA-Z][^>]*>|@[a-zA-Z0-9_]+|(?:https?|tg):\/\/\S+|\/[a-zA-Z0-9_@]+|\{[a-zA-Z0-9_]+\})/gi;
+  const parts = text.split(protectedRegex);
   return parts.map((part, index) => {
     if (index % 2 === 1) {
-      return part; // HTML tag — leave untouched
+      return part; // protected token — leave untouched in normal case
     }
-    const urlRegex = /(https?:\/\/\S+)/g;
-    const urlParts = part.split(urlRegex);
-    return urlParts.map((urlPart, uIdx) => {
-      if (uIdx % 2 === 1) {
-        return urlPart; // full URL — leave untouched
-      }
-      const cmdRegex = /(\/[a-zA-Z_0-9@]+)/g;
-      const subParts = urlPart.split(cmdRegex);
-      return subParts.map((sub, sIdx) => {
-        if (sIdx % 2 === 1) {
-          return sub; // /command — leave untouched
-        }
-        const plRegex = /(\{[a-zA-Z_]+\})/g;
-        const plParts = sub.split(plRegex);
-        return plParts.map((plPart, pIdx) => {
-          if (pIdx % 2 === 1) {
-            return plPart; // {placeholder} — leave untouched
-          }
-          return toSmallCaps(plPart);
-        }).join('');
-      }).join('');
-    }).join('');
+    return toSmallCaps(part);
   }).join('');
+}
+
+/**
+ * Formats a user display for Telegram:
+ * - If user has a username: standard normal-case @username
+ * - If user has no username: name with Telegram deeplink <a href="tg://user?id=${userId}">${name}</a>
+ */
+export function formatUserMention(user = {}) {
+  const userId = user.userId || user.id || user._id;
+  const rawUsername = user.username ? String(user.username).replace(/^@/, '').trim() : null;
+  const firstName = esc(user.firstName || user.first_name || user.name || 'User');
+
+  if (rawUsername) {
+    return `@${rawUsername}`;
+  }
+  if (userId) {
+    return `<a href="tg://user?id=${userId}">${firstName}</a>`;
+  }
+  return firstName;
 }
 
 // ─── Token helpers ────────────────────────────────────────────────────────────

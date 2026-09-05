@@ -203,10 +203,15 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     const s = await getSettings();
+    const userMention = from?.username
+      ? `@${from.username}`
+      : `<a href="tg://user?id=${chatId}">${esc(from?.first_name || 'User')}</a>`;
+
     let startMsg = s.startText || `👋 <b>Welcome to Filestore Bot!</b>\n\nI can store files and provide permanent sharing links. Use the buttons below or commands to explore.`;
     if (s.startText) {
       startMsg = s.startText
-        .replace(/{mention}/g, `<a href="tg://user?id=${chatId}">${esc(from?.first_name || 'User')}</a>`)
+        .replace(/{mention}/g, userMention)
+        .replace(/{username}/g, from?.username ? `@${from.username}` : userMention)
         .replace(/{first_name}/g, esc(from?.first_name || ''))
         .replace(/{last_name}/g, esc(from?.last_name || ''));
     }
