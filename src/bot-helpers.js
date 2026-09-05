@@ -907,8 +907,6 @@ export async function setMyCommands() {
         { command: 'todaylinks', description: toSmallCaps("List all links created today with downloads") },
         { command: 'backup',     description: toSmallCaps('Export database backup as JSON file') },
         { command: 'broadcast',  description: toSmallCaps('Send a message to all users') },
-        { command: 'editor',     description: toSmallCaps('Media Editor Studio (2GB)') },
-        { command: 'rename',     description: toSmallCaps('Rename, remux & edit metadata') },
         { command: 'batch',      description: toSmallCaps('Create a batch link from a channel range') },
         { command: 'store',      description: toSmallCaps('Store a single file') },
         { command: 'ban',        description: toSmallCaps('Ban a user by chat ID') },
