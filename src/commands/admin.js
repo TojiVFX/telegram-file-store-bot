@@ -17,6 +17,7 @@ import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addRef
 
 export async function processAdminMessage(chatId, rawText, message, req) {
   const sessions = await getCollection('sessions');
+
   const bulkActive = await isBulkStoreActive(chatId);
   if (bulkActive) {
     if (rawText === '/cancel') {

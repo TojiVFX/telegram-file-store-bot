@@ -541,10 +541,10 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       inline_keyboard: [
         [{ text: toSmallCaps('Create Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps('Quality Bundle'), callback_data: 'admin:bundle_start' }],
         [{ text: toSmallCaps('Store Single'), callback_data: 'admin:store_start' }, { text: toSmallCaps('Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }],
-        [{ text: toSmallCaps('Export Links Hub'), callback_data: 'admin:export_hub' }, { text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }],
-        [{ text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }, { text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }],
-        [{ text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }, { text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }],
-        [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
+        [{ text: toSmallCaps('Export Links Hub'), callback_data: 'admin:export_hub' }],
+        [{ text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }, { text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }],
+        [{ text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
+        [{ text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }, { text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
         ...navButtons('admin:dashboard')
       ]
     });
