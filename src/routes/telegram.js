@@ -16,7 +16,7 @@ import { processMessageUpdate } from '../commands/user.js';
 export default async function handler(req, res) {
   const envCheck = validateEnv();
   if (!envCheck.ok) {
-    return res.status(500).send(`Server misconfigured: ${envCheck.message}`);
+    return res.status(500).send('Server configuration error');
   }
 
   if (req.method !== 'POST') return res.status(200).send('Filestore Bot is running');

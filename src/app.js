@@ -15,7 +15,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '512kb' }));
 
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
@@ -24,7 +24,14 @@ const asyncHandler = (fn) => (req, res, next) => {
 function checkAdminAuth(req) {
   const secret = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
   if (!secret) return false;
-  const provided = req.query.secret || req.headers['x-telegram-bot-api-secret-token'];
+
+  // Strictly require headers: reject query string parameters to prevent secret leakage in server/proxy logs
+  let provided = req.headers['x-telegram-bot-api-secret-token'];
+  const authHeader = req.headers['authorization'];
+  if (!provided && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    provided = authHeader.slice(7).trim();
+  }
+
   if (!provided || typeof provided !== 'string') return false;
   const secretBuf = Buffer.from(secret);
   const providedBuf = Buffer.from(provided);
@@ -32,7 +39,7 @@ function checkAdminAuth(req) {
   return timingSafeEqual(secretBuf, providedBuf);
 }
 
-app.post('/webhook/telegram*', asyncHandler(telegramHandler));   // ← updates go here
+app.post('/webhook/telegram', asyncHandler(telegramHandler));   // ← updates go here
 
 app.get('/getMe', asyncHandler(async (req, res) => {
   if (!checkAdminAuth(req)) {
@@ -47,7 +54,7 @@ app.get('/getMe', asyncHandler(async (req, res) => {
   res.json(data);
 }));
 
-app.get('/setWebhook', asyncHandler(async (req, res) => {
+const handleSetWebhook = asyncHandler(async (req, res) => {
   if (!checkAdminAuth(req)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
@@ -88,7 +95,10 @@ app.get('/setWebhook', asyncHandler(async (req, res) => {
     secret_token_configured: !!secretToken,
     telegram_response: data
   });
-}));
+});
+
+app.post('/setWebhook', handleSetWebhook);
+app.get('/setWebhook', handleSetWebhook);
 
 // ─── Health check ──────────────────────────────────────────────────────────
 // Lightweight, unauthenticated, no DB call — safe to hit every few minutes

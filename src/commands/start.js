@@ -24,6 +24,19 @@ const SHORTENER_ALERT_DEDUPE_SECONDS = 900; // 15 minutes
 
 const requestCooldownMap = new Map();
 const COOLDOWN_MS = 10000; // 10 seconds
+const MAX_COOLDOWN_ENTRIES = 10000;
+
+function cleanupExpiredCooldowns() {
+  const now = Date.now();
+  for (const [id, time] of requestCooldownMap.entries()) {
+    if (now - time > COOLDOWN_MS) {
+      requestCooldownMap.delete(id);
+    }
+  }
+}
+
+// Periodically prune expired cooldown entries to prevent in-memory accumulation
+setInterval(cleanupExpiredCooldowns, 60000).unref?.();
 
 function checkRequestCooldown(userId) {
   const lastTime = requestCooldownMap.get(String(userId));
@@ -36,6 +49,9 @@ function checkRequestCooldown(userId) {
 }
 
 function updateRequestCooldown(userId) {
+  if (requestCooldownMap.size >= MAX_COOLDOWN_ENTRIES) {
+    cleanupExpiredCooldowns();
+  }
   requestCooldownMap.set(String(userId), Date.now());
 }
 

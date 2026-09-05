@@ -12,6 +12,7 @@ import {
   getWebhookSecret,
   getMainToken,
   isMainBot,
+  isSafePublicUrl,
 } from './bot-common.js';
 
 export const GROUP_TYPES = new Set(['group', 'supergroup']);
@@ -847,6 +848,7 @@ export async function pingDatabase() {
 
 export async function checkShortenerHealth(serviceUrl, apiKey) {
   if (!serviceUrl || !apiKey) return { status: 'not_configured' };
+  if (!isSafePublicUrl(serviceUrl)) return { status: 'unsafe_url' };
   try {
     const testUrl = 'https://www.google.com';
     const apiUrl = `${serviceUrl}?api=${apiKey}&url=${encodeURIComponent(testUrl)}`;

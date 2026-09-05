@@ -419,6 +419,34 @@ export function esc(s) {
     .replace(/'/g, '&#039;');
 }
 
+// ─── SSRF URL Validator ───────────────────────────────────────────────────────
+export function isSafePublicUrl(urlString) {
+  if (!urlString || typeof urlString !== 'string') return false;
+  try {
+    const parsed = new URL(urlString);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return false;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '0.0.0.0') {
+      return false;
+    }
+    if (hostname.startsWith('169.254.')) {
+      return false;
+    }
+    if (
+      /^10\.\d+\.\d+\.\d+$/.test(hostname) ||
+      /^192\.168\.\d+\.\d+$/.test(hostname) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(hostname)
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Small Caps Unicode map ───────────────────────────────────────────────────
 export function toSmallCaps(text) {
   if (!text) return '';

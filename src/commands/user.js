@@ -54,13 +54,15 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
         return;
       }
 
-      const { payload: originalPayload, validityHours } = rawV;
+      const { payload: originalPayload } = rawV;
+      // start.js stores `issuedValidityHours` (with fallback to legacy `validityHours`)
+      const rawHours = rawV.issuedValidityHours !== undefined ? rawV.issuedValidityHours : rawV.validityHours;
 
-      // `validityHours` was already normalized by `parseValidityHours()` when
+      // `rawHours` was already normalized by `parseValidityHours()` when
       // the verify link was generated in start.js (0 stays 0, blank/invalid
-      // falls back to 24). Here we just guard against a missing/odd value
+      // falls back to 24). Here we guard against a missing/odd value
       // before doing arithmetic with it.
-      const hours = Number.isFinite(validityHours) ? validityHours : 24;
+      const hours = Number.isFinite(rawHours) ? rawHours : 24;
 
       // A validity of 0 hours means the admin wants the token to expire
       // immediately, i.e. the user must re-verify on every single request.

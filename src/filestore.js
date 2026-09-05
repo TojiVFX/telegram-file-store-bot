@@ -1,5 +1,5 @@
 import { randomInt } from 'crypto';
-import { getCollection, getSettings, log } from './bot-common.js';
+import { getCollection, getSettings, log, isSafePublicUrl } from './bot-common.js';
 import { logActivity } from './bot-logs.js';
 
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -826,9 +826,13 @@ export async function getTodayFiles() {
 
 async function requestShortenerUrl(serviceUrl, apiKey, targetUrl) {
   if (!serviceUrl || !apiKey) return null;
+  if (!isSafePublicUrl(serviceUrl)) {
+    log('warn', 'Shortener URL failed SSRF validation check', { serviceUrl });
+    return null;
+  }
   try {
     const apiUrl = `${serviceUrl}?api=${apiKey}&url=${encodeURIComponent(targetUrl)}`;
-    const res = await fetch(apiUrl);
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       log('warn', 'Shortener service returned non-ok status', { status: res.status, serviceUrl });
       return null;

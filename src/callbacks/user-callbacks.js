@@ -181,9 +181,13 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
                  `Used: <b>${(usedStorage / (1024 * 1024)).toFixed(2)} MB</b> / <b>${(totalStorage / (1024 * 1024)).toFixed(2)} MB</b>\n\n` +
                  `<i>Powering your file sharing experience.</i>`;
 
+    const { getAdminId } = await import('../bot-users.js');
+    const adminId = getAdminId();
+    const contactUrl = cs?.supportContact || (adminId ? `tg://user?id=${adminId}` : 'tg://user?id=6998631274');
+
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [
-        [{ text: toSmallCaps('Developer'), url: 'tg://user?id=6998631274' }, { text: toSmallCaps('Help'), callback_data: 'user:help' }],
+        [{ text: toSmallCaps('Developer'), url: contactUrl }, { text: toSmallCaps('Help'), callback_data: 'user:help' }],
         [{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]
       ]
     });
