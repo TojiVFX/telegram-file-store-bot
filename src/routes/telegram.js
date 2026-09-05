@@ -105,10 +105,25 @@ async function handleUpdate(req) {
     const { getAdminId } = await import('../bot-users.js');
     const adminId = getAdminId();
 
+    if (chat.type === 'private' && newStatus === 'kicked') {
+      const users = await getCollection('users');
+      await users.updateOne({ _id: String(chat.id) }, { $set: { isBlocked: true, blockedAt: new Date() } }).catch(() => {});
+      const { logActivity } = await import('../bot-logs.js');
+      logActivity({
+        eventType: 'user_blocked_bot',
+        userId: chat.id,
+        username: mcm.from?.username,
+        firstName: mcm.from?.first_name,
+        details: 'User stopped or blocked the bot',
+      }).catch(() => {});
+      return;
+    }
+
     if (newStatus === 'administrator' && chat.type === 'channel') {
       const isPromoterAdmin = await isAdmin(promoterId);
       if (isPromoterAdmin) {
         const { sendTelegramMessage } = await import('../bot-common.js');
+        const { logActivity } = await import('../bot-logs.js');
         const channels = await getCollection('channels');
         await Promise.all([
           sendTelegramMessage(promoterId, `✅ <b>Bot added as Admin!</b>\n\nI am now an administrator in <b>${esc(chat.title)}</b>.\n\nYou can now use /batch to create links from this channel.`),
@@ -116,7 +131,14 @@ async function handleUpdate(req) {
             { _id: String(chat.id) },
             { $set: { title: chat.title, addedAt: new Date() } },
             { upsert: true }
-          )
+          ),
+          logActivity({
+            eventType: 'channel_connected',
+            userId: promoterId,
+            targetCode: String(chat.id),
+            targetType: 'channel',
+            details: `Bot added as admin to channel: "${chat.title}"`,
+          }).catch(() => {})
         ]);
       }
     }

@@ -22,6 +22,21 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
 
   upsertUser(message);
 
+  if (isNewUser) {
+    (async () => {
+      try {
+        const total = await users.countDocuments();
+        logActivity({
+          eventType: 'new_user_joined',
+          userId: chatId,
+          username: message.from?.username,
+          firstName: message.from?.first_name,
+          details: `First-time user interaction (Total Users: ${total})`,
+        });
+      } catch {}
+    })();
+  }
+
   if (admin) {
     const adminRes = await processAdminMessage(chatId, rawText, message, req);
     if (adminRes) return;

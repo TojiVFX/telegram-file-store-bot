@@ -191,6 +191,15 @@ export async function broadcastWithProgress({ text = null, fromChatId = null, me
     }
 
     log('info', `Broadcast ${finalStatus}`, { sent, failed, blockedCount, total });
+
+    const { logActivity } = await import('./bot-logs.js');
+    logActivity({
+      eventType: 'broadcast',
+      userId: adminChatId,
+      details: `Broadcast ${finalStatus}: ${sent}/${total} delivered, ${failed} failed (${blockedCount} blocked)`,
+      metadata: { sent, failed, total, blockedCount, cancelled: broadcastCancelled }
+    }).catch(() => {});
+
     return { sent, failed, total, cancelled: broadcastCancelled };
   } catch (err) {
     log('error', 'broadcastWithProgress failed', { errorMessage: err.message });

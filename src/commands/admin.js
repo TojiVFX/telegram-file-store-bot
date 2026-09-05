@@ -999,6 +999,16 @@ export async function processBundleRange(chatId, range, sessionMsgId = null, exp
   await storeBundle(bundleCode, finalTitle, dbChannelId, qualities, { userId: chatId }, { backupDbChannelId });
   await clearBundleSession(chatId);
 
+  const { logActivity } = await import('../bot-logs.js');
+  logActivity({
+    eventType: 'bundle_create',
+    userId: chatId,
+    targetCode: bundleCode,
+    targetType: 'bundle',
+    details: `Created bundle "${finalTitle}" with ${qualities.length} resolutions`,
+    metadata: { title: finalTitle, count: qualities.length }
+  }).catch(() => {});
+
   const bot = await getBotUsername();
   const shareLink = `https://t.me/${bot}?start=${bundleCode}`;
   const sortedQualities = sortQualities(qualities);
