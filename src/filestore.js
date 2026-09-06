@@ -548,12 +548,38 @@ export async function runRetroactiveMirror(primaryChannelId, backupChannelId, li
         if (res?.ok && res?.messageId) {
           backupIds.push(res.messageId);
         }
-        await new Promise(r => setTimeout(r, 60));
+        await new Promise(r => setTimeout(r, 350));
       }
       if (backupIds.length > 0) {
         await files.updateOne(
           { _id: item._id },
           { $set: { backupDbChannelId: backupChannelId, backupDbMessageIds: backupIds } }
+        );
+        mirroredSuccess++;
+      } else {
+        mirroredFailed++;
+      }
+    } else if (item.type === 'bundle' && Array.isArray(item.qualities)) {
+      let bundleUpdated = false;
+      const updatedQualities = [];
+      for (const q of item.qualities) {
+        if (q.dbMessageId && !q.backupDbMessageId) {
+          const res = await copyIntoDbChannel(backupChannelId, primaryChannelId, q.dbMessageId);
+          if (res?.ok && res?.messageId) {
+            updatedQualities.push({ ...q, backupDbMessageId: res.messageId });
+            bundleUpdated = true;
+          } else {
+            updatedQualities.push(q);
+          }
+          await new Promise(r => setTimeout(r, 350));
+        } else {
+          updatedQualities.push(q);
+        }
+      }
+      if (bundleUpdated) {
+        await files.updateOne(
+          { _id: item._id },
+          { $set: { backupDbChannelId: backupChannelId, qualities: updatedQualities } }
         );
         mirroredSuccess++;
       } else {
@@ -570,7 +596,7 @@ export async function runRetroactiveMirror(primaryChannelId, backupChannelId, li
       } else {
         mirroredFailed++;
       }
-      await new Promise(r => setTimeout(r, 60));
+      await new Promise(r => setTimeout(r, 350));
     }
   }
 

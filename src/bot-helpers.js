@@ -260,7 +260,7 @@ export async function resolveUser(input) {
 }
 
 // ─── copyMessage ──────────────────────────────────────────────────────────────
-export async function copyMessage(toChatId, fromChatId, msgId, protectContent = false, replyMarkup = null) {
+export async function copyMessage(toChatId, fromChatId, msgId, protectContent = false, replyMarkup = null, maxRetries = 2) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
@@ -278,6 +278,12 @@ export async function copyMessage(toChatId, fromChatId, msgId, protectContent = 
       body: JSON.stringify(body),
     });
     const data = await response.json();
+    if (response.status === 429 && maxRetries > 0) {
+      const waitSec = data?.parameters?.retry_after || 2;
+      log('warn', `Telegram rate limited copyMessage (429). Waiting ${waitSec}s before retrying...`, { toChatId, fromChatId, msgId, waitSec });
+      await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+      return copyMessage(toChatId, fromChatId, msgId, protectContent, replyMarkup, maxRetries - 1);
+    }
     if (!response.ok) {
       log('error', 'copyMessage failed', { toChatId, fromChatId, msgId, telegramError: data });
       const desc = (data.description || '').toLowerCase();

@@ -738,7 +738,7 @@ export async function sendTelegramMessage(chatId, text, replyMarkup = null, prot
   }
 }
 
-export async function sendTelegramDocument(chatId, documentId, caption = '', replyMarkup = null, protectContent = false) {
+export async function sendTelegramDocument(chatId, documentId, caption = '', replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
@@ -748,11 +748,17 @@ export async function sendTelegramDocument(chatId, documentId, caption = '', rep
     const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
-    return await res.json();
+    const data = await res.json();
+    if (res.status === 429 && maxRetries > 0) {
+      const waitSec = data?.parameters?.retry_after || 2;
+      await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+      return sendTelegramDocument(chatId, documentId, caption, replyMarkup, protectContent, maxRetries - 1);
+    }
+    return data;
   } catch (err) { return { ok: false, reason: err.message }; }
 }
 
-export async function sendTelegramFileBuffer(chatId, buffer, filename, caption = '', replyMarkup = null, protectContent = false) {
+export async function sendTelegramFileBuffer(chatId, buffer, filename, caption = '', replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
@@ -769,13 +775,19 @@ export async function sendTelegramFileBuffer(chatId, buffer, filename, caption =
       method: 'POST',
       body: formData,
     });
-    return await res.json();
+    const data = await res.json();
+    if (res.status === 429 && maxRetries > 0) {
+      const waitSec = data?.parameters?.retry_after || 2;
+      await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+      return sendTelegramFileBuffer(chatId, buffer, filename, caption, replyMarkup, protectContent, maxRetries - 1);
+    }
+    return data;
   } catch (err) {
     return { ok: false, reason: err.message };
   }
 }
 
-export async function sendTelegramVideo(chatId, videoId, caption = '', replyMarkup = null, protectContent = false) {
+export async function sendTelegramVideo(chatId, videoId, caption = '', replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
@@ -785,11 +797,17 @@ export async function sendTelegramVideo(chatId, videoId, caption = '', replyMark
     const res = await fetch(`https://api.telegram.org/bot${token}/sendVideo`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
-    return await res.json();
+    const data = await res.json();
+    if (res.status === 429 && maxRetries > 0) {
+      const waitSec = data?.parameters?.retry_after || 2;
+      await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+      return sendTelegramVideo(chatId, videoId, caption, replyMarkup, protectContent, maxRetries - 1);
+    }
+    return data;
   } catch (err) { return { ok: false, reason: err.message }; }
 }
 
-export async function sendTelegramAudio(chatId, audioId, caption = '', replyMarkup = null, protectContent = false) {
+export async function sendTelegramAudio(chatId, audioId, caption = '', replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
@@ -799,11 +817,17 @@ export async function sendTelegramAudio(chatId, audioId, caption = '', replyMark
     const res = await fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
-    return await res.json();
+    const data = await res.json();
+    if (res.status === 429 && maxRetries > 0) {
+      const waitSec = data?.parameters?.retry_after || 2;
+      await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+      return sendTelegramAudio(chatId, audioId, caption, replyMarkup, protectContent, maxRetries - 1);
+    }
+    return data;
   } catch (err) { return { ok: false, reason: err.message }; }
 }
 
-export async function sendTelegramPhoto(chatId, photoUrl, caption, replyMarkup = null, protectContent = false) {
+export async function sendTelegramPhoto(chatId, photoUrl, caption, replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
@@ -815,6 +839,11 @@ export async function sendTelegramPhoto(chatId, photoUrl, caption, replyMarkup =
       body: JSON.stringify(body),
     });
     const data = await res.json();
+    if (res.status === 429 && maxRetries > 0) {
+      const waitSec = data?.parameters?.retry_after || 2;
+      await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+      return sendTelegramPhoto(chatId, photoUrl, caption, replyMarkup, protectContent, maxRetries - 1);
+    }
     return { ok: res.ok, messageId: data.result?.message_id };
   } catch (err) { return { ok: false, reason: err.message }; }
 }
@@ -961,27 +990,38 @@ export async function copyTelegramMessages(toChatId, fromChatId, messageIds, pro
 
   for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
     const chunk = ids.slice(i, i + CHUNK_SIZE);
-    try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/copyMessages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: toChatId,
-          from_chat_id: fromChatId,
-          message_ids: chunk,
-          protect_content: protectContent,
-        }),
-      });
-      const data = await res.json();
-      if (data.ok && Array.isArray(data.result)) {
-        for (const item of data.result) {
-          if (item?.message_id) copiedIds.push(item.message_id);
+    let attempts = 3;
+    while (attempts > 0) {
+      attempts--;
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/copyMessages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: toChatId,
+            from_chat_id: fromChatId,
+            message_ids: chunk,
+            protect_content: protectContent,
+          }),
+        });
+        const data = await res.json();
+        if (res.status === 429 && attempts > 0) {
+          const waitSec = data?.parameters?.retry_after || 2;
+          await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+          continue;
         }
-      } else {
-        return { ok: false, reason: data.description || 'copy_failed', partialIds: copiedIds };
+        if (data.ok && Array.isArray(data.result)) {
+          for (const item of data.result) {
+            if (item?.message_id) copiedIds.push(item.message_id);
+          }
+          break;
+        } else {
+          return { ok: false, reason: data.description || 'copy_failed', partialIds: copiedIds };
+        }
+      } catch (err) {
+        if (attempts <= 0) return { ok: false, reason: err.message, partialIds: copiedIds };
+        await new Promise(r => setTimeout(r, 1000));
       }
-    } catch (err) {
-      return { ok: false, reason: err.message, partialIds: copiedIds };
     }
   }
 
