@@ -1577,7 +1577,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       { $set: { val: 'startText', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `📝 <b>Set Main Bot Start Text</b>\n\nYou can use HTML tags and placeholders:\n• <code>{mention}</code> : mention user\n• <code>{first_name}</code> : user first name\n• <code>{last_name}</code> : user last name\n\nPlease send the text now.`, {
+    await editTelegramMessage(chatId, messageId, `📝 <b>Set Main Bot Start Text</b>\n\nYou can use HTML tags and placeholders:\n• <code>{mention}</code> : Clickable user mention link\n• <code>{first_name}</code> : User first name\n• <code>{last_name}</code> : User last name\n• <code>{full_name}</code> : User full name\n• <code>{username}</code> : @username handle\n• <code>{id}</code> : User Telegram ID\n\nPlease send the text now.`, {
       inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
     });
   } else if (action === 'fs_set_sphoto') {

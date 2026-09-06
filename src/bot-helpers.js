@@ -215,6 +215,34 @@ export async function buildStartMenuButtons(admin) {
   return buttons.map(row => row.map(btn => ({ ...btn, text: toSmallCaps(btn.text) })));
 }
 
+// ─── Start Message Formatter ──────────────────────────────────────────────────
+export const DEFAULT_START_TEXT = `👋 <b>Hey {mention}! Welcome to Filestore Bot!</b>\n\n` +
+  `I am an advanced <b>Telegram Filestore & Media Distribution Bot</b>.\n\n` +
+  `⚡ <b>What can I do?</b>\n` +
+  `• Permanent secure cloud storage for files & media\n` +
+  `• Multi-quality video release bundles (480p, 720p, 1080p, 4K)\n` +
+  `• Time-limited expiring access links with <code>/temptoken</code>\n` +
+  `• Viral referral program to earn free VIP/Premium status\n\n` +
+  `Tap <b>My Profile</b> to check your account & referral link, or <b>About</b> for help and details!`;
+
+export function formatStartMessage(customTemplate, userObj = {}, chatId = '') {
+  const firstName = userObj?.first_name || 'User';
+  const lastName = userObj?.last_name || '';
+  const fullName = [firstName, lastName].filter(Boolean).join(' ');
+  const username = userObj?.username ? `@${userObj.username}` : '';
+  const mention = `<a href="tg://user?id=${chatId}">${esc(firstName)}</a>`;
+
+  const template = (customTemplate && customTemplate.trim()) ? customTemplate : DEFAULT_START_TEXT;
+
+  return template
+    .replace(/{mention}/g, mention)
+    .replace(/{first_name}/g, esc(firstName))
+    .replace(/{last_name}/g, esc(lastName))
+    .replace(/{full_name}/g, esc(fullName))
+    .replace(/{username}/g, username || mention)
+    .replace(/{id}/g, String(chatId));
+}
+
 // ─── Help Messages (Single Source of Truth) ───────────────────────────────────
 export function getUserHelpMessage(admin = false) {
   const isAdminUser = Boolean(admin) === true;

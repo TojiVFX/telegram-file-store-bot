@@ -1,5 +1,5 @@
 import { getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessage, answerCallbackQuery } from '../bot-common.js';
-import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate } from '../bot-helpers.js';
+import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate, formatStartMessage } from '../bot-helpers.js';
 import { generateTempToken, revokeTempToken, listActiveTempTokens, formatDuration } from '../filestore.js';
 
 export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin) {
@@ -202,18 +202,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     const s = await getSettings();
-    const userMention = from?.username
-      ? `@${from.username}`
-      : `<a href="tg://user?id=${chatId}">${esc(from?.first_name || 'User')}</a>`;
-
-    let startMsg = s.startText || `👋 <b>Welcome to Filestore Bot!</b>\n\nI can store files and provide permanent sharing links. Use the buttons below or commands to explore.`;
-    if (s.startText) {
-      startMsg = s.startText
-        .replace(/{mention}/g, userMention)
-        .replace(/{username}/g, from?.username ? `@${from.username}` : userMention)
-        .replace(/{first_name}/g, esc(from?.first_name || ''))
-        .replace(/{last_name}/g, esc(from?.last_name || ''));
-    }
+    const startMsg = formatStartMessage(s?.startText, from, chatId);
 
     const styledButtons = await buildStartMenuButtons(admin);
 

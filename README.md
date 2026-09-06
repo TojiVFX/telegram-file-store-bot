@@ -177,7 +177,7 @@ Access the complete visual dashboard by sending `/setting` or tapping **Admin Da
 - 🔐 **Verification & Shortener**: Set primary & backup shorteners, API keys, token validity, and tutorial files.
 - 📢 **Force-Subscribe**: Add/remove channels, switch between Normal and Join Request modes.
 - ⏱ **Auto-Delete Settings**: Configure countdown timers and toggle auto-deletion.
-- 🎨 **Visual Customization**: Set custom start messages, delivery banners, f-sub banners, and verification graphics.
+- 🎨 **Visual Customization**: Set custom start messages (supporting dynamic `{mention}`, `{first_name}`, `{last_name}`, `{full_name}`, `{username}`, `{id}` placeholders), delivery banners, f-sub banners, and verification graphics.
 - 👥 **User & Ban Management**: View active users, ban/unban IDs, search profiles.
 - 📢 **Broadcast Engine**: Send broadcast messages with live progress tracking, test preview, and pin options.
 - 📖 **Admin Guide Shortcut**: Instant access to the complete administrator command reference directly from the dashboard.

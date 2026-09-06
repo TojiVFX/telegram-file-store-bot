@@ -3,7 +3,7 @@ import {
   getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours
 } from '../bot-common.js';
 import {
-  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard, buildStartMenuButtons
+  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard, buildStartMenuButtons, formatStartMessage
 } from '../bot-helpers.js';
 import { getBatch, getFile, getBundle, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount, recordVerificationMinted } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral, getAdminId } from '../bot-users.js';
@@ -449,22 +449,9 @@ export async function handleStartPayload(chatId, payload, message, admin) {
     details: 'Opened start menu',
   }).catch(() => {});
 
-  let startMsg = `👋 <b>Welcome to Filestore Bot!</b>\n\nI can store files and provide permanent sharing links. Use the buttons below or commands to explore.`;
-  let startPhoto = null;
-
   const s = await getSettings();
-  const userMention = message.from?.username
-    ? `@${message.from.username}`
-    : `<a href="tg://user?id=${chatId}">${esc(message.from?.first_name || 'User')}</a>`;
-
-  if (s.startText) {
-    startMsg = s.startText
-      .replace(/{mention}/g, userMention)
-      .replace(/{username}/g, message.from?.username ? `@${message.from.username}` : userMention)
-      .replace(/{first_name}/g, esc(message.from?.first_name || ''))
-      .replace(/{last_name}/g, esc(message.from?.last_name || ''));
-  }
-  if (s.startPhoto) startPhoto = s.startPhoto;
+  const startMsg = formatStartMessage(s?.startText, message?.from, chatId);
+  const startPhoto = s?.startPhoto || null;
 
   const styledButtons = await buildStartMenuButtons(admin);
 
