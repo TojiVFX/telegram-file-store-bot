@@ -158,6 +158,24 @@ export async function handleStartPayload(chatId, payload, message, admin) {
   }
 
   if (payload && (payload.startsWith('batch_') || payload.startsWith('file_') || payload.startsWith('bundle_'))) {
+    // 1. Verify existence first before prompting for shortener verification
+    let recordExists = true;
+    if (payload.startsWith('file_')) {
+      const f = await getFile(payload);
+      if (!f) recordExists = false;
+    } else if (payload.startsWith('batch_')) {
+      const b = await getBatch(payload);
+      if (!b) recordExists = false;
+    } else if (payload.startsWith('bundle_')) {
+      const bn = await getBundle(payload);
+      if (!bn) recordExists = false;
+    }
+
+    if (!recordExists) {
+      await sendTelegramMessage(chatId, `❌ <b>File or Link Not Found</b>\n\nThis link may have been deleted, revoked, or expired.`);
+      return;
+    }
+
     // Check if user has premium
     const premium = await hasPremium(chatId);
 
@@ -395,12 +413,20 @@ export async function handleStartPayload(chatId, payload, message, admin) {
           resCopy = await copyFromDbChannel(chatId, f.backupDbChannelId, f.backupDbMessageId, protect);
         }
         if (resCopy?.ok && resCopy?.messageId) sentMsgId = resCopy.messageId;
-      } else {
+      }
+
+      // TRIPLE-LAYER RESILIENCE FALLBACK:
+      // If channel copying failed (channels struck, banned, or deleted),
+      // fall back directly to the raw Telegram file_id cached in MongoDB.
+      if (!sentMsgId && f.fileId) {
         let resSend;
-        if (f.type === 'video') resSend = await sendTelegramVideo(chatId, f.fileId, '', null, protect);
-        else if (f.type === 'document') resSend = await sendTelegramDocument(chatId, f.fileId, '', null, protect);
-        else if (f.type === 'audio') resSend = await sendTelegramAudio(chatId, f.fileId, '', null, protect);
-        else if (f.type === 'photo') resSend = await sendTelegramPhoto(chatId, f.fileId, '', null, protect);
+        const caption = f.title ? `<b>${esc(f.title)}</b>` : '';
+        if (f.type === 'video') resSend = await sendTelegramVideo(chatId, f.fileId, caption, null, protect);
+        else if (f.type === 'document') resSend = await sendTelegramDocument(chatId, f.fileId, caption, null, protect);
+        else if (f.type === 'audio') resSend = await sendTelegramAudio(chatId, f.fileId, caption, null, protect);
+        else if (f.type === 'photo') resSend = await sendTelegramPhoto(chatId, f.fileId, caption, null, protect);
+        else resSend = await sendTelegramDocument(chatId, f.fileId, caption, null, protect);
+
         if (resSend?.result?.message_id) sentMsgId = resSend.result.message_id;
       }
 

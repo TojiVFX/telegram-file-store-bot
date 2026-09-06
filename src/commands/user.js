@@ -801,6 +801,107 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
     return;
   }
 
+  if (/^\/rebuildchannel/i.test(rawText) && admin) {
+    const parts = rawText.trim().split(/\s+/);
+    const targetChannelRaw = parts[1];
+
+    if (!targetChannelRaw) {
+      const guideText = `🛠 <b>One-Click Channel Rebuilder</b>\n\n` +
+        `This tool automatically recovers files from Telegram's cloud CDN using cached File IDs and re-uploads them into a new DB Storage channel, updating all database records without breaking existing user links!\n\n` +
+        `<b>Usage:</b>\n` +
+        `<code>/rebuildchannel &lt;new_channel_id&gt;</code>\n\n` +
+        `<b>Example:</b>\n` +
+        `<code>/rebuildchannel -1001234567890</code>\n\n` +
+        `<b>Requirements:</b>\n` +
+        `1. Create a new private Telegram channel.\n` +
+        `2. Add this bot as an <b>Administrator</b> with 'Post Messages' permission.\n` +
+        `3. Obtain the Channel ID.\n` +
+        `4. Run the command above.`;
+
+      await sendTelegramMessage(chatId, guideText, {
+        inline_keyboard: [
+          [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }]
+        ]
+      });
+      return;
+    }
+
+    const targetChannelId = Number(targetChannelRaw);
+    if (isNaN(targetChannelId) || !targetChannelRaw.startsWith('-100')) {
+      await sendTelegramMessage(chatId, `❌ <b>Invalid Channel ID!</b>\n\nPlease provide a valid Telegram supergroup/channel ID starting with <code>-100</code> (e.g. <code>-1001234567890</code>).`);
+      return;
+    }
+
+    const isBotAdminInTarget = await isBotAdmin(targetChannelId);
+    if (!isBotAdminInTarget) {
+      await sendTelegramMessage(chatId, `❌ <b>Bot is not an Admin!</b>\n\nThe bot must be added to channel <code>${targetChannelId}</code> as an <b>Administrator</b> with permissions to post messages before rebuilding.`);
+      return;
+    }
+
+    const statusMsg = await sendTelegramMessage(chatId, `🔄 <b>Rebuilding Channel Storage...</b>\n\nTarget Channel: <code>${targetChannelId}</code>\n<i>Scanning database files...</i>`);
+    const statusMsgId = statusMsg?.result?.message_id || statusMsg?.messageId;
+
+    let lastProgressEdit = 0;
+    const onProgress = async ({ processed, total, restored, failed, skipped }) => {
+      const now = Date.now();
+      if (now - lastProgressEdit > 1500 || processed === total) {
+        lastProgressEdit = now;
+        const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+        const barLength = 10;
+        const filled = Math.min(barLength, Math.round((pct / 100) * barLength));
+        const bar = '▓'.repeat(filled) + '░'.repeat(barLength - filled);
+
+        const progressText = `🔄 <b>Rebuilding Channel Storage...</b>\n\n` +
+          `Target Channel: <code>${targetChannelId}</code>\n` +
+          `Progress: [${bar}] <b>${pct}%</b> (${processed}/${total})\n\n` +
+          `• Restored: <b>${restored}</b>\n` +
+          `• Failed: <b>${failed}</b>\n` +
+          `• Skipped: <b>${skipped}</b>\n\n` +
+          `<i>Please do not stop the bot while rebuild is in progress...</i>`;
+
+        if (statusMsgId) {
+          await editTelegramMessage(chatId, statusMsgId, progressText).catch(() => {});
+        }
+      }
+    };
+
+    const { rebuildChannelStorage } = await import('../filestore.js');
+    const result = await rebuildChannelStorage(targetChannelId, onProgress);
+
+    if (!result?.ok) {
+      await sendTelegramMessage(chatId, `❌ <b>Rebuild failed:</b> ${result?.reason || 'Unknown error'}`);
+      return;
+    }
+
+    const { updateSettings } = await import('../bot-common.js');
+    await updateSettings({ dbChannelId: String(targetChannelId) });
+
+    const summaryText = `🎉 <b>Channel Rebuild Complete!</b>\n\n` +
+      `• Target Channel: <code>${targetChannelId}</code>\n` +
+      `• Total Eligible: <b>${result.total}</b>\n` +
+      `• Successfully Restored: <b>${result.restored}</b>\n` +
+      `• Failed: <b>${result.failed}</b>\n` +
+      `• Skipped (no file_id): <b>${result.skipped}</b>\n\n` +
+      `✅ <b>DB Channel Updated:</b> New uploads and all restored links will now use this channel seamlessly without downtime.`;
+
+    if (statusMsgId) {
+      await editTelegramMessage(chatId, statusMsgId, summaryText, {
+        inline_keyboard: [
+          [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
+          [{ text: toSmallCaps('Open Settings'), callback_data: 'admin:fs_settings' }]
+        ]
+      }).catch(() => {});
+    } else {
+      await sendTelegramMessage(chatId, summaryText, {
+        inline_keyboard: [
+          [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
+          [{ text: toSmallCaps('Open Settings'), callback_data: 'admin:fs_settings' }]
+        ]
+      });
+    }
+    return;
+  }
+
   if (/^\/me$/i.test(rawText.trim())) {
     const cs = await getSettings();
     const botUsername = await getBotUsername();

@@ -399,15 +399,16 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         const quality = detectMediaQuality(message);
         const rawSize = message.video?.file_size || message.document?.file_size || 0;
         const sizeLabel = formatBytes(rawSize);
-        const fileName = message.document?.file_name || message.video?.file_name || message.caption || `${quality} Video`;
-
+        const qualityFileId = message.video?.file_id || message.document?.file_id || message.audio?.file_id;
         const qItem = {
           quality,
           fileSize: rawSize,
           fileSizeLabel: sizeLabel,
           dbMessageId: copyResult.messageId,
           backupDbMessageId: backupMsgId,
-          fileName
+          fileName,
+          fileId: qualityFileId || undefined,
+          type: message.video ? 'video' : (message.document ? 'document' : 'media')
         };
 
         await addQualityToBundle(chatId, qItem);
@@ -536,6 +537,95 @@ export async function processAdminMessage(chatId, rawText, message, req) {
 
       const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
       await renderStorageAudit(chatId);
+      return true;
+    }
+
+    if (waitingFor === 'rebuild_channel_id') {
+      const forwardChat   = message.forward_from_chat;
+      const forwardOrigin = message.forward_origin;
+      const typedId        = rawText.trim();
+
+      let targetCid;
+      if (forwardChat?.type === 'channel') {
+        targetCid = forwardChat.id;
+      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
+        targetCid = forwardOrigin.chat.id;
+      } else if (/^-100\d+$/.test(typedId)) {
+        targetCid = typedId;
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the target channel, or send the channel ID directly</b> (e.g. <code>-1001234567890</code>).`);
+        return true;
+      }
+
+      const isBotAdminInTarget = await isBotAdmin(targetCid);
+      if (!isBotAdminInTarget) {
+        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
+        return true;
+      }
+
+      await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+
+      const statusMsg = await sendTelegramMessage(chatId, `🔄 <b>Rebuilding Channel Storage...</b>\n\nTarget Channel: <code>${targetCid}</code>\n<i>Scanning database files...</i>`);
+      const statusMsgId = statusMsg?.result?.message_id || statusMsg?.messageId;
+
+      let lastProgressEdit = 0;
+      const onProgress = async ({ processed, total, restored, failed, skipped }) => {
+        const now = Date.now();
+        if (now - lastProgressEdit > 1500 || processed === total) {
+          lastProgressEdit = now;
+          const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+          const barLength = 10;
+          const filled = Math.min(barLength, Math.round((pct / 100) * barLength));
+          const bar = '▓'.repeat(filled) + '░'.repeat(barLength - filled);
+
+          const progressText = `🔄 <b>Rebuilding Channel Storage...</b>\n\n` +
+            `Target Channel: <code>${targetCid}</code>\n` +
+            `Progress: [${bar}] <b>${pct}%</b> (${processed}/${total})\n\n` +
+            `• Restored: <b>${restored}</b>\n` +
+            `• Failed: <b>${failed}</b>\n` +
+            `• Skipped: <b>${skipped}</b>\n\n` +
+            `<i>Please do not stop the bot while rebuild is in progress...</i>`;
+
+          if (statusMsgId) {
+            await editTelegramMessage(chatId, statusMsgId, progressText).catch(() => {});
+          }
+        }
+      };
+
+      const { rebuildChannelStorage } = await import('../filestore.js');
+      const result = await rebuildChannelStorage(targetCid, onProgress);
+
+      if (!result?.ok) {
+        await sendTelegramMessage(chatId, `❌ <b>Rebuild failed:</b> ${result?.reason || 'Unknown error'}`);
+        return true;
+      }
+
+      const { updateSettings } = await import('../bot-common.js');
+      await updateSettings({ dbChannelId: String(targetCid) });
+
+      const summaryText = `🎉 <b>Channel Rebuild Complete!</b>\n\n` +
+        `• Target Channel: <code>${targetCid}</code>\n` +
+        `• Total Eligible: <b>${result.total}</b>\n` +
+        `• Successfully Restored: <b>${result.restored}</b>\n` +
+        `• Failed: <b>${result.failed}</b>\n` +
+        `• Skipped (no file_id): <b>${result.skipped}</b>\n\n` +
+        `✅ <b>DB Channel Updated:</b> New uploads and all restored links will now use this channel seamlessly without downtime.`;
+
+      if (statusMsgId) {
+        await editTelegramMessage(chatId, statusMsgId, summaryText, {
+          inline_keyboard: [
+            [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
+            [{ text: toSmallCaps('Open Settings'), callback_data: 'admin:fs_settings' }]
+          ]
+        }).catch(() => {});
+      } else {
+        await sendTelegramMessage(chatId, summaryText, {
+          inline_keyboard: [
+            [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
+            [{ text: toSmallCaps('Open Settings'), callback_data: 'admin:fs_settings' }]
+          ]
+        });
+      }
       return true;
     }
 

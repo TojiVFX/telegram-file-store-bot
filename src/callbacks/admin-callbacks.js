@@ -221,6 +221,7 @@ export async function renderStorageAudit(chatId, messageId = null) {
 
   const stats = await getStorageAuditStats();
   const redundancyPct = stats.total > 0 ? Math.round((stats.mirrored / stats.total) * 100) : 100;
+  const cdnPct = stats.total > 0 ? Math.round(((stats.cachedFileIds || 0) / stats.total) * 100) : 100;
 
   let text = `🛡 <b>Storage & Redundancy Audit</b>\n\n` +
     `• <b>Primary DB Channel:</b> <code>${primaryCid || 'Not Set'}</code>\n` +
@@ -231,7 +232,8 @@ export async function renderStorageAudit(chatId, messageId = null) {
     `• Total Stored Records: <b>${stats.total}</b>\n` +
     `• Mirrored in Backup: <b>${stats.mirrored}</b>\n` +
     `• Unmirrored Records: <b>${stats.unmirrored}</b>\n` +
-    `• Failover Coverage: <b>${redundancyPct}%</b>\n\n`;
+    `• Cloud CDN Redundancy: <b>${stats.cachedFileIds || 0}/${stats.total} (${cdnPct}%)</b>\n` +
+    `• Channel Failover Coverage: <b>${redundancyPct}%</b>\n\n`;
 
   if (!backupCid) {
     text += `<i>💡 Tip: Set a backup channel to automatically duplicate all stored files and prevent link breakage if your primary channel is struck or banned.</i>`;
@@ -259,6 +261,9 @@ export async function renderStorageAudit(chatId, messageId = null) {
       { text: toSmallCaps('Promote Backup to Primary'), callback_data: 'admin:promote_backup_confirm' }
     ]);
   }
+  buttons.push([
+    { text: toSmallCaps('Rebuild Channel Storage'), callback_data: 'admin:rebuild_channel_prompt' }
+  ]);
   buttons.push(...navButtons('admin:file_mgmt'));
 
   const keyboard = { inline_keyboard: buttons };
@@ -672,6 +677,23 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const promptText = `🛡 <b>Configure Backup DB Channel</b>\n\n` +
       `Forward any post from your secondary/backup database channel, or type the channel ID directly (e.g. <code>-100123456789</code>).\n\n` +
       `⚠️ <i>Make sure this bot is already added as an Admin in that channel with 'Post Messages' permissions.</i>\n\n` +
+      `Send /cancel to abort.`;
+    await editTelegramMessage(chatId, messageId, promptText, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:storage_audit' }]]
+    });
+    return;
+  } else if (action === 'rebuild_channel_prompt') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'rebuild_channel_id', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    const promptText = `🔄 <b>One-Click Channel Rebuilder</b>\n\n` +
+      `This tool scans all files stored in your bot and re-posts them into a fresh channel using Telegram's cached File IDs. All existing sharing links remain valid without downtime!\n\n` +
+      `<b>Steps:</b>\n` +
+      `1. Create a new Telegram channel and add this bot as an <b>Admin</b> (with Post Messages permission).\n` +
+      `2. Forward any message from that channel here, or enter the channel ID directly (e.g. <code>-1001234567890</code>).\n\n` +
+      `<i>Alternatively, you can run <code>/rebuildchannel &lt;channel_id&gt;</code> directly.</i>\n\n` +
       `Send /cancel to abort.`;
     await editTelegramMessage(chatId, messageId, promptText, {
       inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:storage_audit' }]]

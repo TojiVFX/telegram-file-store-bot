@@ -1,5 +1,9 @@
 import { randomInt } from 'crypto';
-import { getCollection, getSettings, log, isSafePublicUrl } from './bot-common.js';
+import {
+  getCollection, getSettings, log, isSafePublicUrl,
+  sendTelegramDocument, sendTelegramVideo, sendTelegramAudio, sendTelegramPhoto,
+  esc, botContext, getMainToken
+} from './bot-common.js';
 import { logActivity, clearOldLogs } from './bot-logs.js';
 
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -505,14 +509,23 @@ export function formatDurationLabel(seconds) {
 
 export async function getStorageAuditStats() {
   const files = await getCollection('files');
-  const total = await files.countDocuments({});
-  const mirrored = await files.countDocuments({
-    backupDbChannelId: { $exists: true, $ne: null }
-  });
+  const all = await files.find({}).toArray();
+  const total = all.length;
+  let mirrored = 0;
+  let cachedFileIds = 0;
+
+  for (const doc of all) {
+    if (doc.backupDbChannelId) mirrored++;
+    if (doc.fileId || (Array.isArray(doc.qualities) && doc.qualities.some(q => q.fileId))) {
+      cachedFileIds++;
+    }
+  }
+
   return {
     total,
     mirrored,
-    unmirrored: Math.max(0, total - mirrored)
+    unmirrored: Math.max(0, total - mirrored),
+    cachedFileIds
   };
 }
 
@@ -1363,5 +1376,123 @@ export async function updateStoredRecordTitle(code, newTitle) {
   }).catch(() => {});
 
   return { ok: true, code: cleanCode, type: record.type || 'file', oldTitle, newTitle: cleanTitle };
+}
+
+export async function rebuildChannelStorage(targetChannelId, onProgress = null) {
+  const targetCid = Number(targetChannelId);
+  if (!targetCid) {
+    return { ok: false, reason: 'invalid_channel_id' };
+  }
+
+  return botContext.run({ token: getMainToken() }, async () => {
+    const files = await getCollection('files');
+    const allDocs = await files.find({}).toArray();
+
+    // Filter documents that can be processed via cached fileId
+    const eligibleDocs = allDocs.filter(d => {
+      if (d.type === 'bundle' && Array.isArray(d.qualities) && d.qualities.some(q => q.fileId)) return true;
+      if (d.fileId) return true;
+      return false;
+    });
+
+    const total = eligibleDocs.length;
+    const skipped = allDocs.length - eligibleDocs.length;
+    let restored = 0;
+    let failed = 0;
+    let processed = 0;
+
+    for (const doc of eligibleDocs) {
+      processed++;
+      try {
+        if (doc.type === 'bundle' && Array.isArray(doc.qualities)) {
+          let bundleUpdated = false;
+          const updatedQualities = [];
+
+          for (const q of doc.qualities) {
+            if (q.fileId) {
+              const cap = q.fileName ? `<b>${esc(q.fileName)}</b>` : (doc.title ? `<b>${esc(doc.title)} [${q.quality || ''}]</b>` : '');
+              let qRes;
+              if (q.type === 'document') {
+                qRes = await sendTelegramDocument(targetCid, q.fileId, cap);
+              } else {
+                qRes = await sendTelegramVideo(targetCid, q.fileId, cap);
+              }
+
+              if (qRes?.ok && qRes.result?.message_id) {
+                updatedQualities.push({ ...q, dbMessageId: qRes.result.message_id });
+                bundleUpdated = true;
+              } else {
+                updatedQualities.push(q);
+              }
+              await new Promise(r => setTimeout(r, 60));
+            } else {
+              updatedQualities.push(q);
+            }
+          }
+
+          if (bundleUpdated) {
+            await files.updateOne(
+              { _id: doc._id },
+              { $set: { dbChannelId: targetCid, qualities: updatedQualities, rebuiltAt: new Date().toISOString() } }
+            );
+            restored++;
+          } else {
+            failed++;
+          }
+        } else if (doc.fileId) {
+          const caption = doc.title ? `<b>${esc(doc.title)}</b>` : '';
+          let res;
+          if (doc.type === 'video') {
+            res = await sendTelegramVideo(targetCid, doc.fileId, caption);
+          } else if (doc.type === 'audio') {
+            res = await sendTelegramAudio(targetCid, doc.fileId, caption);
+          } else if (doc.type === 'photo') {
+            res = await sendTelegramPhoto(targetCid, doc.fileId, caption);
+          } else {
+            res = await sendTelegramDocument(targetCid, doc.fileId, caption);
+          }
+
+          if (res?.ok && res.result?.message_id) {
+            const newMsgId = res.result.message_id;
+            await files.updateOne(
+              { _id: doc._id },
+              { $set: { dbChannelId: targetCid, dbMessageId: newMsgId, rebuiltAt: new Date().toISOString() } }
+            );
+            restored++;
+          } else {
+            failed++;
+            log('warn', 'rebuildChannelStorage failed for file', { code: doc._id, reason: res?.description || res?.reason });
+          }
+          await new Promise(r => setTimeout(r, 60));
+        }
+      } catch (err) {
+        failed++;
+        log('error', 'rebuildChannelStorage error processing doc', { code: doc._id, error: err.message });
+      }
+
+      if (typeof onProgress === 'function') {
+        try {
+          await onProgress({
+            processed,
+            total,
+            restored,
+            failed,
+            skipped,
+            currentCode: doc._id
+          });
+        } catch (_) {}
+      }
+    }
+
+    logActivity({
+      eventType: 'channel_rebuild',
+      targetCode: String(targetCid),
+      targetType: 'channel',
+      details: `Rebuilt channel ${targetCid}: ${restored} restored, ${failed} failed, ${skipped} skipped`,
+      metadata: { total, restored, failed, skipped }
+    }).catch(() => {});
+
+    return { ok: true, total, restored, failed, skipped };
+  });
 }
 

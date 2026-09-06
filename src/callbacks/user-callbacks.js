@@ -258,6 +258,19 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
     if (resCopy?.ok && resCopy?.messageId) {
       sentMsgId = resCopy.messageId;
+    } else if (q.fileId) {
+      // Triple-layer fallback: direct bot-to-user send via cached file_id
+      const { sendTelegramVideo, sendTelegramDocument } = await import('../bot-common.js');
+      const caption = q.fileName ? `<b>${esc(q.fileName)}</b>` : '';
+      const resSend = (q.type === 'document')
+        ? await sendTelegramDocument(chatId, q.fileId, caption, null, protect)
+        : await sendTelegramVideo(chatId, q.fileId, caption, null, protect);
+      if (resSend?.result?.message_id) {
+        sentMsgId = resSend.result.message_id;
+      }
+    }
+
+    if (sentMsgId) {
       await scheduleAutoDelete(chatId, [sentMsgId], bundleCode);
     } else {
       await sendTelegramMessage(chatId, `❌ <b>Failed to deliver file</b> (Storage message missing or unreadable).`);
@@ -291,6 +304,15 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       }
       if (resCopy?.ok && resCopy?.messageId) {
         sentIds.push(resCopy.messageId);
+      } else if (q.fileId) {
+        const { sendTelegramVideo, sendTelegramDocument } = await import('../bot-common.js');
+        const caption = q.fileName ? `<b>${esc(q.fileName)}</b>` : '';
+        const resSend = (q.type === 'document')
+          ? await sendTelegramDocument(chatId, q.fileId, caption, null, protect)
+          : await sendTelegramVideo(chatId, q.fileId, caption, null, protect);
+        if (resSend?.result?.message_id) {
+          sentIds.push(resSend.result.message_id);
+        }
       }
       await new Promise(r => setTimeout(r, 100));
     }

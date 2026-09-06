@@ -293,12 +293,85 @@ export async function copyMessage(toChatId, fromChatId, msgId, protectContent = 
   }
 }
 
+export function isChannelFatalError(errorStr) {
+  if (!errorStr) return false;
+  const lower = String(errorStr).toLowerCase();
+  return lower.includes('chat not found') ||
+         lower.includes('bot was kicked') ||
+         lower.includes('chat_admin_required') ||
+         lower.includes('channel_private') ||
+         lower.includes('have no rights to send a message') ||
+         lower.includes('bot is not a member') ||
+         lower.includes('user is deactivated');
+}
+
+export async function alertAdminChannelFailure(channelId, channelType = 'DB Channel', errorReason = 'Channel Inaccessible') {
+  if (!channelId) return;
+  try {
+    const sessions = await getCollection('sessions');
+    const alertKey = `alert:channel_fail:${channelId}`;
+
+    const existing = await sessions.findOne({ _id: alertKey });
+    if (existing && existing.expiresAt > new Date()) {
+      return; // Deduplicated within 15-minute cooldown window
+    }
+
+    // Set 15-minute cooldown per channel
+    await sessions.updateOne(
+      { _id: alertKey },
+      { $set: { val: errorReason, expiresAt: new Date(Date.now() + 15 * 60 * 1000) } },
+      { upsert: true }
+    );
+
+    const { getAdminIds } = await import('./bot-users.js');
+    const adminIds = getAdminIds();
+    if (!adminIds.length) return;
+
+    const alertText = `🚨 <b>CRITICAL ALERT: Storage Channel Struck / Inaccessible!</b>\n\n` +
+      `• <b>Channel:</b> <code>${channelId}</code> (${channelType})\n` +
+      `• <b>Telegram Error:</b> <code>${esc(errorReason)}</code>\n` +
+      `• <b>Time:</b> <code>${new Date().toISOString()}</code>\n\n` +
+      `⚠️ <i>The bot detected a fatal error while accessing files from this channel. If this channel was banned, user links will fail unless backup channel or raw file_id fallback is available.</i>\n\n` +
+      `<b>Recommended Actions:</b>\n` +
+      `1. Check if the channel is still visible in Telegram.\n` +
+      `2. If banned/removed, create a new private channel & make the bot admin.\n` +
+      `3. Update your DB channel in /setting or run <code>/rebuildchannel &lt;new_channel_id&gt;</code> to restore all files automatically.`;
+
+    const kb = {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Open Settings'), callback_data: 'admin:fs_settings' }],
+        [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }]
+      ]
+    };
+
+    for (const aId of adminIds) {
+      await sendTelegramMessage(aId, alertText, kb).catch(() => {});
+    }
+
+    const { logActivity } = await import('./bot-logs.js');
+    logActivity({
+      eventType: 'channel_alert',
+      targetCode: String(channelId),
+      targetType: 'channel',
+      details: `Channel ${channelId} (${channelType}) fatal error: ${errorReason}`,
+    }).catch(() => {});
+  } catch (err) {
+    log('error', 'alertAdminChannelFailure error', { channelId, errorMessage: err.message });
+  }
+}
+
 export async function copyIntoDbChannel(dbChannelId, fromChatId, msgId, protectContent = false) {
   return botContext.run({ token: getMainToken() }, () => copyMessage(dbChannelId, fromChatId, msgId, protectContent));
 }
 
 export async function copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent = false) {
-  return botContext.run({ token: getMainToken() }, () => copyMessage(toChatId, dbChannelId, msgId, protectContent));
+  return botContext.run({ token: getMainToken() }, async () => {
+    const res = await copyMessage(toChatId, dbChannelId, msgId, protectContent);
+    if (!res?.ok && isChannelFatalError(res?.reason)) {
+      alertAdminChannelFailure(dbChannelId, 'DB Storage Channel', res.reason).catch(() => {});
+    }
+    return res;
+  });
 }
 
 export async function checkChannelMessageExists(channelId, messageId) {
@@ -1182,6 +1255,7 @@ export async function setMyCommands() {
         { command: 'delete',     description: toSmallCaps('Delete stored file, batch, or bundle') },
         { command: 'editfile',   description: toSmallCaps('Rename title of stored record') },
         { command: 'checkchannels', description: toSmallCaps('Channel health diagnostic check') },
+        { command: 'rebuildchannel', description: toSmallCaps('Auto-restore storage files to new channel') },
         { command: 'adminhelp',  description: toSmallCaps('Admin command reference') },
       ];
       for (const aId of adminIds) {
