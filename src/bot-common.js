@@ -1,5 +1,18 @@
 import { MongoClient } from 'mongodb';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { Agent, setGlobalDispatcher } from 'undici';
+
+// Configure high-performance HTTP keep-alive connection pooling
+try {
+  setGlobalDispatcher(new Agent({
+    keepAliveTimeout: 60_000,
+    keepAliveMaxTimeout: 120_000,
+    connections: 50,
+    pipelining: 10,
+  }));
+} catch (err) {
+  console.warn('[Filestore Bot] Could not configure undici keep-alive agent:', err.message);
+}
 
 export const botContext = new AsyncLocalStorage();
 
@@ -230,17 +243,38 @@ class InMemoryCollection {
   }
 
   aggregate(pipeline = []) {
-    let list = Array.from(this.docs.values());
-    for (const stage of pipeline) {
-      if (stage.$group) {
-        const total = list.reduce((sum, item) => sum + (item.referralCount || 0), 0);
-        return {
-          toArray: async () => [{ _id: null, total }],
-        };
+    const runPipeline = (inputDocs, stages) => {
+      let current = inputDocs.map(d => JSON.parse(JSON.stringify(d)));
+      for (const stage of stages) {
+        if (stage.$match) {
+          current = current.filter(doc => this._matches(doc, stage.$match));
+        } else if (stage.$group) {
+          const sumEntry = Object.entries(stage.$group).find(([k, v]) => v && typeof v === 'object' && v.$sum !== undefined);
+          let total = 0;
+          if (sumEntry) {
+            const sumField = sumEntry[1].$sum;
+            const fieldName = typeof sumField === 'string' && sumField.startsWith('$') ? sumField.slice(1) : sumField;
+            total = current.reduce((sum, item) => sum + (typeof fieldName === 'string' ? (Number(item[fieldName]) || 0) : (Number(sumField) || 1)), 0);
+          } else {
+            total = current.length;
+          }
+          current = [{ _id: null, total, count: current.length }];
+        } else if (stage.$facet) {
+          const result = {};
+          for (const [facetKey, facetStages] of Object.entries(stage.$facet)) {
+            result[facetKey] = runPipeline(current, facetStages);
+          }
+          current = [result];
+        } else if (stage.$count) {
+          current = [{ [stage.$count]: current.length }];
+        }
       }
-    }
+      return current;
+    };
+
+    const result = runPipeline(Array.from(this.docs.values()), pipeline);
     return {
-      toArray: async () => list,
+      toArray: async () => result,
     };
   }
 }
@@ -388,58 +422,33 @@ export async function updateSettings(fields) {
   cachedSettingsTime = 0;
 }
 
-// ─── Rate limiter ─────────────────────────────────────────────────────────────
-export async function isRateLimited(id, limit = 5, window = 10) {
-  const coll = await getCollection('sessions');
-  const key = `rate_limit:${id}`;
-  const now = new Date();
+// ─── Rate limiter (In-Memory Ultra-Fast Sliding Window) ─────────────────────────
+const rateLimitMap = new Map();
+const RATE_LIMIT_PRUNE_INTERVAL_MS = 60_000;
 
-  // 1. Atomically increment non-expired rate limit document
-  const activeResult = await coll.findOneAndUpdate(
-    { _id: key, expiresAt: { $gt: now } },
-    { $inc: { count: 1 } },
-    { returnDocument: 'after' }
-  );
-
-  // Support both newer MongoDB driver versions (direct document return) and older versions ({ value })
-  const activeDoc = activeResult && (activeResult.value !== undefined ? activeResult.value : activeResult);
-  if (activeDoc) {
-    return activeDoc.count > limit;
-  }
-
-  // 2. If window expired, attempt atomic reset replacing only the expired document
-  const expiresAt = new Date(Date.now() + window * 1000);
-  const resetResult = await coll.findOneAndUpdate(
-    { _id: key, expiresAt: { $lte: now } },
-    { $set: { count: 1, expiresAt } },
-    { returnDocument: 'after' }
-  );
-
-  const resetDoc = resetResult && (resetResult.value !== undefined ? resetResult.value : resetResult);
-  if (resetDoc) {
-    return resetDoc.count > limit;
-  }
-
-  // 3. Document does not exist yet; insert initial window
-  try {
-    await coll.insertOne({ _id: key, count: 1, expiresAt });
-    return false;
-  } catch (err) {
-    // If a concurrent request inserted or reset in the meantime (E11000 duplicate key),
-    // atomically increment the now-active window
-    if (err?.code === 11000 || String(err?.message || '').includes('E11000')) {
-      const retryResult = await coll.findOneAndUpdate(
-        { _id: key, expiresAt: { $gt: now } },
-        { $inc: { count: 1 } },
-        { returnDocument: 'after' }
-      );
-      const retryDoc = retryResult && (retryResult.value !== undefined ? retryResult.value : retryResult);
-      if (retryDoc) {
-        return retryDoc.count > limit;
-      }
+function pruneExpiredRateLimits() {
+  const now = Date.now();
+  for (const [key, record] of rateLimitMap.entries()) {
+    if (now > record.resetAt) {
+      rateLimitMap.delete(key);
     }
+  }
+}
+setInterval(pruneExpiredRateLimits, RATE_LIMIT_PRUNE_INTERVAL_MS).unref?.();
+
+export async function isRateLimited(id, limit = 5, window = 10) {
+  if (!id) return false;
+  const key = String(id);
+  const now = Date.now();
+  const existing = rateLimitMap.get(key);
+
+  if (!existing || now >= existing.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + window * 1000 });
     return false;
   }
+
+  existing.count += 1;
+  return existing.count > limit;
 }
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
@@ -871,6 +880,89 @@ export async function deleteTelegramMessage(chatId, messageId) {
     });
     return { ok: res.ok };
   } catch { return { ok: false }; }
+}
+
+export async function deleteTelegramMessages(chatId, messageIds) {
+  const token = getToken();
+  if (!token || !chatId || !messageIds) return { ok: false, deletedCount: 0 };
+  const rawIds = Array.isArray(messageIds) ? messageIds : [messageIds];
+  const ids = rawIds.filter(id => id != null && !isNaN(id)).map(id => Number(id));
+  if (ids.length === 0) return { ok: true, deletedCount: 0 };
+
+  if (ids.length === 1) {
+    const res = await deleteTelegramMessage(chatId, ids[0]);
+    return { ok: res.ok, deletedCount: res.ok ? 1 : 0 };
+  }
+
+  const CHUNK_SIZE = 100;
+  let deletedCount = 0;
+
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + CHUNK_SIZE);
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/deleteMessages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_ids: chunk }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        deletedCount += chunk.length;
+      } else {
+        // Fallback to individual deletions if batch endpoint fails (e.g. older DC or specific message error)
+        const singleResults = await Promise.allSettled(chunk.map(id => deleteTelegramMessage(chatId, id)));
+        for (const r of singleResults) {
+          if (r.status === 'fulfilled' && r.value?.ok) deletedCount++;
+        }
+      }
+    } catch {
+      const singleResults = await Promise.allSettled(chunk.map(id => deleteTelegramMessage(chatId, id)));
+      for (const r of singleResults) {
+        if (r.status === 'fulfilled' && r.value?.ok) deletedCount++;
+      }
+    }
+  }
+
+  return { ok: deletedCount > 0, deletedCount };
+}
+
+export async function copyTelegramMessages(toChatId, fromChatId, messageIds, protectContent = false) {
+  const token = getToken();
+  if (!token || !toChatId || !fromChatId || !messageIds) return { ok: false, reason: 'missing_params', messageIds: [] };
+  const rawIds = Array.isArray(messageIds) ? messageIds : [messageIds];
+  const ids = rawIds.filter(id => id != null && !isNaN(id)).map(id => Number(id));
+  if (ids.length === 0) return { ok: true, messageIds: [] };
+
+  const CHUNK_SIZE = 100;
+  const copiedIds = [];
+
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + CHUNK_SIZE);
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/copyMessages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: toChatId,
+          from_chat_id: fromChatId,
+          message_ids: chunk,
+          protect_content: protectContent,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.result)) {
+        for (const item of data.result) {
+          if (item?.message_id) copiedIds.push(item.message_id);
+        }
+      } else {
+        return { ok: false, reason: data.description || 'copy_failed', partialIds: copiedIds };
+      }
+    } catch (err) {
+      return { ok: false, reason: err.message, partialIds: copiedIds };
+    }
+  }
+
+  return { ok: copiedIds.length > 0, messageIds: copiedIds };
 }
 
 export async function answerCallbackQuery(callbackQueryId, text = '', showAlert = false) {

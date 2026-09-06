@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "express": "^4.21.2",
-    "mongodb": "^7.5.0"
+    "mongodb": "^7.5.0",
+    "undici": "^8.10.2"
   },
   "devDependencies": {
     "node-fetch": "^3.3.2"

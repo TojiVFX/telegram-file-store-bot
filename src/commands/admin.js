@@ -101,7 +101,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           fileSize: rawSize || undefined,
           fileSizeLabel: rawSize ? sizeLabel : undefined,
           accessCount: 0
-        }, { userId: chatId });
+        }, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name });
         const count = await addToStoreSession(chatId, code);
         const bot = await getBotUsername();
         const link = `https://t.me/${bot}?start=${code}`;
@@ -186,7 +186,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           const backupCollectedIds = updatedSession?.backupCollectedIds || [];
           const { storeBatch, generateBatchCode } = await import('../filestore.js');
           const batchCode = generateBatchCode();
-          await storeBatch(batchCode, dbChannelId, collectedIds, {}, { backupDbChannelId, backupDbMessageIds: backupCollectedIds });
+          await storeBatch(batchCode, dbChannelId, collectedIds, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name }, { backupDbChannelId, backupDbMessageIds: backupCollectedIds });
           await clearBatchSession(chatId);
           const botUsername = await getBotUsername();
           await sendTelegramMessage(chatId, `✅ <b>Batch Created!</b>\n\nFiles: <b>${collectedIds.length}</b>\nLink: <code>https://t.me/${botUsername}?start=${batchCode}</code>\n<i>(Tap link to copy)</i>`, {
@@ -269,7 +269,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       const bundleCode = generateBundleCode();
       const title = bSession.title || bSession.qualities[0].fileName || 'Multi-Quality Release';
 
-      await storeBundle(bundleCode, title, dbChannelId, bSession.qualities, { userId: chatId }, { backupDbChannelId });
+      await storeBundle(bundleCode, title, dbChannelId, bSession.qualities, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name }, { backupDbChannelId });
       await clearBundleSession(chatId);
 
       const bot = await getBotUsername();
@@ -303,7 +303,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     if (rawText) {
       const range = await extractChannelMessageRange(rawText);
       if (range) {
-        await processBundleRange(chatId, range, bundleSession.sessionMsgId, bundleSession.title);
+        await processBundleRange(chatId, range, bundleSession.sessionMsgId, bundleSession.title, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name });
         return true;
       }
     }
@@ -351,7 +351,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
             lastMsgId: extracted.msgId,
             totalCount: extracted.msgId - bundleSession.srcFirstMsgId + 1
           };
-          await processBundleRange(chatId, range, bundleSession.sessionMsgId, bundleSession.title);
+          await processBundleRange(chatId, range, bundleSession.sessionMsgId, bundleSession.title, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name });
           return true;
         } else {
           await sendTelegramMessage(chatId, `❌ <b>Invalid target message!</b>\n\nTarget message must be from the same channel as the first message (#${bundleSession.srcFirstMsgId}) and have a higher message ID. Please try again or send /cancel.`);
@@ -869,7 +869,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           fileSize: rawSize || undefined,
           fileSizeLabel: rawSize ? sizeLabel : undefined,
           accessCount: 0
-        }, { userId: chatId });
+        }, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name });
         const bot = await getBotUsername();
         const link = `https://t.me/${bot}?start=${code}`;
 
@@ -894,7 +894,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
   return null;
 }
 
-export async function processBundleRange(chatId, range, sessionMsgId = null, explicitTitle = '') {
+export async function processBundleRange(chatId, range, sessionMsgId = null, explicitTitle = '', creator = {}) {
   const dbChannelId = await getDbChannelId();
   if (!dbChannelId) {
     const errText = `❌ <b>Database Channel is not configured.</b>\n\nPlease set it in the bot settings first.`;
@@ -996,18 +996,12 @@ export async function processBundleRange(chatId, range, sessionMsgId = null, exp
   const finalTitle = explicitTitle || detectedTitle || 'Multi-Quality Release';
   const bundleCode = generateBundleCode();
 
-  await storeBundle(bundleCode, finalTitle, dbChannelId, qualities, { userId: chatId }, { backupDbChannelId });
+  // storeBundle() already writes the 'bundle_create' activity log entry
+  // (with proper username/firstName attribution below) — a second,
+  // unattributed logActivity() call used to run right after this and would
+  // show up in the log channel with no name attached. Removed.
+  await storeBundle(bundleCode, finalTitle, dbChannelId, qualities, { userId: chatId, username: creator.username, firstName: creator.firstName }, { backupDbChannelId });
   await clearBundleSession(chatId);
-
-  const { logActivity } = await import('../bot-logs.js');
-  logActivity({
-    eventType: 'bundle_create',
-    userId: chatId,
-    targetCode: bundleCode,
-    targetType: 'bundle',
-    details: `Created bundle "${finalTitle}" with ${qualities.length} resolutions`,
-    metadata: { title: finalTitle, count: qualities.length }
-  }).catch(() => {});
 
   const bot = await getBotUsername();
   const shareLink = `https://t.me/${bot}?start=${bundleCode}`;

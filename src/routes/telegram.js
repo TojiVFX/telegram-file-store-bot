@@ -1,17 +1,20 @@
 import {
-  getCollection, getSettings, log, getToken, getMainToken, esc, isRateLimited, answerCallbackQuery
+  getCollection, getSettings, log, getToken, getMainToken, esc, isRateLimited, answerCallbackQuery,
+  botContext, sendTelegramMessage, deleteTelegramMessage
 } from '../bot-common.js';
 import {
-  getBotUsername, isBotAdmin, registerWebhook, setMyCommands
+  getBotUsername, isBotAdmin, registerWebhook, setMyCommands, checkSubscription
 } from '../bot-helpers.js';
 import { verifyTelegramWebhook } from '../auth.js';
 import { validateEnv } from '../env-validator.js';
 import {
-  isBanned, isAdmin, upsertUser
+  isBanned, isAdmin, upsertUser, getAdminId
 } from '../bot-users.js';
+import { logActivity } from '../bot-logs.js';
 import { handleUserCallback } from '../callbacks/user-callbacks.js';
 import { handleAdminCallback } from '../callbacks/admin-callbacks.js';
 import { processMessageUpdate } from '../commands/user.js';
+import { handleStartPayload } from '../commands/start.js';
 
 export default async function handler(req, res) {
   const envCheck = validateEnv();
@@ -30,7 +33,6 @@ export default async function handler(req, res) {
 
   res.status(200).send('OK');
 
-  const { botContext } = await import('../bot-common.js');
   return botContext.run({ token: getMainToken() }, () => {
     handleUpdate(req).catch(err => {
       log('error', 'Unhandled error in handleUpdate', { errorMessage: err.message, stack: err.stack });
@@ -102,13 +104,11 @@ async function handleUpdate(req) {
     const chat = mcm.chat;
     const newStatus = mcm.new_chat_member?.status;
     const promoterId = mcm.from?.id;
-    const { getAdminId } = await import('../bot-users.js');
     const adminId = getAdminId();
 
     if (chat.type === 'private' && newStatus === 'kicked') {
       const users = await getCollection('users');
       await users.updateOne({ _id: String(chat.id) }, { $set: { isBlocked: true, blockedAt: new Date() } }).catch(() => {});
-      const { logActivity } = await import('../bot-logs.js');
       logActivity({
         eventType: 'user_blocked_bot',
         userId: chat.id,
@@ -122,8 +122,6 @@ async function handleUpdate(req) {
     if (newStatus === 'administrator' && chat.type === 'channel') {
       const isPromoterAdmin = await isAdmin(promoterId);
       if (isPromoterAdmin) {
-        const { sendTelegramMessage } = await import('../bot-common.js');
-        const { logActivity } = await import('../bot-logs.js');
         const channels = await getCollection('channels');
         await Promise.all([
           sendTelegramMessage(promoterId, `✅ <b>Bot added as Admin!</b>\n\nI am now an administrator in <b>${esc(chat.title)}</b>.\n\nYou can now use /batch to create links from this channel.`),
@@ -132,9 +130,14 @@ async function handleUpdate(req) {
             { $set: { title: chat.title, addedAt: new Date() } },
             { upsert: true }
           ),
+          // Include the promoting admin's username/firstName so this event
+          // shows a real name in the log channel instead of just the bare
+          // Telegram user ID (previously only `userId: promoterId` was passed).
           logActivity({
             eventType: 'channel_connected',
             userId: promoterId,
+            username: mcm.from?.username,
+            firstName: mcm.from?.first_name,
             targetCode: String(chat.id),
             targetType: 'channel',
             details: `Bot added as admin to channel: "${chat.title}"`,
@@ -187,8 +190,6 @@ async function handleUpdate(req) {
     }
 
     if (data.startsWith('sub_check:')) {
-      const { deleteTelegramMessage } = await import('../bot-common.js');
-      const { checkSubscription } = await import('../bot-helpers.js');
       const payload = data.slice('sub_check:'.length);
 
       const sub = await checkSubscription(chatId, chatId);
@@ -200,7 +201,6 @@ async function handleUpdate(req) {
       await answerCallbackQuery(cbId, '✅ Verified!');
       await deleteTelegramMessage(chatId, messageId);
 
-      const { handleStartPayload } = await import('../commands/start.js');
       const pseudoMessage = { chat: msg.chat, from, message_id: messageId };
       return handleStartPayload(chatId, payload, pseudoMessage, admin);
     }

@@ -5,7 +5,7 @@ import {
   sendTelegramAudio, sendTelegramPhoto, sendTelegramFileBuffer,
   editTelegramMessage,
   answerCallbackQuery, sendChatAction,
-  deleteTelegramMessage,
+  deleteTelegramMessage, deleteTelegramMessages, copyTelegramMessages,
   getChatMember, getChat,
   createChatInviteLink,
   botContext, logHistory,
@@ -636,38 +636,80 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     : (dbFirstMsgId && dbLastMsgId ? dbLastMsgId - dbFirstMsgId + 1 : 0);
 
   if (Array.isArray(dbMessageIds)) {
-    for (let i = 0; i < dbMessageIds.length; i++) {
-      const msgId = dbMessageIds[i];
-      let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+    // Attempt fast batch copy via Telegram copyMessages first if no backup channel is needed
+    const hasBackup = Boolean(backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds.length);
+    let batchCopied = false;
 
-      // Seamless failover to backup DB channel if primary message fails
-      if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds[i]) {
-        res = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[i], protectContent);
+    // Telegram copyMessages requires IDs to be strictly increasing
+    const isIncreasing = dbMessageIds.every((id, idx) => idx === 0 || id > dbMessageIds[idx - 1]);
+    if (isIncreasing && !hasBackup && dbMessageIds.length > 1) {
+      const copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
+        copyTelegramMessages(toChatId, dbChannelId, dbMessageIds, protectContent)
+      );
+      if (copyBatchRes?.ok && copyBatchRes.messageIds.length === dbMessageIds.length) {
+        sentMessageIds.push(...copyBatchRes.messageIds);
+        batchCopied = true;
+        if (typeof onProgress === 'function') {
+          await onProgress(sentMessageIds.length, totalCount).catch(() => {});
+        }
       }
+    }
 
-      if (res?.ok && res?.messageId) {
-        sentMessageIds.push(res.messageId);
-      } else {
-        failedCount++;
+    if (!batchCopied) {
+      for (let i = 0; i < dbMessageIds.length; i++) {
+        const msgId = dbMessageIds[i];
+        let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+
+        // Seamless failover to backup DB channel if primary message fails
+        if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds[i]) {
+          res = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[i], protectContent);
+        }
+
+        if (res?.ok && res?.messageId) {
+          sentMessageIds.push(res.messageId);
+        } else {
+          failedCount++;
+        }
+        if (typeof onProgress === 'function') {
+          await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+        }
+        if (totalCount > 3) await new Promise((r) => setTimeout(r, 60));
       }
-      if (typeof onProgress === 'function') {
-        await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
-      }
-      if (totalCount > 3) await new Promise((r) => setTimeout(r, 60));
     }
   }
   else if (dbFirstMsgId && dbLastMsgId) {
+    const rangeIds = [];
     for (let msgId = dbFirstMsgId; msgId <= dbLastMsgId; msgId++) {
-      let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
-      if (res?.ok && res?.messageId) {
-        sentMessageIds.push(res.messageId);
-      } else {
-        failedCount++;
+      rangeIds.push(msgId);
+    }
+
+    let batchCopied = false;
+    if (rangeIds.length > 1) {
+      const copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
+        copyTelegramMessages(toChatId, dbChannelId, rangeIds, protectContent)
+      );
+      if (copyBatchRes?.ok && copyBatchRes.messageIds.length === rangeIds.length) {
+        sentMessageIds.push(...copyBatchRes.messageIds);
+        batchCopied = true;
+        if (typeof onProgress === 'function') {
+          await onProgress(sentMessageIds.length, totalCount).catch(() => {});
+        }
       }
-      if (typeof onProgress === 'function') {
-        await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+    }
+
+    if (!batchCopied) {
+      for (let msgId = dbFirstMsgId; msgId <= dbLastMsgId; msgId++) {
+        let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+        if (res?.ok && res?.messageId) {
+          sentMessageIds.push(res.messageId);
+        } else {
+          failedCount++;
+        }
+        if (typeof onProgress === 'function') {
+          await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+        }
+        if (totalCount > 3) await new Promise((r) => setTimeout(r, 60));
       }
-      if (totalCount > 3) await new Promise((r) => setTimeout(r, 60));
     }
   }
 
@@ -768,9 +810,7 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
         return;
       }
 
-      for (const msgId of ids) {
-        await deleteTelegramMessage(chatId, msgId).catch(() => {});
-      }
+      await deleteTelegramMessages(chatId, ids).catch(() => {});
 
       if (fileOrBatchCode) {
         try {
@@ -817,9 +857,7 @@ export async function processDueAutoDeletes() {
       }
 
       if (doc.chatId && Array.isArray(doc.messageIds)) {
-        for (const msgId of doc.messageIds) {
-          await deleteTelegramMessage(doc.chatId, msgId).catch(() => {});
-        }
+        await deleteTelegramMessages(doc.chatId, doc.messageIds).catch(() => {});
 
         if (doc.fileOrBatchCode) {
           try {

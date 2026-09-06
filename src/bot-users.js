@@ -36,15 +36,22 @@ export async function upsertUser(message) {
   }
 }
 
+// ─── In-Memory Banned User Cache ──────────────────────────────────────────────
+let bannedSet = null;
+let bannedSetExpiry = 0;
+const BANNED_CACHE_TTL_MS = 60_000;
+
 export async function banUser(targetId) {
   try {
+    const strId = String(targetId);
     const users = await getCollection('users');
     await users.updateOne(
-      { _id: String(targetId) },
+      { _id: strId },
       { $set: { banned: true } },
       { upsert: true }
     );
-    log('warn', 'User banned', { targetId });
+    if (bannedSet) bannedSet.add(strId);
+    log('warn', 'User banned', { targetId: strId });
   } catch (err) {
     log('error', 'banUser failed', { errorMessage: err.message });
   }
@@ -52,22 +59,34 @@ export async function banUser(targetId) {
 
 export async function unbanUser(targetId) {
   try {
+    const strId = String(targetId);
     const users = await getCollection('users');
     await users.updateOne(
-      { _id: String(targetId) },
+      { _id: strId },
       { $set: { banned: false } }
     );
-    log('info', 'User unbanned', { targetId });
+    if (bannedSet) bannedSet.delete(strId);
+    log('info', 'User unbanned', { targetId: strId });
   } catch (err) {
     log('error', 'unbanUser failed', { errorMessage: err.message });
   }
 }
 
 export async function isBanned(chatId) {
+  if (!chatId) return false;
+  const strId = String(chatId);
+  const now = Date.now();
+
+  if (bannedSet && now < bannedSetExpiry) {
+    return bannedSet.has(strId);
+  }
+
   try {
     const users = await getCollection('users');
-    const user = await users.findOne({ _id: String(chatId) });
-    return !!(user && user.banned);
+    const bannedDocs = await users.find({ banned: true }, { projection: { _id: 1 } }).toArray();
+    bannedSet = new Set(bannedDocs.map(u => String(u._id)));
+    bannedSetExpiry = now + BANNED_CACHE_TTL_MS;
+    return bannedSet.has(strId);
   } catch (err) {
     log('error', 'isBanned check failed', { errorMessage: err.message });
     return false;
@@ -77,8 +96,13 @@ export async function isBanned(chatId) {
 export async function getBannedList() {
   try {
     const users = await getCollection('users');
-    const list = await users.find({ banned: true }).toArray();
-    return list.map(u => u._id);
+    const list = await users.find({ banned: true }, { projection: { _id: 1 } }).toArray();
+    const ids = list.map(u => u._id);
+    if (bannedSet) {
+      bannedSet = new Set(ids.map(id => String(id)));
+      bannedSetExpiry = Date.now() + BANNED_CACHE_TTL_MS;
+    }
+    return ids;
   } catch (err) {
     log('error', 'getBannedList failed', { errorMessage: err.message });
     return [];
@@ -95,7 +119,7 @@ export async function broadcastWithProgress({ text = null, fromChatId = null, me
   broadcastCancelled = false;
   try {
     const users = await getCollection('users');
-    const list = await users.find({ banned: { $ne: true } }).toArray();
+    const list = await users.find({ banned: { $ne: true } }, { projection: { _id: 1 } }).toArray();
     const ids = list.map(u => u._id);
     const total = ids.length;
 
@@ -112,6 +136,8 @@ export async function broadcastWithProgress({ text = null, fromChatId = null, me
     let sent = 0;
     let failed = 0;
     let blockedCount = 0;
+    let lastStatusEdit = 0;
+    const MIN_STATUS_EDIT_INTERVAL_MS = 3500;
     const CHUNK = 20;
 
     const { editTelegramMessage, toSmallCaps } = await import('./bot-common.js');
@@ -153,8 +179,11 @@ export async function broadcastWithProgress({ text = null, fromChatId = null, me
         }
       }
 
-      // Live progress update to admin chat
-      if (adminChatId && statusMsgId) {
+      // Throttled live progress update to admin chat (prevents Telegram API 429 flood errors)
+      const now = Date.now();
+      const isLastChunk = (i + CHUNK >= ids.length);
+      if (adminChatId && statusMsgId && (now - lastStatusEdit >= MIN_STATUS_EDIT_INTERVAL_MS || isLastChunk)) {
+        lastStatusEdit = now;
         const progressCount = Math.min(total, sent + failed);
         const percent = Math.min(100, Math.round((progressCount / total) * 100));
         const barWidth = 10;

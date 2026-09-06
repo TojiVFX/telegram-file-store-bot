@@ -172,7 +172,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
     const range = await extractChannelMessageRange(rawText);
     if (range) {
       const { processBundleRange } = await import('../commands/admin.js');
-      await processBundleRange(chatId, range, null);
+      await processBundleRange(chatId, range, null, '', { userId: chatId, username: message.from?.username, firstName: message.from?.first_name });
       return;
     }
 

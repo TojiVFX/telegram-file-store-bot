@@ -767,10 +767,6 @@ export async function getTopFiles(limit = 10) {
 export async function getDownloadActivity(days = 7) {
   try {
     const files = await getCollection('files');
-    const allFiles = await files.find({
-      lastAccessedAt: { $exists: true },
-      accessCount: { $gt: 0 }
-    }).toArray();
 
     // Build day-by-day map for last N days
     const dayMap = {};
@@ -782,9 +778,19 @@ export async function getDownloadActivity(days = 7) {
       dayMap[key] = { label: dayNames[d.getDay()], date: key, count: 0 };
     }
 
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - (days - 1));
+    const cutoffKey = cutoffDate.toISOString().slice(0, 10);
+
+    // Only query files accessed within the last N days with light projection
+    const recentFiles = await files.find(
+      { lastAccessedAt: { $gte: cutoffKey }, accessCount: { $gt: 0 } },
+      { projection: { lastAccessedAt: 1, accessCount: 1 } }
+    ).toArray();
+
     // Count accesses per day from lastAccessedAt
-    for (const f of allFiles) {
-      const dateKey = String(f.lastAccessedAt).slice(0, 10);
+    for (const f of recentFiles) {
+      const dateKey = String(f.lastAccessedAt || '').slice(0, 10);
       if (dayMap[dateKey]) {
         dayMap[dateKey].count += (f.accessCount || 0);
       }
@@ -802,22 +808,28 @@ export async function getDailyFileStats() {
     const files = await getCollection('files');
     const today = new Date().toISOString().slice(0, 10);
 
-    // Links created today
-    const createdToday = await files.countDocuments({
-      createdAt: { $exists: true, $gte: today }
-    });
+    const [createdToday, totalLinks, aggResult] = await Promise.all([
+      files.countDocuments({ createdAt: { $gte: today } }),
+      files.countDocuments(),
+      files.aggregate([
+        {
+          $facet: {
+            allTimeDownloads: [
+              { $match: { accessCount: { $gt: 0 } } },
+              { $group: { _id: null, total: { $sum: '$accessCount' } } }
+            ],
+            downloadsToday: [
+              { $match: { lastAccessedAt: { $gte: today }, accessCount: { $gt: 0 } } },
+              { $group: { _id: null, total: { $sum: '$accessCount' } } }
+            ]
+          }
+        }
+      ]).toArray()
+    ]);
 
-    // Total downloads today (files accessed today)
-    const accessedToday = await files.find({
-      lastAccessedAt: { $exists: true, $gte: today },
-      accessCount: { $gt: 0 }
-    }).toArray();
-    const downloadsToday = accessedToday.reduce((sum, f) => sum + (f.accessCount || 0), 0);
-
-    // All-time totals
-    const totalLinks = await files.countDocuments();
-    const totalDownloads = await files.find({ accessCount: { $gt: 0 } }).toArray();
-    const allTimeDownloads = totalDownloads.reduce((sum, f) => sum + (f.accessCount || 0), 0);
+    const facet = aggResult[0] || {};
+    const allTimeDownloads = facet.allTimeDownloads?.[0]?.total || 0;
+    const downloadsToday = facet.downloadsToday?.[0]?.total || 0;
 
     return {
       createdToday,

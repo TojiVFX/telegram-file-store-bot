@@ -248,6 +248,13 @@ export async function renderStorageAudit(chatId, messageId = null) {
 }
 
 export async function handleAdminCallback(chatId, messageId, action, cq) {
+  // `from` carries the tapping admin's Telegram identity (id/username/first_name).
+  // Needed so button-driven storage flows (batch_done, bundle_done, gen_temp)
+  // can attribute activity-log entries to a real name instead of a bare ID —
+  // previously `from` was referenced by the gen_temp handler below without
+  // ever being defined here, which would throw a ReferenceError on that path.
+  const { from } = cq || {};
+
   const requiresCustomToast = action.startsWith('fs_fsub_toggle:') ||
                               action.startsWith('fs_fsub_del_confirm:') ||
                               action.startsWith('fs_fsub_setmode:') ||
@@ -1174,7 +1181,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const finalIds = batchSession.collectedIds.slice(0, 500);
     const backupDbChannelId = await getBackupDbChannelId();
     const finalBackupIds = Array.isArray(batchSession.backupCollectedIds) ? batchSession.backupCollectedIds.slice(0, 500) : [];
-    await storeBatch(batchCode, dbChannelId, finalIds, {}, { backupDbChannelId, backupDbMessageIds: finalBackupIds });
+    await storeBatch(batchCode, dbChannelId, finalIds, { userId: chatId, username: from?.username, firstName: from?.first_name }, { backupDbChannelId, backupDbMessageIds: finalBackupIds });
     await clearBatchSession(chatId);
     const botUsername = await getBotUsername();
     const shareLink   = `https://t.me/${botUsername}?start=${batchCode}`;
@@ -1223,7 +1230,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const title = bSession.title || bSession.qualities[0].fileName || 'Multi-Quality Release';
     const sortedQualities = sortQualities(bSession.qualities);
 
-    await storeBundle(bundleCode, title, dbChannelId, sortedQualities, { userId: chatId }, { backupDbChannelId });
+    await storeBundle(bundleCode, title, dbChannelId, sortedQualities, { userId: chatId, username: from?.username, firstName: from?.first_name }, { backupDbChannelId });
     await clearBundleSession(chatId);
 
     const bot = await getBotUsername();
