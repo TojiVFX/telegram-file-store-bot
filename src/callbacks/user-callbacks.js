@@ -153,10 +153,9 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       });
     }
   } else if (action === 'help') {
-    const helpText = `<b>Bot Help & Guide</b>\n\n- <b>Getting Files:</b> Click the links provided to you.\n- <b>Referrals:</b> Share your link from /me to earn Premium.\n- <b>Premium:</b> Bypass verification and support the bot.\n\nNeed more help? Contact our support.`;
-    await editTelegramMessage(chatId, messageId, helpText, {
-      inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
-    });
+    const { getUserHelpMessage } = await import('../bot-helpers.js');
+    const { text, replyMarkup } = getUserHelpMessage(admin);
+    await editTelegramMessage(chatId, messageId, text, replyMarkup);
   } else if (action === 'about') {
     let usedStorage = 0;
     try {

@@ -26,12 +26,13 @@ Engineered for ultra-low latency, multi-bot concurrency, rock-solid security, an
 - [💰 Monetization, Shorteners & Premium](#-monetization-shorteners--premium)
 - [📢 Force-Subscribe & Growth System](#-force-subscribe--growth-system)
 - [🛠 Interactive Admin Dashboard](#-interactive-admin-dashboard)
+- [📖 Help System & Interactive Guides](#-help-system--interactive-guides)
 - [⚙️ Environment Variables](#️-environment-variables)
 - [🚀 Quick Start & Deployment](#-quick-start--deployment)
   - [Option A: Deploy to Render](#option-a-deploy-to-render-recommended)
   - [Option B: Manual / VPS / Local Deployment](#option-b-manual--vps--local-deployment)
 - [🤖 Webhook Configuration](#-webhook-configuration)
-- [📖 Command Reference](#-command-reference)
+- [📚 Complete Command Reference](#-complete-command-reference)
   - [Admin Commands](#admin-commands)
   - [User Commands](#user-commands)
 - [📄 License](#-license)
@@ -43,6 +44,7 @@ Engineered for ultra-low latency, multi-bot concurrency, rock-solid security, an
 - ⚡ **Ultra-Low Latency (<15ms Ack)**: Immediate fail-closed webhook acknowledgment with asynchronous processing pipeline.
 - 🗄 **Dual-Channel Redundancy**: Primary DB Channel with automatic failover to Backup Storage Channel for zero file loss.
 - 🤖 **Multi-Bot Network**: Run multiple Telegram bots simultaneously sharing the same database and files.
+- 📖 **Unified Interactive Help System**: Synchronized user and administrator help guides accessible via `/help`, `/adminhelp`, start menu buttons, and dashboard navigation.
 - 🎛 **Multi-Quality Release Bundles**: Automatically detect and group 360p, 480p, 720p, 1080p, and 4K releases under a single link with cleaned media titles.
 - ⏳ **Expiring Temporary Tokens**: Generate secure time-limited access links with custom expiration (e.g. `30m`, `24h`) and optional single-use access limits (`maxUses`).
 - ⏱ **Auto-Delete Engine**: Automated message self-destruction timers with countdown notices and persistent recovery across server restarts.
@@ -168,7 +170,7 @@ Engineered for ultra-low latency, multi-bot concurrency, rock-solid security, an
 
 ## 🛠 Interactive Admin Dashboard
 
-Access the complete visual dashboard by sending `/setting` or `/adminhelp`:
+Access the complete visual dashboard by sending `/setting` or tapping **Admin Dashboard** in `/start`:
 
 - ⚙️ **Bot Configuration**: Set default bot token, manage additional bots, configure channel IDs.
 - 🗄 **Storage Management**: Switch primary/backup channels, audit links, run link health scans (`/scanbroken`).
@@ -178,6 +180,34 @@ Access the complete visual dashboard by sending `/setting` or `/adminhelp`:
 - 🎨 **Visual Customization**: Set custom start messages, delivery banners, f-sub banners, and verification graphics.
 - 👥 **User & Ban Management**: View active users, ban/unban IDs, search profiles.
 - 📢 **Broadcast Engine**: Send broadcast messages with live progress tracking, test preview, and pin options.
+- 📖 **Admin Guide Shortcut**: Instant access to the complete administrator command reference directly from the dashboard.
+
+---
+
+## 📖 Help System & Interactive Guides
+
+The bot incorporates a unified, synchronized **Interactive Help & Guide Engine** serving both end users and administrators with single-source-of-truth instructions and inline navigation:
+
+### 1. User Help & Guide (`/help` or Start Menu `Help & Guide`)
+Accessible to all users via the `/help` command or the **Help & Guide** button on `/start`:
+- **File Downloads**: Clear instructions on retrieving files, batches, and multi-quality releases, plus tips to forward auto-deleting files to *Saved Messages*.
+- **Expiring Temporary Links**: Syntax, time format guidelines (`15m`, `1h`, `24h`, `3d`, `7d`), and examples for `/temptoken <code_id> [duration] [max_uses]`.
+- **Token Management**: Instructions for inspecting active links with `/mytokens` and revoking tokens with `/revoketoken`.
+- **Viral Referral Program**: How to access `/me`, share personal invite links, and track referral counts to unlock VIP/Premium status.
+- **VIP / Premium Privileges**: Details on shortener bypass, force-sub exemption, and zero rate limits.
+- **Latency & Ping**: Instant speed and system check with `/ping`.
+- **Admin Awareness**: When an administrator sends `/help`, administrative shortcuts (`/adminhelp`, `/setting`) and an inline **Admin Guide** button are automatically appended.
+
+### 2. Admin Command Reference & Guide (`/adminhelp` or Dashboard `Admin Guide`)
+Exclusively accessible to bot administrators via `/adminhelp` or the **Admin Guide** button inside the dashboard:
+- **Categorized Reference**: Logically organizes all 25+ administrative commands into clear functional sections:
+  - *Dashboard & Diagnostics* (`/setting`, `/status`, `/ping`, `/checkchannels`)
+  - *File & Media Storing* (`/store`, `/batch`, `/bundle`, `/bulkstore`, `/cancel`)
+  - *Traffic, Analytics & Exports* (`/exportlinks`, `/todaylinks`, `/topfiles`, `/userstats`, `/toprefs`)
+  - *Storage Auditing & Disaster Recovery* (`/auditlinks`, `/scanbroken`, `/rebuildchannel`, `/backup`)
+  - *User Moderation & Broadcasts* (`/user`, `/ban`, `/unban`, `/banlist`, `/broadcast`)
+  - *Record Management* (`/editfile`, `/delete`)
+- **Seamless Inline Navigation**: Switch between **Admin Dashboard**, **File Management Hub**, **Storage Audit**, and **User Guide** in one tap.
 
 ---
 
@@ -267,43 +297,50 @@ curl -F "url=https://<YOUR_BOT_DOMAIN>/webhook/telegram" \
 
 ---
 
-## 📖 Command Reference
+## 📚 Complete Command Reference
 
 ### Admin Commands
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
 | `/setting` | None | Open the interactive graphical Admin Dashboard |
-| `/adminhelp` | None | Display admin quick help and dashboard shortcut |
-| `/store` | None | Enter single-file storage mode |
-| `/batch` | None | Start a batch file session (Collector or Range mode) |
-| `/bundle` | `[title]` | Create a multi-quality video release bundle |
-| `/bulkstore` | None | Bulk-store files with one-tap link export |
-| `/exportlinks` | `[duration] [type]` | Export links created within a timeframe as `.txt` |
-| `/todaylinks` | None | View and copy all file links generated today |
-| `/topfiles` | None | View top 10 most downloaded files and traffic metrics |
-| `/userstats` | None | View user metrics, ban count, and 7-day download chart |
-| `/status` | None | Comprehensive system health monitor (DB, Webhook, Uptime) |
-| `/ping` | None | Test API latency, database connection, and RAM usage |
-| `/broadcast` | `<message>` | Create a mass broadcast with draft preview and test send |
-| `/ban` | `<user_id>` | Ban a user from using the bot |
-| `/unban` | `<user_id>` | Unban a user |
-| `/banlist` | None | List all currently banned user IDs |
-| `/backup` | None | Export entire database records as a JSON document |
-| `/scanbroken` | `[limit]` | Scan stored files and auto-heal missing links from backup channel |
-| `/cancel` | None | Cancel any active batch, bundle, or bulk-store session |
+| `/adminhelp` | None | Display complete administrator command reference & guide with navigation buttons |
+| `/store` | None | Enter interactive single-file storage mode (send or forward file) |
+| `/batch` | None | Start a batch file session (Collector or Channel Message Range mode) |
+| `/bundle` *(or `/quality`)* | `[title]` | Create a multi-quality video release bundle (auto-detects 480p, 720p, 1080p, 4K) |
+| `/bulkstore` | None | Rapid bulk storage mode with 1-tap link list & `.txt` document export |
+| `/exportlinks` | `[duration] [type]` | Export links created within a timeframe (e.g. `15m`, `1h`, `today`, `all`) as `.txt` |
+| `/todaylinks` | None | View and copy all file links generated today with live download counts |
+| `/topfiles` | None | View top 10 most downloaded files/batches and traffic analytics dashboard |
+| `/userstats` | None | View user metrics, ban count, active users, and 7-day download activity chart |
+| `/toprefs` | None | View viral referral leaderboard (Top 10 referrers across the bot) |
+| `/status` | None | Comprehensive system health monitor (DB latency, Webhook status, RAM, Uptime) |
+| `/ping` | None | Test Telegram API latency, database connection, and memory usage |
+| `/broadcast` | `<message>` | Mass broadcast with draft preview, test send to self, and pin options |
+| `/user` | `<id\|@username>` | Inspect user profile, registration date, VIP status, and referral metrics |
+| `/ban` | `<id\|@username> [duration] [reason]` | Ban a user temporarily (e.g. `24h`) or permanently with optional reason |
+| `/unban` | `<id\|@username>` | Unban a user by chat ID or username |
+| `/banlist` | None | List all currently banned user IDs with 1-click unban buttons |
+| `/editfile` *(or `/rename`)* | `<code> <new_title>` | Rename the title of any stored file, batch, or bundle |
+| `/delete` | `<code>` | Permanently remove record from database and storage channels |
+| `/checkchannels` | None | Diagnostic health check on Primary DB, Backup DB & Force-Sub channels |
+| `/auditlinks` | None | Interactive storage redundancy audit and link health dashboard |
+| `/scanbroken` | `[limit]` | Scan stored files and auto-heal missing links from the backup DB channel |
+| `/rebuildchannel` | `<channel_id>` | 1-click cloud CDN recovery: re-upload all files to a fresh channel without downtime |
+| `/backup` *(or `/exportdb`)* | None | Export entire database records as a JSON document |
+| `/cancel` | None | Cancel any active batch, bundle, bulk-store, or waiting prompt session |
 
 ### User Commands
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `/start` | `[payload]` | Access the bot or retrieve files/batches via deep-link |
-| `/me` | None | View your account profile, referral stats, and VIP status |
-| `/temptoken` | `<code_id> [time] [max]`| Generate a temporary, expiring link for a file or batch |
-| `/mytokens` | None | View and manage your active temporary links |
-| `/revoketoken`| `<token_code>` | Immediately invalidate a temporary access token |
-| `/ping` | None | Check bot responsiveness and latency |
-| `/help` | None | View user guide and instructions |
+| `/start` | `[payload]` | Access main menu or retrieve files, batches, and bundles via deep-link |
+| `/help` | None | Open interactive user guide covering downloads, expiring links, referrals & VIP |
+| `/me` | None | View account profile, VIP membership status, referral count, and referral link |
+| `/temptoken` *(or `/sharetemp`)* | `<code_id> [duration] [max]` | Generate a temporary, self-expiring link with time and optional download limit |
+| `/mytokens` *(or `/temptokens`)* | None | View and manage all your active temporary access tokens |
+| `/revoketoken` | `<token_code>` | Immediately invalidate and deactivate a temporary access token |
+| `/ping` | None | Test bot responsiveness, connection speed, server uptime, and system status |
 
 ---
 

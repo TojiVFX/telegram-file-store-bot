@@ -935,9 +935,9 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
   }
 
   if (/^\/adminhelp/i.test(rawText) && admin) {
-    let helpText = `<b>Admin Dashboard</b>\n\nYou can manage all bot features through the interactive dashboard. Click the button below to open it.`;
-    let kb = { inline_keyboard: [[{ text: toSmallCaps('Open Dashboard'), callback_data: 'admin:dashboard' }]] };
-    await sendTelegramMessage(chatId, helpText, kb);
+    const { getAdminHelpMessage } = await import('../bot-helpers.js');
+    const { text, replyMarkup } = getAdminHelpMessage();
+    await sendTelegramMessage(chatId, text, replyMarkup);
     return;
   }
   if (/^\/status/i.test(rawText) && admin) {
@@ -1253,13 +1253,9 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
   }
 
   if (/^\/help/i.test(rawText)) {
-    const helpText = `📖 <b>Bot Help & Guide</b>\n\n` +
-      `- <b>Getting Files:</b> Click the links provided to you.\n` +
-      `- <b>Temporary File Tokens:</b> Use <code>/temptoken &lt;code&gt; [duration]</code> to create time-limited share links.\n` +
-      `- <b>My Tokens:</b> Use <code>/mytokens</code> to manage your active temporary links.\n` +
-      `- <b>Referrals:</b> Share your link from /me to earn Premium.\n` +
-      `- <b>Premium:</b> Bypass verification and support the bot.\n\nNeed more help? Contact our support.`;
-    await sendTelegramMessage(chatId, helpText);
+    const { getUserHelpMessage } = await import('../bot-helpers.js');
+    const { text, replyMarkup } = getUserHelpMessage(admin);
+    await sendTelegramMessage(chatId, text, replyMarkup);
     return;
   }
 

@@ -1669,6 +1669,11 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
     });
     await sendTelegramMessage(targetUserId, `<b>Congratulations!</b>\n\nYou have been granted <b>Premium Access</b> for <b>${days} days</b>.`);
+  } else if (action === 'admin_help') {
+    const { getAdminHelpMessage } = await import('../bot-helpers.js');
+    const { text, replyMarkup } = getAdminHelpMessage();
+    await editTelegramMessage(chatId, messageId, text, replyMarkup);
+    return;
   }
 
   if (requiresCustomToast) {

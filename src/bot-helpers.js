@@ -144,7 +144,8 @@ export function getAdminDashboardKeyboard() {
       [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
       [{ text: toSmallCaps('File Management'), callback_data: 'admin:file_mgmt' }, { text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }],
       [{ text: toSmallCaps('Security & Auto Delete'), callback_data: 'admin:auto_del_mgmt' }, { text: toSmallCaps('Banners & Images'), callback_data: 'admin:banners_mgmt' }],
-      [{ text: toSmallCaps('Bot Settings'), callback_data: 'admin:fs_settings' }, { text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
+      [{ text: toSmallCaps('Bot Settings'), callback_data: 'admin:fs_settings' }, { text: toSmallCaps('Admin Guide'), callback_data: 'admin:admin_help' }],
+      [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
     ]
   };
 }
@@ -198,7 +199,8 @@ export function getExportLinksKeyboard() {
 
 export async function buildStartMenuButtons(admin) {
   const buttons = [
-    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
+    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'Help & Guide', callback_data: 'user:help' }],
+    [{ text: 'About', callback_data: 'user:about' }]
   ];
   if (admin) {
     if (isMainBot()) {
@@ -212,6 +214,99 @@ export async function buildStartMenuButtons(admin) {
     }
   }
   return buttons.map(row => row.map(btn => ({ ...btn, text: toSmallCaps(btn.text) })));
+}
+
+// ─── Help Messages (Single Source of Truth) ───────────────────────────────────
+export function getUserHelpMessage(admin = false) {
+  const adminSection = admin
+    ? `\n🛠 <b>Administrator Shortcuts:</b>\n` +
+      `• <code>/adminhelp</code> — Complete admin command reference & guide\n` +
+      `• <code>/setting</code> — Open interactive visual Admin Dashboard\n`
+    : '';
+
+  const text = `📖 <b>Bot Help & User Guide</b>\n\n` +
+    `Welcome to the <b>Filestore Bot</b>! Here is everything you need to know about using this bot:\n\n` +
+    `📥 <b>Getting & Downloading Files</b>\n` +
+    `• Click any shared file, batch, or bundle link.\n` +
+    `• Complete channel subscription or verification if prompted.\n` +
+    `💡 <i>Tip: If auto-delete is active, forward files to your <b>Saved Messages</b> to keep them permanently!</i>\n\n` +
+    `⏳ <b>Temporary Expiring Links</b>\n` +
+    `Share files or batches that expire automatically after a set duration or download count:\n` +
+    `• <code>/temptoken &lt;code&gt; [duration] [max_downloads]</code>\n` +
+    `  <i>Examples:</i>\n` +
+    `  └ <code>/temptoken file_abc123 1h</code> (valid for 1 hour)\n` +
+    `  └ <code>/temptoken file_abc123 24h 1</code> (valid for 24h or 1 download only)\n` +
+    `  └ <code>/temptoken batch_xyz789 30m</code> (valid for 30 minutes)\n` +
+    `• <code>/mytokens</code> — View and inspect all your active temporary links\n` +
+    `• <code>/revoketoken &lt;token_code&gt;</code> — Invalidate a temporary link immediately\n\n` +
+    `👤 <b>Profile & Viral Referrals</b>\n` +
+    `• <code>/me</code> — View your ID, status, and personal referral link\n` +
+    `• <b>Earn Free Premium:</b> Share your referral link with friends. When they join, you earn VIP/Premium perks!\n\n` +
+    `⭐ <b>Premium Membership Perks</b>\n` +
+    `• Instant file downloads without URL shortener verification\n` +
+    `• Bypass force-subscribe channel requirements\n` +
+    `• Zero cooldowns or speed restrictions\n\n` +
+    `🏓 <b>Bot Speed & Latency</b>\n` +
+    `• <code>/ping</code> — Check bot responsiveness, server uptime, and connection latency\n` +
+    adminSection +
+    `\nNeed more assistance? Contact our support via the About menu.`;
+
+  const buttons = [
+    [{ text: toSmallCaps('My Active Tokens'), callback_data: 'user:my_tokens' }, { text: toSmallCaps('My Profile'), callback_data: 'user:me' }]
+  ];
+  if (admin) {
+    buttons.push([
+      { text: toSmallCaps('Admin Guide'), callback_data: 'admin:admin_help' },
+      { text: toSmallCaps('Admin Dashboard'), callback_data: 'admin:dashboard' }
+    ]);
+  }
+  buttons.push([{ text: toSmallCaps('Back to Menu'), callback_data: 'user:back_start' }]);
+
+  return { text, replyMarkup: { inline_keyboard: buttons } };
+}
+
+export function getAdminHelpMessage() {
+  const text = `🛠 <b>Administrator Command Reference & Guide</b>\n\n` +
+    `Manage files, storage channels, analytics, and bot settings using the commands below or via the interactive dashboard:\n\n` +
+    `⚙️ <b>Dashboard & Diagnostics</b>\n` +
+    `• <code>/setting</code> — Open interactive graphical Admin Dashboard\n` +
+    `• <code>/status</code> — Live health monitor (DB latency, Webhooks, RAM, Uptime)\n` +
+    `• <code>/ping</code> — Test Telegram API latency and server connection\n` +
+    `• <code>/checkchannels</code> — Diagnostic health check on Primary DB, Backup DB & F-Sub channels\n\n` +
+    `📦 <b>File & Media Storing</b>\n` +
+    `• <code>/store</code> — Interactive single-file storage mode (send or forward file)\n` +
+    `• <code>/batch</code> — Create batch link from message range or interactive forwarding (up to 500 files)\n` +
+    `• <code>/bundle [title]</code> or <code>/quality [title]</code> — Create multi-quality release bundle (auto-detects 480p, 720p, 1080p, 4K)\n` +
+    `• <code>/bulkstore</code> — Rapidly forward files to store in bulk; generates copyable list and .txt export\n` +
+    `• <code>/cancel</code> — Abort any active batch, bundle, bulk store, or waiting session\n\n` +
+    `📊 <b>Traffic, Analytics & Exports</b>\n` +
+    `• <code>/exportlinks [duration] [type]</code> — Export links created within duration (e.g. <code>15m</code>, <code>1h</code>, <code>today</code>, <code>all</code>) as a <code>.txt</code> file\n` +
+    `• <code>/todaylinks</code> — View and copy all links created today with download counts\n` +
+    `• <code>/topfiles</code> — Top 10 most downloaded files/batches & traffic dashboard\n` +
+    `• <code>/userstats</code> — User statistics, ban count, active users, and 7-day download chart\n` +
+    `• <code>/toprefs</code> — Viral referral leaderboard (Top 10 referrers)\n\n` +
+    `🛡 <b>Storage Auditing & Disaster Recovery</b>\n` +
+    `• <code>/auditlinks</code> — Interactive storage redundancy & backup channel audit\n` +
+    `• <code>/scanbroken [limit]</code> — Scan stored files and auto-heal missing links from backup DB channel\n` +
+    `• <code>/rebuildchannel &lt;channel_id&gt;</code> — 1-click cloud CDN recovery: re-posts all database files into a new channel without breaking user links\n` +
+    `• <code>/backup</code> (or <code>/exportdb</code>) — Download complete database backup as a JSON document\n\n` +
+    `👥 <b>User Moderation & Broadcasts</b>\n` +
+    `• <code>/user &lt;id|@username&gt;</code> — Inspect user profile, join date, VIP status, and referrals\n` +
+    `• <code>/ban &lt;id|@username&gt; [duration] [reason]</code> — Ban user (e.g. <code>/ban @user 24h spam</code>)\n` +
+    `• <code>/unban &lt;id|@username&gt;</code> — Unban a user\n` +
+    `• <code>/banlist</code> — View all banned users with 1-click unban buttons\n` +
+    `• <code>/broadcast &lt;message&gt;</code> — Mass broadcast with draft preview, test send, and pin options\n\n` +
+    `✏️ <b>Record Management</b>\n` +
+    `• <code>/editfile &lt;code&gt; &lt;new_title&gt;</code> (or <code>/rename</code>) — Update title of stored file, batch, or bundle\n` +
+    `• <code>/delete &lt;code&gt;</code> — Permanently remove record from database and storage channels`;
+
+  const buttons = [
+    [{ text: toSmallCaps('Open Dashboard'), callback_data: 'admin:dashboard' }, { text: toSmallCaps('File Management'), callback_data: 'admin:file_mgmt' }],
+    [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }, { text: toSmallCaps('Export Links Hub'), callback_data: 'admin:export_hub' }],
+    [{ text: toSmallCaps('User Guide (/help)'), callback_data: 'user:help' }, { text: toSmallCaps('Main Menu'), callback_data: 'user:back_start' }]
+  ];
+
+  return { text, replyMarkup: { inline_keyboard: buttons } };
 }
 
 // ─── Text helpers ─────────────────────────────────────────────────────────────
@@ -1247,12 +1342,15 @@ export async function setMyCommands() {
         { command: 'userstats',  description: toSmallCaps('User stats & download activity chart') },
         { command: 'topfiles',   description: toSmallCaps('Top 10 most downloaded files & batches') },
         { command: 'todaylinks', description: toSmallCaps("List all links created today with downloads") },
+        { command: 'exportlinks', description: toSmallCaps('Export links by duration as .txt') },
         { command: 'backup',     description: toSmallCaps('Export database backup as JSON file') },
         { command: 'broadcast',  description: toSmallCaps('Send a message to all users') },
         { command: 'batch',      description: toSmallCaps('Create a batch link from a channel range') },
         { command: 'bundle',     description: toSmallCaps('Create multi-quality bundle') },
         { command: 'store',      description: toSmallCaps('Store a single file') },
         { command: 'bulkstore',  description: toSmallCaps('Bulk store files with link export') },
+        { command: 'auditlinks', description: toSmallCaps('Storage audit & link health') },
+        { command: 'scanbroken', description: toSmallCaps('Scan & auto-repair broken links') },
         { command: 'ban',        description: toSmallCaps('Ban a user by chat ID or @username') },
         { command: 'unban',      description: toSmallCaps('Unban a user by chat ID or @username') },
         { command: 'banlist',    description: toSmallCaps('List all banned users with 1-click unban') },
