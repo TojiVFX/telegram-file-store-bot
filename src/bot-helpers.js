@@ -199,8 +199,7 @@ export function getExportLinksKeyboard() {
 
 export async function buildStartMenuButtons(admin) {
   const buttons = [
-    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'Help & Guide', callback_data: 'user:help' }],
-    [{ text: 'About', callback_data: 'user:about' }]
+    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
   ];
   if (admin) {
     if (isMainBot()) {
@@ -218,7 +217,8 @@ export async function buildStartMenuButtons(admin) {
 
 // ─── Help Messages (Single Source of Truth) ───────────────────────────────────
 export function getUserHelpMessage(admin = false) {
-  const adminSection = admin
+  const isAdminUser = Boolean(admin) === true;
+  const adminSection = isAdminUser
     ? `\n🛠 <b>Administrator Shortcuts:</b>\n` +
       `• <code>/adminhelp</code> — Complete admin command reference & guide\n` +
       `• <code>/setting</code> — Open interactive visual Admin Dashboard\n`
@@ -254,7 +254,7 @@ export function getUserHelpMessage(admin = false) {
   const buttons = [
     [{ text: toSmallCaps('My Active Tokens'), callback_data: 'user:my_tokens' }, { text: toSmallCaps('My Profile'), callback_data: 'user:me' }]
   ];
-  if (admin) {
+  if (isAdminUser) {
     buttons.push([
       { text: toSmallCaps('Admin Guide'), callback_data: 'admin:admin_help' },
       { text: toSmallCaps('Admin Dashboard'), callback_data: 'admin:dashboard' }

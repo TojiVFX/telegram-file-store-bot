@@ -44,7 +44,7 @@ Engineered for ultra-low latency, multi-bot concurrency, rock-solid security, an
 - ⚡ **Ultra-Low Latency (<15ms Ack)**: Immediate fail-closed webhook acknowledgment with asynchronous processing pipeline.
 - 🗄 **Dual-Channel Redundancy**: Primary DB Channel with automatic failover to Backup Storage Channel for zero file loss.
 - 🤖 **Multi-Bot Network**: Run multiple Telegram bots simultaneously sharing the same database and files.
-- 📖 **Unified Interactive Help System**: Synchronized user and administrator help guides accessible via `/help`, `/adminhelp`, start menu buttons, and dashboard navigation.
+- 📖 **Unified Interactive Help System**: Synchronized user and administrator help guides accessible via `/help`, `/adminhelp`, the About menu, and dashboard navigation with strict admin-only button gating.
 - 🎛 **Multi-Quality Release Bundles**: Automatically detect and group 360p, 480p, 720p, 1080p, and 4K releases under a single link with cleaned media titles.
 - ⏳ **Expiring Temporary Tokens**: Generate secure time-limited access links with custom expiration (e.g. `30m`, `24h`) and optional single-use access limits (`maxUses`).
 - ⏱ **Auto-Delete Engine**: Automated message self-destruction timers with countdown notices and persistent recovery across server restarts.
@@ -188,18 +188,18 @@ Access the complete visual dashboard by sending `/setting` or tapping **Admin Da
 
 The bot incorporates a unified, synchronized **Interactive Help & Guide Engine** serving both end users and administrators with single-source-of-truth instructions and inline navigation:
 
-### 1. User Help & Guide (`/help` or Start Menu `Help & Guide`)
-Accessible to all users via the `/help` command or the **Help & Guide** button on `/start`:
+### 1. User Help & Guide (`/help` or About Menu `Help` button)
+Accessible to all users via the `/help` command or by tapping the **Help** button inside the **About** menu:
 - **File Downloads**: Clear instructions on retrieving files, batches, and multi-quality releases, plus tips to forward auto-deleting files to *Saved Messages*.
 - **Expiring Temporary Links**: Syntax, time format guidelines (`15m`, `1h`, `24h`, `3d`, `7d`), and examples for `/temptoken <code_id> [duration] [max_uses]`.
 - **Token Management**: Instructions for inspecting active links with `/mytokens` and revoking tokens with `/revoketoken`.
 - **Viral Referral Program**: How to access `/me`, share personal invite links, and track referral counts to unlock VIP/Premium status.
 - **VIP / Premium Privileges**: Details on shortener bypass, force-sub exemption, and zero rate limits.
 - **Latency & Ping**: Instant speed and system check with `/ping`.
-- **Admin Awareness**: When an administrator sends `/help`, administrative shortcuts (`/adminhelp`, `/setting`) and an inline **Admin Guide** button are automatically appended.
+- **Admin-Only Protection**: The **Admin Guide** and **Admin Dashboard** buttons, as well as admin shortcut instructions, are strictly hidden from regular users and only rendered when an authorized administrator accesses the help guide.
 
 ### 2. Admin Command Reference & Guide (`/adminhelp` or Dashboard `Admin Guide`)
-Exclusively accessible to bot administrators via `/adminhelp` or the **Admin Guide** button inside the dashboard:
+Exclusively accessible to verified bot administrators via `/adminhelp` or the **Admin Guide** button inside the dashboard:
 - **Categorized Reference**: Logically organizes all 25+ administrative commands into clear functional sections:
   - *Dashboard & Diagnostics* (`/setting`, `/status`, `/ping`, `/checkchannels`)
   - *File & Media Storing* (`/store`, `/batch`, `/bundle`, `/bulkstore`, `/cancel`)
