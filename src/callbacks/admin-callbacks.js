@@ -174,11 +174,33 @@ async function renderFsCfg(chatId, messageId, cfgType) {
     const shortenerKey = s.shortenerKey ? esc(s.shortenerKey) : 'Not set';
     const backupUrl = s.backupShortenerUrl ? esc(s.backupShortenerUrl) : 'Not set';
     const backupKey = s.backupShortenerKey ? esc(s.backupShortenerKey) : 'Not set';
+    const shortenerMode = s.shortenerMode || 'failover';
+    const shortenerRatio = s.shortenerRatio !== undefined && s.shortenerRatio !== '' ? parseInt(s.shortenerRatio, 10) : 50;
 
-    text = `<b>Access Token & Multi-Shortener</b>\n\nConfigure shorteners for gated link verification:\n\nStatus: <b>${enabled ? 'ON' : 'OFF'}</b>\nReferrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>\nValidity: <b>${validityLabel}</b>\n\n• <b>Primary Shortener:</b>\nURL: <code>${shortenerUrl}</code>\nKey: <code>${shortenerKey}</code>\n\n• <b>Backup Shortener (Failover):</b>\nURL: <code>${backupUrl}</code>\nKey: <code>${backupKey}</code>`;
+    const { getVerificationStats } = await import('../filestore.js');
+    const vStats = await getVerificationStats();
+
+    text = `<b>Access Token & Multi-Shortener</b>\n\n` +
+      `Configure shorteners for gated link verification:\n\n` +
+      `Status: <b>${enabled ? 'ON' : 'OFF'}</b>\n` +
+      `Referrals: <b>${refDisabled ? 'DISABLED' : 'ENABLED'}</b>\n` +
+      `Validity: <b>${validityLabel}</b>\n\n` +
+      `⚖️ <b>Traffic Mode:</b> <b>${shortenerMode === 'split' ? `Traffic Split (${shortenerRatio}% Primary / ${100 - shortenerRatio}% Backup)` : 'Failover (Primary first, then Backup)'}</b>\n\n` +
+      `• <b>Primary Shortener:</b>\nURL: <code>${shortenerUrl}</code>\nKey: <code>${shortenerKey}</code>\n\n` +
+      `• <b>Backup Shortener:</b>\nURL: <code>${backupUrl}</code>\nKey: <code>${backupKey}</code>\n\n` +
+      `📊 <b>Verification Analytics:</b>\n` +
+      `• Links Minted: <b>${vStats.minted}</b>\n` +
+      `• Verified: <b>${vStats.verified}</b>\n` +
+      `• Conversion Rate: <b>${vStats.conversionRate}%</b>\n` +
+      `• Drop-off: <b>${vStats.dropOff} (${vStats.dropOffRate}%)</b>`;
+
     buttons = [
       [{ text: toSmallCaps('Shortener URL'), callback_data: 'admin:fs_set_url' }, { text: toSmallCaps('API Key'), callback_data: 'admin:fs_set_key' }],
       [{ text: toSmallCaps('Backup URL'), callback_data: 'admin:fs_set_burl' }, { text: toSmallCaps('Backup Key'), callback_data: 'admin:fs_set_bkey' }],
+      [
+        { text: toSmallCaps(shortenerMode === 'split' ? 'Mode: Split' : 'Mode: Failover'), callback_data: 'admin:fs_toggle_smode' },
+        { text: toSmallCaps(`Split Ratio (${shortenerRatio}%)`), callback_data: 'admin:fs_set_sratio' }
+      ],
       [{ text: toSmallCaps('Validity'), callback_data: 'admin:fs_set_ttl' }, { text: toSmallCaps('Tutorial'), callback_data: 'admin:fs_set_tut' }],
       [{ text: toSmallCaps(enabled ? 'Disable Token' : 'Enable Token'), callback_data: `admin:fs_toggle:${enabled ? 0 : 1}` }, { text: toSmallCaps(refDisabled ? 'Enable Ref' : 'Disable Ref'), callback_data: `admin:fs_toggle_ref:${refDisabled ? 0 : 1}` }],
       [{ text: toSmallCaps('Back'), callback_data: 'admin:fs_settings' }]
@@ -501,7 +523,8 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       await answerCallbackQuery(cq.id, 'Preview message sent below!');
     }
     return;
-  } else if (action === 'broadcast_confirm') {
+  } else if (action === 'broadcast_confirm' || action === 'broadcast_confirm_pin') {
+    const isPin = action === 'broadcast_confirm_pin';
     const draftDoc = await sessions.findOne({ _id: `admin:broadcast_draft:${chatId}` });
     if (!draftDoc) {
       await answerCallbackQuery(cq.id, 'Draft expired or not found.', true);
@@ -513,7 +536,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
 
     const { broadcastWithProgress, getUserStats } = await import('../bot-users.js');
     const s = await getUserStats();
-    await editTelegramMessage(chatId, messageId, `<b>Starting Broadcast...</b>\n\nTotal Users: <b>${s.totalUsers}</b>\n\n<i>Initializing queue...</i>`, {
+    await editTelegramMessage(chatId, messageId, `<b>Starting Broadcast...</b>\n\nTotal Users: <b>${s.totalUsers}</b>\n${isPin ? '📌 <i>Messages will be pinned for each user.</i>\n' : ''}\n<i>Initializing queue...</i>`, {
       inline_keyboard: [[{ text: toSmallCaps('Cancel Broadcast'), callback_data: 'admin:broadcast_cancel' }]]
     });
     broadcastWithProgress({
@@ -522,9 +545,10 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       messageId: srcMsgId,
       replyMarkup,
       adminChatId: chatId,
-      statusMsgId: messageId
+      statusMsgId: messageId,
+      pin: isPin
     }).then(r => {
-      logHistory(`broadcast_tg: ${r.sent}/${r.total} users`, 'tg').catch(() => {});
+      logHistory(`broadcast_tg: ${r.sent}/${r.total} users${isPin ? ' (pinned)' : ''}`, 'tg').catch(() => {});
     }).catch(err => {
       log('error', 'broadcastWithProgress error', { errorMessage: err.message });
     });
@@ -544,7 +568,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       { $set: { val: 'ban', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `<b>Ban User</b>\n\nPlease send the <b>User ID</b> you want to ban.\n\nSend /cancel to abort.`, {
+    await editTelegramMessage(chatId, messageId, `<b>Ban User</b>\n\nPlease send the <b>User ID or @username</b> you want to ban.\n\nOptional format: <code>&lt;id|@username&gt; [duration] [reason]</code> (e.g. <code>@spammer 24h spamming</code>)\n\nSend /cancel to abort.`, {
       inline_keyboard: navButtons('admin:user_mgmt')
     });
   } else if (action === 'unban_prompt') {
@@ -553,21 +577,76 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       { $set: { val: 'unban', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `<b>Unban User</b>\n\nPlease send the <b>User ID</b> you want to unban.\n\nSend /cancel to abort.`, {
+    await editTelegramMessage(chatId, messageId, `<b>Unban User</b>\n\nPlease send the <b>User ID or @username</b> you want to unban.\n\nSend /cancel to abort.`, {
       inline_keyboard: navButtons('admin:user_mgmt')
     });
   } else if (action === 'ban_list') {
-    const { getBannedList } = await import('../bot-users.js');
-    const list = await getBannedList();
-    const maxShow = 50;
+    const { getBannedUsers } = await import('../bot-users.js');
+    const list = await getBannedUsers();
+    const maxShow = 20;
     const displayList = list.slice(0, maxShow);
-    let text = list.length ? `<b>Banned Users (${list.length}):</b>\n\n${displayList.map(id => `<code>${id}</code>`).join('\n')}` : `No banned users.`;
-    if (list.length > maxShow) {
-      text += `\n\n<i>...and ${list.length - maxShow} more banned users.</i>`;
+    const now = Date.now();
+
+    let text = list.length ? `🚫 <b>Banned Users (${list.length}):</b>\n\n` : `No banned users.`;
+    const unbanButtons = [];
+    if (list.length > 0) {
+      for (const u of displayList) {
+        let expiryStr = 'Permanent';
+        if (u.bannedUntil) {
+          const remSec = Math.max(0, Math.round((new Date(u.bannedUntil).getTime() - now) / 1000));
+          expiryStr = remSec < 60 ? `${remSec}s left` : remSec < 3600 ? `${Math.round(remSec / 60)}m left` : `${Math.round(remSec / 3600)}h left`;
+        }
+        text += `• <code>${u._id}</code> ${u.username ? `(@${esc(u.username)})` : ''}\n`;
+        text += `  └ <i>${expiryStr}</i>${u.banReason ? ` • Reason: <code>${esc(u.banReason)}</code>` : ''}\n`;
+
+        unbanButtons.push([{
+          text: `🔓 Unban ${u.username ? '@' + u.username : u._id}`,
+          callback_data: `admin:unban:${u._id}`
+        }]);
+      }
+      if (list.length > maxShow) {
+        text += `\n<i>...and ${list.length - maxShow} more banned users.</i>`;
+      }
     }
     await editTelegramMessage(chatId, messageId, text, {
-      inline_keyboard: navButtons('admin:user_mgmt')
+      inline_keyboard: [...unbanButtons, ...navButtons('admin:user_mgmt')]
     });
+  } else if (action.startsWith('unban:')) {
+    const targetId = action.replace('unban:', '');
+    const { unbanUser, getBannedUsers } = await import('../bot-users.js');
+    await unbanUser(targetId);
+    await answerCallbackQuery(cq.id, `✅ User ${targetId} unbanned!`, true);
+
+    const list = await getBannedUsers();
+    const maxShow = 20;
+    const displayList = list.slice(0, maxShow);
+    const now = Date.now();
+
+    let text = list.length ? `🚫 <b>Banned Users (${list.length}):</b>\n\n` : `No banned users.`;
+    const unbanButtons = [];
+    if (list.length > 0) {
+      for (const u of displayList) {
+        let expiryStr = 'Permanent';
+        if (u.bannedUntil) {
+          const remSec = Math.max(0, Math.round((new Date(u.bannedUntil).getTime() - now) / 1000));
+          expiryStr = remSec < 60 ? `${remSec}s left` : remSec < 3600 ? `${Math.round(remSec / 60)}m left` : `${Math.round(remSec / 3600)}h left`;
+        }
+        text += `• <code>${u._id}</code> ${u.username ? `(@${esc(u.username)})` : ''}\n`;
+        text += `  └ <i>${expiryStr}</i>${u.banReason ? ` • Reason: <code>${esc(u.banReason)}</code>` : ''}\n`;
+
+        unbanButtons.push([{
+          text: `🔓 Unban ${u.username ? '@' + u.username : u._id}`,
+          callback_data: `admin:unban:${u._id}`
+        }]);
+      }
+      if (list.length > maxShow) {
+        text += `\n<i>...and ${list.length - maxShow} more banned users.</i>`;
+      }
+    }
+    await editTelegramMessage(chatId, messageId, text, {
+      inline_keyboard: [...unbanButtons, ...navButtons('admin:user_mgmt')]
+    });
+    return;
   } else if (action === 'file_mgmt') {
     const text = `<b>File Management</b>\n\nCreate permanent or temporary sharing links, bulk store files, export link lists, or backup database:`;
     await editTelegramMessage(chatId, messageId, text, {
@@ -1374,6 +1453,24 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     await logHistory(`referrals_${val === '1' ? 'disabled' : 'enabled'}`, 'tg');
     await answerCallbackQuery(cq.id, `Referrals system ${val === '1' ? 'disabled' : 'enabled'}.`);
     await renderFsCfg(chatId, messageId, 'tkn');
+  } else if (action === 'fs_toggle_smode') {
+    const s = await getSettings();
+    const currentMode = s?.shortenerMode || 'failover';
+    const newMode = currentMode === 'split' ? 'failover' : 'split';
+    await updateSettings({ shortenerMode: newMode });
+    await answerCallbackQuery(cq.id, `Traffic mode set to ${newMode.toUpperCase()}`);
+    await renderFsCfg(chatId, messageId, 'tkn');
+    return;
+  } else if (action === 'fs_set_sratio') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'shortenerRatio', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    await editTelegramMessage(chatId, messageId, `⚖️ <b>Set Traffic Split Ratio</b>\n\nEnter the percentage of traffic to route to your <b>Primary Shortener</b> (1 to 99).\n\nFor example, send <code>50</code> for a 50/50 split, or <code>70</code> for 70% Primary / 30% Backup.\n\nSend /cancel to abort.`, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]]
+    });
+    return;
   } else if (action === 'fs_set_db') {
     await sessions.updateOne(
       { _id: `admin:waiting_setting:${chatId}` },

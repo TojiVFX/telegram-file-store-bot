@@ -37,21 +37,32 @@ export async function upsertUser(message) {
 }
 
 // ─── In-Memory Banned User Cache ──────────────────────────────────────────────
-let bannedSet = null;
-let bannedSetExpiry = 0;
+let bannedMap = null; // Map<string, number | null>
+let bannedMapExpiry = 0;
 const BANNED_CACHE_TTL_MS = 60_000;
 
-export async function banUser(targetId) {
+export async function banUser(targetId, durationSeconds = null, reason = null, adminId = null) {
   try {
     const strId = String(targetId);
     const users = await getCollection('users');
+    const updateData = {
+      banned: true,
+      bannedAt: new Date(),
+      bannedUntil: durationSeconds ? new Date(Date.now() + durationSeconds * 1000) : null,
+      banReason: reason || null,
+      bannedBy: adminId ? String(adminId) : null,
+    };
+
     await users.updateOne(
       { _id: strId },
-      { $set: { banned: true } },
+      { $set: updateData },
       { upsert: true }
     );
-    if (bannedSet) bannedSet.add(strId);
-    log('warn', 'User banned', { targetId: strId });
+
+    if (bannedMap) {
+      bannedMap.set(strId, updateData.bannedUntil ? updateData.bannedUntil.getTime() : null);
+    }
+    log('warn', 'User banned', { targetId: strId, durationSeconds, reason, adminId });
   } catch (err) {
     log('error', 'banUser failed', { errorMessage: err.message });
   }
@@ -63,9 +74,9 @@ export async function unbanUser(targetId) {
     const users = await getCollection('users');
     await users.updateOne(
       { _id: strId },
-      { $set: { banned: false } }
+      { $set: { banned: false, bannedUntil: null, banReason: null } }
     );
-    if (bannedSet) bannedSet.delete(strId);
+    if (bannedMap) bannedMap.delete(strId);
     log('info', 'User unbanned', { targetId: strId });
   } catch (err) {
     log('error', 'unbanUser failed', { errorMessage: err.message });
@@ -77,16 +88,38 @@ export async function isBanned(chatId) {
   const strId = String(chatId);
   const now = Date.now();
 
-  if (bannedSet && now < bannedSetExpiry) {
-    return bannedSet.has(strId);
+  if (bannedMap && now < bannedMapExpiry) {
+    if (!bannedMap.has(strId)) return false;
+    const until = bannedMap.get(strId);
+    if (until === null) return true;
+    if (now < until) return true;
+    // Expired temporary ban
+    bannedMap.delete(strId);
+    unbanUser(strId).catch(() => {});
+    return false;
   }
 
   try {
     const users = await getCollection('users');
-    const bannedDocs = await users.find({ banned: true }, { projection: { _id: 1 } }).toArray();
-    bannedSet = new Set(bannedDocs.map(u => String(u._id)));
-    bannedSetExpiry = now + BANNED_CACHE_TTL_MS;
-    return bannedSet.has(strId);
+    // Clear expired bans in database
+    await users.updateMany(
+      { banned: true, bannedUntil: { $ne: null, $lte: new Date(now) } },
+      { $set: { banned: false } }
+    ).catch(() => {});
+
+    const bannedDocs = await users.find({ banned: true }, { projection: { _id: 1, bannedUntil: 1 } }).toArray();
+    bannedMap = new Map();
+    for (const u of bannedDocs) {
+      const until = u.bannedUntil ? new Date(u.bannedUntil).getTime() : null;
+      if (until === null || until > now) {
+        bannedMap.set(String(u._id), until);
+      }
+    }
+    bannedMapExpiry = now + BANNED_CACHE_TTL_MS;
+
+    if (!bannedMap.has(strId)) return false;
+    const until = bannedMap.get(strId);
+    return until === null || now < until;
   } catch (err) {
     log('error', 'isBanned check failed', { errorMessage: err.message });
     return false;
@@ -96,15 +129,127 @@ export async function isBanned(chatId) {
 export async function getBannedList() {
   try {
     const users = await getCollection('users');
-    const list = await users.find({ banned: true }, { projection: { _id: 1 } }).toArray();
+    const now = Date.now();
+    await users.updateMany(
+      { banned: true, bannedUntil: { $ne: null, $lte: new Date(now) } },
+      { $set: { banned: false } }
+    ).catch(() => {});
+
+    const list = await users.find({ banned: true }, { projection: { _id: 1, bannedUntil: 1 } }).toArray();
     const ids = list.map(u => u._id);
-    if (bannedSet) {
-      bannedSet = new Set(ids.map(id => String(id)));
-      bannedSetExpiry = Date.now() + BANNED_CACHE_TTL_MS;
+    if (bannedMap) {
+      bannedMap = new Map();
+      for (const u of list) {
+        const until = u.bannedUntil ? new Date(u.bannedUntil).getTime() : null;
+        if (until === null || until > now) {
+          bannedMap.set(String(u._id), until);
+        }
+      }
+      bannedMapExpiry = now + BANNED_CACHE_TTL_MS;
     }
     return ids;
   } catch (err) {
     log('error', 'getBannedList failed', { errorMessage: err.message });
+    return [];
+  }
+}
+
+export async function getBannedUsers() {
+  try {
+    const users = await getCollection('users');
+    const now = new Date();
+    await users.updateMany(
+      { banned: true, bannedUntil: { $ne: null, $lte: now } },
+      { $set: { banned: false } }
+    ).catch(() => {});
+
+    return await users.find({ banned: true }).toArray();
+  } catch (err) {
+    log('error', 'getBannedUsers failed', { errorMessage: err.message });
+    return [];
+  }
+}
+
+export async function findUserByIdentifier(identifier) {
+  if (!identifier) return null;
+  const clean = String(identifier).trim();
+  const users = await getCollection('users');
+
+  if (clean.startsWith('@')) {
+    const handle = clean.slice(1).toLowerCase();
+    return await users.findOne({ username: handle });
+  }
+
+  if (/^\d+$/.test(clean)) {
+    return await users.findOne({ $or: [{ _id: clean }, { userId: clean }] });
+  }
+
+  return await users.findOne({
+    $or: [
+      { username: clean.toLowerCase() },
+      { _id: clean },
+      { userId: clean }
+    ]
+  });
+}
+
+export async function getUserProfile(identifier) {
+  const user = await findUserByIdentifier(identifier);
+  if (!user) return null;
+
+  const now = Date.now();
+  let banStatus = 'Active (Not Banned)';
+  if (user.banned) {
+    if (user.bannedUntil) {
+      const untilMs = new Date(user.bannedUntil).getTime();
+      if (untilMs <= now) {
+        banStatus = 'Ban Expired (Pending Auto-Unban)';
+      } else {
+        const remainingSec = Math.round((untilMs - now) / 1000);
+        const remLabel = remainingSec < 60 ? `${remainingSec}s` : remainingSec < 3600 ? `${Math.round(remainingSec / 60)}m` : `${Math.round(remainingSec / 3600)}h`;
+        banStatus = `Temporarily Banned (${remLabel} left)${user.banReason ? ` - Reason: ${user.banReason}` : ''}`;
+      }
+    } else {
+      banStatus = `Permanently Banned${user.banReason ? ` - Reason: ${user.banReason}` : ''}`;
+    }
+  }
+
+  let premiumStatus = 'Standard';
+  if (user.premiumUntil) {
+    const premMs = new Date(user.premiumUntil).getTime();
+    if (premMs > now) {
+      const days = Math.ceil((premMs - now) / (86400 * 1000));
+      premiumStatus = `Active (${days} day${days === 1 ? '' : 's'} left)`;
+    }
+  }
+
+  return {
+    userId: user._id || user.userId,
+    username: user.username ? `@${user.username}` : 'None',
+    fullName: [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Anonymous',
+    joinedAt: user.joinedAt || 'Unknown',
+    lastSeen: user.lastSeen || 'Unknown',
+    banStatus,
+    isBanned: !!user.banned,
+    banReason: user.banReason || null,
+    bannedUntil: user.bannedUntil || null,
+    premiumStatus,
+    referralCount: user.referralCount || 0,
+    referrerId: user.referrerId || 'Direct / None',
+    rawUser: user,
+  };
+}
+
+export async function getTopReferrers(limit = 10) {
+  try {
+    const users = await getCollection('users');
+    return await users
+      .find({ referralCount: { $gt: 0 } })
+      .sort({ referralCount: -1 })
+      .limit(limit)
+      .toArray();
+  } catch (err) {
+    log('error', 'getTopReferrers failed', { errorMessage: err.message });
     return [];
   }
 }
@@ -115,7 +260,15 @@ export function cancelBroadcast() {
   broadcastCancelled = true;
 }
 
-export async function broadcastWithProgress({ text = null, fromChatId = null, messageId = null, replyMarkup = null, adminChatId, statusMsgId = null }) {
+export async function broadcastWithProgress({
+  text = null,
+  fromChatId = null,
+  messageId = null,
+  replyMarkup = null,
+  adminChatId,
+  statusMsgId = null,
+  pin = false
+}) {
   broadcastCancelled = false;
   try {
     const users = await getCollection('users');
@@ -140,7 +293,7 @@ export async function broadcastWithProgress({ text = null, fromChatId = null, me
     const MIN_STATUS_EDIT_INTERVAL_MS = 3500;
     const CHUNK = 20;
 
-    const { editTelegramMessage, toSmallCaps } = await import('./bot-common.js');
+    const { editTelegramMessage, toSmallCaps, pinTelegramMessage } = await import('./bot-common.js');
     const { copyMessage } = await import('./bot-helpers.js');
 
     for (let i = 0; i < ids.length; i += CHUNK) {
@@ -167,6 +320,9 @@ export async function broadcastWithProgress({ text = null, fromChatId = null, me
 
         if (r.status === 'fulfilled' && r.value?.ok) {
           sent++;
+          if (pin && r.value?.messageId) {
+            pinTelegramMessage(targetUserId, r.value.messageId, true).catch(() => {});
+          }
         } else {
           failed++;
           const errDetail = r.status === 'fulfilled' ? (r.value?.detail || r.value?.telegramError) : null;

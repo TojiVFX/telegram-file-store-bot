@@ -5,7 +5,7 @@ import {
 import {
   getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard, buildStartMenuButtons
 } from '../bot-helpers.js';
-import { getBatch, getFile, getBundle, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount } from '../filestore.js';
+import { getBatch, getFile, getBundle, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount, recordVerificationMinted } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral, getAdminId } from '../bot-users.js';
 import { logActivity } from '../bot-logs.js';
 
@@ -157,7 +157,7 @@ export async function handleStartPayload(chatId, payload, message, admin) {
     return handleStartPayload(chatId, doc.targetCode, message, admin);
   }
 
-  if (payload && (payload.startsWith('batch_') || payload.startsWith('file_'))) {
+  if (payload && (payload.startsWith('batch_') || payload.startsWith('file_') || payload.startsWith('bundle_'))) {
     // Check if user has premium
     const premium = await hasPremium(chatId);
 
@@ -196,6 +196,7 @@ export async function handleStartPayload(chatId, payload, message, admin) {
           },
           { upsert: true }
         );
+        recordVerificationMinted().catch(() => {});
         const target = `https://t.me/${botUsername}?start=verify_${tkn}`;
         const short = await getShortenedLink(target);
 

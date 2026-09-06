@@ -2,14 +2,15 @@ import {
   getCollection, getSettings, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc
 } from '../bot-common.js';
 import {
-  getBotUsername, getDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser
+  getBotUsername, getDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser, checkChannelsHealth
 } from '../bot-helpers.js';
 import {
   getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
-  generateTempToken, getTempToken, revokeTempToken, listActiveTempTokens, parseDurationString, formatDuration
+  generateTempToken, getTempToken, revokeTempToken, listActiveTempTokens, parseDurationString, formatDuration,
+  recordVerificationRedeemed, deleteStoredRecord, updateStoredRecordTitle
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
-import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral, hasPremium, getReferralStats, upsertUser } from '../bot-users.js';
+import { banUser, unbanUser, getBannedList, getBannedUsers, broadcastToAll, getUserStats, addReferral, hasPremium, getReferralStats, upsertUser, getUserProfile, getTopReferrers } from '../bot-users.js';
 import { processAdminMessage } from './admin.js';
 import { logActivity } from '../bot-logs.js';
 
@@ -99,6 +100,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
       );
 
       await sessions.deleteOne({ _id: `verify:tkn:${tkn}` });
+      recordVerificationRedeemed().catch(() => {});
       await sendTelegramMessage(chatId, `✅ Verified!`);
 
       logActivity({
@@ -526,8 +528,9 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
         [{ text: toSmallCaps('Send Test Preview to Me'), callback_data: 'admin:broadcast_test' }],
         [
           { text: toSmallCaps('Confirm & Send to All'), callback_data: 'admin:broadcast_confirm' },
-          { text: toSmallCaps('Cancel'), callback_data: 'admin:broadcast_cancel_draft' }
-        ]
+          { text: toSmallCaps('📌 Send & Pin to All'), callback_data: 'admin:broadcast_confirm_pin' }
+        ],
+        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:broadcast_cancel_draft' }]
       ]
     });
     return;
@@ -550,33 +553,251 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
     return;
   }
 
-  if (/^\/ban\s+(\d+)/i.test(rawText) && admin) {
-    const targetId = rawText.match(/\/ban\s+(\d+)/i)[1];
-    await banUser(targetId);
-    await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been banned.`);
+  if (/^\/ban(\s+|$)/i.test(rawText) && admin) {
+    let targetArg = null;
+    let durationArg = null;
+    let reasonArg = null;
+
+    const parts = rawText.trim().split(/\s+/).slice(1);
+    const replyUser = message.reply_to_message?.from || message.reply_to_message?.forward_from;
+
+    if (replyUser && (!parts.length || (!/^\d+$/.test(parts[0]) && !parts[0].startsWith('@')))) {
+      targetArg = String(replyUser.id);
+      if (parts.length > 0) {
+        const potentialDuration = parseDurationString(parts[0]);
+        if (potentialDuration !== null) {
+          durationArg = potentialDuration;
+          if (parts.length > 1) reasonArg = parts.slice(1).join(' ');
+        } else {
+          reasonArg = parts.join(' ');
+        }
+      }
+    } else if (parts.length > 0) {
+      targetArg = parts[0];
+      if (parts.length > 1) {
+        const potentialDuration = parseDurationString(parts[1]);
+        if (potentialDuration !== null) {
+          durationArg = potentialDuration;
+          if (parts.length > 2) reasonArg = parts.slice(2).join(' ');
+        } else {
+          reasonArg = parts.slice(1).join(' ');
+        }
+      }
+    }
+
+    if (!targetArg) {
+      await sendTelegramMessage(chatId, `❌ <b>Usage:</b>\n• <code>/ban &lt;user_id|@username&gt; [duration] [reason]</code>\n• Reply to a message with <code>/ban [duration] [reason]</code>\n\nExample: <code>/ban @spammer 24h spamming</code>`);
+      return;
+    }
+
+    const targetId = await resolveUser(targetArg);
+    if (!targetId) {
+      await sendTelegramMessage(chatId, `❌ Could not resolve user <code>${esc(targetArg)}</code>.`);
+      return;
+    }
+
+    await banUser(targetId, durationArg, reasonArg, chatId);
+    const durLabel = durationArg ? formatDuration(durationArg) : 'Permanent';
+    let text = `✅ User <code>${targetId}</code> has been banned.\nDuration: <b>${durLabel}</b>`;
+    if (reasonArg) text += `\nReason: <code>${esc(reasonArg)}</code>`;
+
+    await sendTelegramMessage(chatId, text, {
+      inline_keyboard: [[{ text: `🔓 Unban`, callback_data: `admin:unban:${targetId}` }]]
+    });
     return;
   }
 
-  if (/^\/unban\s+(\d+)/i.test(rawText) && admin) {
-    const targetId = rawText.match(/\/unban\s+(\d+)/i)[1];
+  if (/^\/unban(\s+|$)/i.test(rawText) && admin) {
+    const parts = rawText.trim().split(/\s+/).slice(1);
+    const replyUser = message.reply_to_message?.from || message.reply_to_message?.forward_from;
+    let targetArg = null;
+
+    if (parts.length > 0) {
+      targetArg = parts[0];
+    } else if (replyUser) {
+      targetArg = String(replyUser.id);
+    }
+
+    if (!targetArg) {
+      await sendTelegramMessage(chatId, `❌ <b>Usage:</b>\n• <code>/unban &lt;user_id|@username&gt;</code>\n• Reply to a message with <code>/unban</code>`);
+      return;
+    }
+
+    const targetId = await resolveUser(targetArg);
+    if (!targetId) {
+      await sendTelegramMessage(chatId, `❌ Could not resolve user <code>${esc(targetArg)}</code>.`);
+      return;
+    }
+
     await unbanUser(targetId);
     await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been unbanned.`);
     return;
   }
 
   if (/^\/banlist/i.test(rawText) && admin) {
-    const list = await getBannedList();
+    const list = await getBannedUsers();
     if (!list.length) {
       await sendTelegramMessage(chatId, `No banned users.`);
       return;
     }
-    const maxShow = 50;
+    const maxShow = 15;
     const displayList = list.slice(0, maxShow);
-    let banText = `🚫 <b>Banned Users (${list.length}):</b>\n\n${displayList.map(id => `<code>${id}</code>`).join('\n')}`;
-    if (list.length > maxShow) {
-      banText += `\n\n<i>...and ${list.length - maxShow} more banned users.</i>`;
+    const now = Date.now();
+
+    let banText = `🚫 <b>Banned Users (${list.length}):</b>\n\n`;
+    const buttons = [];
+
+    for (const u of displayList) {
+      let expiryStr = 'Permanent';
+      if (u.bannedUntil) {
+        const remSec = Math.max(0, Math.round((new Date(u.bannedUntil).getTime() - now) / 1000));
+        expiryStr = remSec < 60 ? `${remSec}s left` : remSec < 3600 ? `${Math.round(remSec / 60)}m left` : `${Math.round(remSec / 3600)}h left`;
+      }
+      banText += `• <code>${u._id}</code> ${u.username ? `(@${esc(u.username)})` : ''}\n`;
+      banText += `  └ <i>${expiryStr}</i>${u.banReason ? ` • Reason: <code>${esc(u.banReason)}</code>` : ''}\n`;
+
+      buttons.push([{
+        text: `🔓 Unban ${u.username ? '@' + u.username : u._id}`,
+        callback_data: `admin:unban:${u._id}`
+      }]);
     }
-    await sendTelegramMessage(chatId, banText);
+
+    if (list.length > maxShow) {
+      banText += `\n<i>...and ${list.length - maxShow} more banned users.</i>`;
+    }
+
+    await sendTelegramMessage(chatId, banText, { inline_keyboard: buttons });
+    return;
+  }
+
+  if (/^\/user(\s+|$)/i.test(rawText) && admin) {
+    const parts = rawText.trim().split(/\s+/).slice(1);
+    const replyUser = message.reply_to_message?.from || message.reply_to_message?.forward_from;
+    const targetArg = parts[0] || (replyUser ? String(replyUser.id) : null);
+
+    if (!targetArg) {
+      await sendTelegramMessage(chatId, `❌ <b>Usage:</b>\n• <code>/user &lt;id|@username&gt;</code>\n• Reply to any user message with <code>/user</code>`);
+      return;
+    }
+
+    const profile = await getUserProfile(targetArg);
+    if (!profile) {
+      await sendTelegramMessage(chatId, `❌ User not found in database for <code>${esc(targetArg)}</code>.`);
+      return;
+    }
+
+    const profileText = `👤 <b>User Profile Inspection</b>\n\n` +
+      `• <b>User ID:</b> <code>${profile.userId}</code>\n` +
+      `• <b>Username:</b> ${profile.username}\n` +
+      `• <b>Name:</b> <b>${esc(profile.fullName)}</b>\n` +
+      `• <b>Joined At:</b> <code>${profile.joinedAt}</code>\n` +
+      `• <b>Last Seen:</b> <code>${profile.lastSeen}</code>\n` +
+      `• <b>Account Status:</b> <b>${profile.banStatus}</b>\n` +
+      `• <b>Premium:</b> <b>${profile.premiumStatus}</b>\n` +
+      `• <b>Referrals Count:</b> <b>${profile.referralCount}</b>\n` +
+      `• <b>Referred By:</b> <code>${profile.referrerId}</code>`;
+
+    const buttons = [];
+    if (profile.isBanned) {
+      buttons.push([{ text: `🔓 Unban User`, callback_data: `admin:unban:${profile.userId}` }]);
+    } else {
+      buttons.push([{ text: `🚫 Ban User`, callback_data: `admin:ban_prompt` }]);
+    }
+
+    await sendTelegramMessage(chatId, profileText, { inline_keyboard: buttons });
+    return;
+  }
+
+  if (/^\/toprefs/i.test(rawText)) {
+    const leaders = await getTopReferrers(10);
+    if (!leaders.length) {
+      await sendTelegramMessage(chatId, `🏆 <b>Referral Leaderboard</b>\n\nNo referral data available yet.`);
+      return;
+    }
+
+    let text = `🏆 <b>Viral Referral Leaderboard (Top 10)</b>\n\n`;
+    const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+
+    leaders.forEach((u, idx) => {
+      const medal = medals[idx] || `${idx + 1}.`;
+      const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || (u.username ? `@${u.username}` : `User ${u._id}`);
+      text += `${medal} <b>${esc(name)}</b> — <b>${u.referralCount || 0}</b> referrals\n`;
+      text += `   └ ID: <code>${u._id}</code>\n`;
+    });
+
+    text += `\n<i>Share your referral link using /me to climb the leaderboard!</i>`;
+    await sendTelegramMessage(chatId, text);
+    return;
+  }
+
+  if (/^\/delete\s+(\S+)/i.test(rawText) && admin) {
+    const code = rawText.match(/^\/delete\s+(\S+)/i)[1].trim();
+    const delRes = await deleteStoredRecord(code);
+    if (!delRes.ok) {
+      await sendTelegramMessage(chatId, `❌ Record <code>${esc(code)}</code> not found or could not be deleted.`);
+      return;
+    }
+    await sendTelegramMessage(chatId, `🗑 <b>Record Deleted Successfully!</b>\n\n• Code: <code>${esc(delRes.code)}</code>\n• Type: <b>${delRes.type}</b>\n• Title: <b>${esc(delRes.title)}</b>\n\n<i>Database record and channel messages have been purged.</i>`);
+    return;
+  }
+
+  if (/^\/(editfile|rename)\s+(\S+)\s+(.+)/i.test(rawText) && admin) {
+    const match = rawText.match(/^\/(editfile|rename)\s+(\S+)\s+(.+)/i);
+    const code = match[2].trim();
+    const newTitle = match[3].trim();
+
+    const editRes = await updateStoredRecordTitle(code, newTitle);
+    if (!editRes.ok) {
+      await sendTelegramMessage(chatId, `❌ Record <code>${esc(code)}</code> not found or update failed.`);
+      return;
+    }
+    await sendTelegramMessage(chatId, `✏️ <b>Record Title Updated!</b>\n\n• Code: <code>${esc(editRes.code)}</code>\n• Type: <b>${editRes.type}</b>\n• Old Title: <s>${esc(editRes.oldTitle)}</s>\n• New Title: <b>${esc(editRes.newTitle)}</b>`);
+    return;
+  }
+
+  if (/^\/checkchannels/i.test(rawText) && admin) {
+    const statusMsg = await sendTelegramMessage(chatId, `🔍 <i>Running diagnostic health check on all channels...</i>`);
+    const diag = await checkChannelsHealth();
+
+    if (statusMsg?.ok && statusMsg?.messageId) {
+      await deleteTelegramMessage(chatId, statusMsg.messageId).catch(() => {});
+    }
+
+    let report = `📡 <b>Channel Health Diagnostics</b>\n\n`;
+
+    report += `📦 <b>Storage Channels:</b>\n`;
+    if (diag.db.primary) {
+      const icon = diag.db.primary.isOk ? '🟢' : '🔴';
+      report += `${icon} <b>Primary DB:</b> <code>${diag.db.primary.id}</code> (${esc(diag.db.primary.title)})\n`;
+      if (!diag.db.primary.isOk) report += `   └ ⚠️ <i>${esc(diag.db.primary.error || 'Error')}</i>\n`;
+    } else {
+      report += `⚪ <b>Primary DB:</b> <i>Not configured</i>\n`;
+    }
+
+    if (diag.db.backup) {
+      const icon = diag.db.backup.isOk ? '🟢' : '🔴';
+      report += `${icon} <b>Backup DB:</b> <code>${diag.db.backup.id}</code> (${esc(diag.db.backup.title)})\n`;
+      if (!diag.db.backup.isOk) report += `   └ ⚠️ <i>${esc(diag.db.backup.error || 'Error')}</i>\n`;
+    } else {
+      report += `⚪ <b>Backup DB:</b> <i>Not configured</i>\n`;
+    }
+
+    report += `\n📢 <b>Force-Subscribe Channels (${diag.fsub.length}):</b>\n`;
+    if (!diag.fsub.length) {
+      report += `<i>No force-subscribe channels configured.</i>\n`;
+    } else {
+      for (const f of diag.fsub) {
+        const icon = f.isOk ? '🟢' : '🔴';
+        report += `${icon} <b>${esc(f.title)}</b> (<code>${f.id}</code>) [${f.mode}]\n`;
+        if (!f.isOk) report += `   └ ⚠️ <i>${esc(f.error || 'Error')}</i>\n`;
+      }
+    }
+
+    await sendTelegramMessage(chatId, report, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Open Settings'), callback_data: 'admin:fs_settings' }]
+      ]
+    });
     return;
   }
 

@@ -166,6 +166,29 @@ class InMemoryCollection {
     return { matchedCount: 1, modifiedCount: 1, upsertedId: target._id };
   }
 
+  async updateMany(filter, update, options = {}) {
+    let count = 0;
+    for (const doc of this.docs.values()) {
+      if (this._matches(doc, filter)) {
+        if (update.$set) {
+          Object.assign(doc, update.$set);
+        }
+        if (update.$inc) {
+          for (const [k, v] of Object.entries(update.$inc)) {
+            doc[k] = (doc[k] || 0) + v;
+          }
+        }
+        if (update.$unset) {
+          for (const k of Object.keys(update.$unset)) {
+            delete doc[k];
+          }
+        }
+        count++;
+      }
+    }
+    return { matchedCount: count, modifiedCount: count };
+  }
+
   async findOneAndUpdate(filter, update, options = {}) {
     let target = null;
     for (const doc of this.docs.values()) {
@@ -1032,6 +1055,43 @@ export async function createChatInviteLink(chatId, createsJoinRequest = false) {
     return { ok: false, error_code: 500, description: err.message };
   }
 }
+
+export async function pinTelegramMessage(chatId, messageId, disableNotification = false) {
+  const token = getToken();
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/pinChatMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        disable_notification: disableNotification,
+      }),
+    });
+    return await res.json();
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+export async function unpinTelegramMessage(chatId, messageId = null) {
+  const token = getToken();
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const body = { chat_id: chatId };
+    if (messageId) body.message_id = messageId;
+    const res = await fetch(`https://api.telegram.org/bot${token}/unpinChatMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return await res.json();
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
 
 export async function logHistory(event, method) {
   const coll = await getCollection('history');

@@ -890,28 +890,110 @@ async function requestShortenerUrl(serviceUrl, apiKey, targetUrl) {
 export async function getShortenedLink(targetUrl, botId = null) {
   const s = await getSettings();
 
-  // 1. Try Primary Shortener
-  if (s?.shortenerUrl && s?.shortenerKey) {
-    const primaryShort = await requestShortenerUrl(s.shortenerUrl, s.shortenerKey, targetUrl);
-    if (primaryShort) return primaryShort;
-    log('warn', 'Primary shortener failed — attempting backup shortener if configured');
-  }
+  const hasPrimary = !!(s?.shortenerUrl && s?.shortenerKey);
+  const hasBackup = !!(s?.backupShortenerUrl && s?.backupShortenerKey);
+  const mode = s?.shortenerMode || 'failover'; // 'failover' | 'split'
+  const primaryRatio = s?.shortenerRatio !== undefined && s?.shortenerRatio !== '' ? parseInt(s.shortenerRatio, 10) : 50;
 
-  // 2. Try Backup Shortener if configured
-  if (s?.backupShortenerUrl && s?.backupShortenerKey) {
-    const backupShort = await requestShortenerUrl(s.backupShortenerUrl, s.backupShortenerKey, targetUrl);
-    if (backupShort) {
-      log('info', 'Successfully shortened link via backup shortener');
-      return backupShort;
+  // 1. Smart Traffic Splitting (if both configured and mode is split)
+  if (hasPrimary && hasBackup && mode === 'split') {
+    const pickPrimary = (Math.random() * 100) < primaryRatio;
+    const firstUrl = pickPrimary ? s.shortenerUrl : s.backupShortenerUrl;
+    const firstKey = pickPrimary ? s.shortenerKey : s.backupShortenerKey;
+    const secondUrl = pickPrimary ? s.backupShortenerUrl : s.shortenerUrl;
+    const secondKey = pickPrimary ? s.backupShortenerKey : s.shortenerKey;
+    const firstName = pickPrimary ? 'primary' : 'backup';
+    const secondName = pickPrimary ? 'backup' : 'primary';
+
+    const short1 = await requestShortenerUrl(firstUrl, firstKey, targetUrl);
+    if (short1) return short1;
+
+    log('warn', `Split shortener (${firstName}) failed — failing over to ${secondName}`);
+    const short2 = await requestShortenerUrl(secondUrl, secondKey, targetUrl);
+    if (short2) return short2;
+  } else {
+    // 2. Standard Failover Order
+    if (hasPrimary) {
+      const primaryShort = await requestShortenerUrl(s.shortenerUrl, s.shortenerKey, targetUrl);
+      if (primaryShort) return primaryShort;
+      log('warn', 'Primary shortener failed — attempting backup shortener if configured');
+    }
+
+    if (hasBackup) {
+      const backupShort = await requestShortenerUrl(s.backupShortenerUrl, s.backupShortenerKey, targetUrl);
+      if (backupShort) {
+        log('info', 'Successfully shortened link via backup shortener');
+        return backupShort;
+      }
     }
   }
 
   log('error', 'getShortenedLink: all configured shorteners failed or not configured', {
-    hasPrimary: !!(s?.shortenerUrl && s?.shortenerKey),
-    hasBackup: !!(s?.backupShortenerUrl && s?.backupShortenerKey),
+    hasPrimary,
+    hasBackup,
+    mode,
   });
   return null;
 }
+
+// ─── Verification Analytics ───────────────────────────────────────────────────
+
+export async function recordVerificationMinted() {
+  try {
+    const statsCol = await getCollection('stats');
+    await statsCol.updateOne(
+      { _id: 'verification_stats' },
+      {
+        $inc: { minted: 1 },
+        $set: { lastMintedAt: new Date() }
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    log('warn', 'Failed to record verification mint', { errorMessage: err.message });
+  }
+}
+
+export async function recordVerificationRedeemed() {
+  try {
+    const statsCol = await getCollection('stats');
+    await statsCol.updateOne(
+      { _id: 'verification_stats' },
+      {
+        $inc: { verified: 1 },
+        $set: { lastVerifiedAt: new Date() }
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    log('warn', 'Failed to record verification redeem', { errorMessage: err.message });
+  }
+}
+
+export async function getVerificationStats() {
+  try {
+    const statsCol = await getCollection('stats');
+    const doc = await statsCol.findOne({ _id: 'verification_stats' });
+    const minted = doc?.minted || 0;
+    const verified = doc?.verified || 0;
+    const dropOff = Math.max(0, minted - verified);
+    const conversionRate = minted > 0 ? ((verified / minted) * 100).toFixed(1) : '0.0';
+    const dropOffRate = minted > 0 ? ((dropOff / minted) * 100).toFixed(1) : '0.0';
+    return {
+      minted,
+      verified,
+      dropOff,
+      conversionRate,
+      dropOffRate,
+      lastMintedAt: doc?.lastMintedAt || null,
+      lastVerifiedAt: doc?.lastVerifiedAt || null,
+    };
+  } catch (err) {
+    log('error', 'getVerificationStats failed', { errorMessage: err.message });
+    return { minted: 0, verified: 0, dropOff: 0, conversionRate: '0.0', dropOffRate: '0.0', lastMintedAt: null, lastVerifiedAt: null };
+  }
+}
+
 
 // ─── Time-Limited Access Tokens ───────────────────────────────────────────────
 
@@ -1188,3 +1270,98 @@ export async function listActiveTempTokens(createdBy = null, limit = 20) {
   const result = await tempTokens.find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
   return result;
 }
+
+// ─── File & Stored Record Admin Operations ────────────────────────────────────
+
+export async function deleteStoredRecord(code) {
+  const cleanCode = String(code || '').trim();
+  if (!cleanCode) return { ok: false, reason: 'missing_code' };
+
+  const files = await getCollection('files');
+  const record = await files.findOne({ _id: cleanCode });
+  if (!record) return { ok: false, reason: 'not_found' };
+
+  // Attempt to delete message(s) from DB channels
+  const { deleteTelegramMessages, deleteTelegramMessage } = await import('./bot-common.js');
+  try {
+    if (record.type === 'batch') {
+      if (record.dbChannelId && Array.isArray(record.dbMessageIds) && record.dbMessageIds.length) {
+        await deleteTelegramMessages(record.dbChannelId, record.dbMessageIds).catch(() => {});
+      }
+      if (record.backupDbChannelId && Array.isArray(record.backupDbMessageIds) && record.backupDbMessageIds.length) {
+        await deleteTelegramMessages(record.backupDbChannelId, record.backupDbMessageIds).catch(() => {});
+      }
+    } else if (record.type === 'bundle') {
+      if (Array.isArray(record.qualities)) {
+        const primaryIds = record.qualities.map(q => q.dbMessageId).filter(Boolean);
+        const backupIds = record.qualities.map(q => q.backupDbMessageId).filter(Boolean);
+        if (record.dbChannelId && primaryIds.length) {
+          await deleteTelegramMessages(record.dbChannelId, primaryIds).catch(() => {});
+        }
+        if (record.backupDbChannelId && backupIds.length) {
+          await deleteTelegramMessages(record.backupDbChannelId, backupIds).catch(() => {});
+        }
+      }
+    } else {
+      // Single file
+      if (record.dbChannelId && record.dbMessageId) {
+        await deleteTelegramMessage(record.dbChannelId, record.dbMessageId).catch(() => {});
+      }
+      if (record.backupDbChannelId && record.backupDbMessageId) {
+        await deleteTelegramMessage(record.backupDbChannelId, record.backupDbMessageId).catch(() => {});
+      }
+    }
+  } catch (err) {
+    log('warn', 'Failed to remove Telegram DB channel messages for deleted record', { code: cleanCode, error: err.message });
+  }
+
+  await files.deleteOne({ _id: cleanCode });
+
+  // Clean up any session locks or temp tokens referencing this code
+  const sessions = await getCollection('sessions');
+  await sessions.deleteMany({ _id: { $regex: cleanCode } }).catch(() => {});
+
+  const tempTokens = await getCollection('temp_tokens');
+  await tempTokens.deleteMany({ targetCode: cleanCode }).catch(() => {});
+
+  logActivity({
+    eventType: 'file_delete',
+    targetCode: cleanCode,
+    targetType: record.type || 'file',
+    details: `Deleted ${record.type || 'file'} ${cleanCode} (${record.title || record.fileName || 'No Title'})`,
+  }).catch(() => {});
+
+  return { ok: true, code: cleanCode, type: record.type || 'file', title: record.title || record.fileName || cleanCode };
+}
+
+export async function updateStoredRecordTitle(code, newTitle) {
+  const cleanCode = String(code || '').trim();
+  const cleanTitle = String(newTitle || '').trim();
+  if (!cleanCode || !cleanTitle) return { ok: false, reason: 'missing_args' };
+
+  const files = await getCollection('files');
+  const record = await files.findOne({ _id: cleanCode });
+  if (!record) return { ok: false, reason: 'not_found' };
+
+  const oldTitle = record.title || record.fileName || cleanCode;
+  await files.updateOne(
+    { _id: cleanCode },
+    {
+      $set: {
+        title: cleanTitle,
+        customTitle: cleanTitle,
+        updatedAt: new Date().toISOString()
+      }
+    }
+  );
+
+  logActivity({
+    eventType: 'file_edit',
+    targetCode: cleanCode,
+    targetType: record.type || 'file',
+    details: `Renamed ${cleanCode} from "${oldTitle}" to "${cleanTitle}"`,
+  }).catch(() => {});
+
+  return { ok: true, code: cleanCode, type: record.type || 'file', oldTitle, newTitle: cleanTitle };
+}
+

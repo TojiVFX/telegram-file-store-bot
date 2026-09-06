@@ -597,7 +597,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     else if (['sponsorBtnText', 'sponsorBtnUrl'].includes(waitingFor)) backCb = 'admin:sponsor_mgmt';
     else if (['startText'].includes(waitingFor)) backCb = 'admin:fs_cfg:start';
     else if (['forceSubscribeChannels', 'forceSubscribeMsg'].includes(waitingFor)) backCb = 'admin:fs_cfg:fsub';
-    else if (['shortenerUrl', 'shortenerKey', 'backupShortenerUrl', 'backupShortenerKey', 'validityHours', 'tutorialFileId'].includes(waitingFor)) backCb = 'admin:fs_cfg:tkn';
+    else if (['shortenerUrl', 'shortenerKey', 'backupShortenerUrl', 'backupShortenerKey', 'validityHours', 'tutorialFileId', 'shortenerRatio'].includes(waitingFor)) backCb = 'admin:fs_cfg:tkn';
 
     await sendTelegramMessage(chatId, `✅ Updated <b>${waitingFor}</b>!`, {
       inline_keyboard: [[{ text: toSmallCaps('Back to Settings'), callback_data: backCb }]]
@@ -756,8 +756,9 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           [{ text: toSmallCaps('Send Test Preview to Me'), callback_data: 'admin:broadcast_test' }],
           [
             { text: toSmallCaps('Confirm & Send to All'), callback_data: 'admin:broadcast_confirm' },
-            { text: toSmallCaps('Cancel'), callback_data: 'admin:broadcast_cancel_draft' }
-          ]
+            { text: toSmallCaps('📌 Send & Pin to All'), callback_data: 'admin:broadcast_confirm_pin' }
+          ],
+          [{ text: toSmallCaps('Cancel'), callback_data: 'admin:broadcast_cancel_draft' }]
         ]
       });
 
@@ -765,31 +766,62 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     }
 
     if (waitingAction === 'ban') {
-      const targetId = rawText.match(/(\d+)/)?.[1];
+      const parts = rawText.trim().split(/\s+/);
+      const targetArg = parts[0];
+      const targetId = await resolveUser(targetArg);
       if (!targetId) {
-        await sendTelegramMessage(chatId, `❌ Invalid User ID.`);
+        await sendTelegramMessage(chatId, `❌ Invalid user or username: <code>${esc(targetArg)}</code>`);
         return true;
       }
+
+      const { parseDurationString, formatDuration } = await import('../filestore.js');
+      let durationSeconds = null;
+      let reason = null;
+
+      if (parts.length > 1) {
+        const potentialDuration = parseDurationString(parts[1]);
+        if (potentialDuration !== null) {
+          durationSeconds = potentialDuration;
+          if (parts.length > 2) {
+            reason = parts.slice(2).join(' ');
+          }
+        } else {
+          reason = parts.slice(1).join(' ');
+        }
+      }
+
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
-      await banUser(targetId);
+      await banUser(targetId, durationSeconds, reason, chatId);
       logHistory(`banned_tg: ${targetId}`, 'tg').catch(() => {});
-      await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been banned.`, {
-        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
+
+      let confirmText = `✅ User <code>${targetId}</code> has been banned.`;
+      if (durationSeconds) {
+        confirmText += `\nDuration: <b>${formatDuration(durationSeconds)}</b>`;
+      } else {
+        confirmText += `\nDuration: <b>Permanent</b>`;
+      }
+      if (reason) {
+        confirmText += `\nReason: <code>${esc(reason)}</code>`;
+      }
+
+      await sendTelegramMessage(chatId, confirmText, {
+        inline_keyboard: [[{ text: toSmallCaps('Back to User Mgmt'), callback_data: 'admin:user_mgmt' }]]
       });
       return true;
     }
 
     if (waitingAction === 'unban') {
-      const targetId = rawText.match(/(\d+)/)?.[1];
+      const targetArg = rawText.trim().split(/\s+/)[0];
+      const targetId = await resolveUser(targetArg);
       if (!targetId) {
-        await sendTelegramMessage(chatId, `❌ Invalid User ID.`);
+        await sendTelegramMessage(chatId, `❌ Invalid user or username: <code>${esc(targetArg)}</code>`);
         return true;
       }
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
       await unbanUser(targetId);
       logHistory(`unbanned_tg: ${targetId}`, 'tg').catch(() => {});
       await sendTelegramMessage(chatId, `✅ User <code>${targetId}</code> has been unbanned.`, {
-        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
+        inline_keyboard: [[{ text: toSmallCaps('Back to User Mgmt'), callback_data: 'admin:user_mgmt' }]]
       });
       return true;
     }

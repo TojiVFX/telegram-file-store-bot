@@ -543,9 +543,7 @@ export async function checkSubscription(chatId, userId) {
     const channels = getForceSubChannelsList(s?.forceSubscribeChannels, globalMode);
     if (!channels.length) return { ok: true };
 
-    const notJoined = [];
-
-    for (const chan of channels) {
+    const results = await Promise.all(channels.map(async (chan) => {
       const cid = chan.id;
       const mode = chan.mode || globalMode || 'normal';
       try {
@@ -563,7 +561,7 @@ export async function checkSubscription(chatId, userId) {
             const pendingKey = `fsub:pending:${cid}:${userId}`;
             const pendingDoc = await sessions.findOne({ _id: pendingKey });
             const pending = pendingDoc && pendingDoc.expiresAt > new Date() ? pendingDoc.val : null;
-            if (pending === '1') continue;
+            if (pending === '1') return null;
           }
 
           const chatRes = await getChat(cid);
@@ -589,23 +587,114 @@ export async function checkSubscription(chatId, userId) {
             }
           }
 
-          notJoined.push({
+          return {
             id: cid,
             title: title,
+            buttonLabel: chan.buttonLabel || chan.label || null,
             inviteLink: inviteLink
-          });
+          };
         }
+        return null;
       } catch (err) {
         log('error', 'checkSubscription error', { cid, userId, errorMessage: err.message });
+        return null;
       }
-    }
+    }));
 
+    const notJoined = results.filter(Boolean);
     if (notJoined.length > 0) {
       return { ok: false, notJoined };
     }
     return { ok: true };
   });
 }
+
+export async function checkChannelsHealth() {
+  return botContext.run({ token: getMainToken() }, async () => {
+    const s = await getSettings();
+    const globalMode = s?.forceSubscribeMode || 'normal';
+    const channels = getForceSubChannelsList(s?.forceSubscribeChannels, globalMode);
+    const primaryDb = await getDbChannelId();
+    const backupDb = await getBackupDbChannelId();
+
+    const results = {
+      fsub: [],
+      db: {
+        primary: null,
+        backup: null,
+      }
+    };
+
+    // 1. Check Force Subscribe Channels concurrently
+    if (channels.length > 0) {
+      results.fsub = await Promise.all(channels.map(async (c) => {
+        try {
+          const chatRes = await getChat(c.id);
+          const adminRes = await isBotAdmin(c.id);
+          const title = c.title && c.title !== c.id ? c.title : (chatRes.ok ? chatRes.result?.title : c.id);
+          return {
+            id: c.id,
+            title,
+            mode: c.mode || globalMode,
+            isOk: chatRes.ok && adminRes,
+            accessible: chatRes.ok,
+            isAdmin: adminRes,
+            error: !chatRes.ok ? (chatRes.description || chatRes.reason || 'Cannot access channel') : (!adminRes ? 'Bot is not an admin' : null),
+          };
+        } catch (err) {
+          return {
+            id: c.id,
+            title: c.title || c.id,
+            mode: c.mode || globalMode,
+            isOk: false,
+            accessible: false,
+            isAdmin: false,
+            error: err.message,
+          };
+        }
+      }));
+    }
+
+    // 2. Check Primary DB Channel
+    if (primaryDb) {
+      try {
+        const chatRes = await getChat(primaryDb);
+        const adminRes = await isBotAdmin(primaryDb);
+        results.db.primary = {
+          id: primaryDb,
+          title: chatRes.ok ? chatRes.result?.title : 'Primary DB Channel',
+          isOk: chatRes.ok && adminRes,
+          accessible: chatRes.ok,
+          isAdmin: adminRes,
+          error: !chatRes.ok ? (chatRes.description || chatRes.reason || 'Inaccessible') : (!adminRes ? 'Bot is not an admin' : null),
+        };
+      } catch (err) {
+        results.db.primary = { id: primaryDb, title: 'Primary DB Channel', isOk: false, error: err.message };
+      }
+    }
+
+    // 3. Check Backup DB Channel
+    if (backupDb) {
+      try {
+        const chatRes = await getChat(backupDb);
+        const adminRes = await isBotAdmin(backupDb);
+        results.db.backup = {
+          id: backupDb,
+          title: chatRes.ok ? chatRes.result?.title : 'Backup DB Channel',
+          isOk: chatRes.ok && adminRes,
+          accessible: chatRes.ok,
+          isAdmin: adminRes,
+          error: !chatRes.ok ? (chatRes.description || chatRes.reason || 'Inaccessible') : (!adminRes ? 'Bot is not an admin' : null),
+        };
+      } catch (err) {
+        results.db.backup = { id: backupDb, title: 'Backup DB Channel', isOk: false, error: err.message };
+      }
+    }
+
+    return results;
+  });
+}
+
 
 // ─── Loading animation ──────────────────────────────────────────────────────────
 // Shared "Files are loading..." progress bar used by both batch delivery and
@@ -1085,9 +1174,14 @@ export async function setMyCommands() {
         { command: 'bundle',     description: toSmallCaps('Create multi-quality bundle') },
         { command: 'store',      description: toSmallCaps('Store a single file') },
         { command: 'bulkstore',  description: toSmallCaps('Bulk store files with link export') },
-        { command: 'ban',        description: toSmallCaps('Ban a user by chat ID') },
-        { command: 'unban',      description: toSmallCaps('Unban a user by chat ID') },
-        { command: 'banlist',    description: toSmallCaps('List all banned users') },
+        { command: 'ban',        description: toSmallCaps('Ban a user by chat ID or @username') },
+        { command: 'unban',      description: toSmallCaps('Unban a user by chat ID or @username') },
+        { command: 'banlist',    description: toSmallCaps('List all banned users with 1-click unban') },
+        { command: 'user',       description: toSmallCaps('Inspect user profile & moderation status') },
+        { command: 'toprefs',    description: toSmallCaps('Referral leaderboard') },
+        { command: 'delete',     description: toSmallCaps('Delete stored file, batch, or bundle') },
+        { command: 'editfile',   description: toSmallCaps('Rename title of stored record') },
+        { command: 'checkchannels', description: toSmallCaps('Channel health diagnostic check') },
         { command: 'adminhelp',  description: toSmallCaps('Admin command reference') },
       ];
       for (const aId of adminIds) {
