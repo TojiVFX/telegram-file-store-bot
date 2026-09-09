@@ -4,6 +4,7 @@ import { getCollection, getSettings, sendTelegramMessage, esc } from './bot-comm
 // ─── Event Icons & Labels ─────────────────────────────────────────────────────
 export const EVENT_META = {
   file_store:           { icon: '📁', label: 'File Upload' },
+  file_deduplicated:    { icon: '⚡', label: 'File Deduplicated' },
   batch_create:         { icon: '📦', label: 'Batch Created' },
   bundle_create:        { icon: '🎛️', label: 'Bundle Created' },
   temp_token_create:    { icon: '⏳', label: 'Token Generated' },
@@ -33,6 +34,7 @@ export const CHANNEL_BROADCAST_EVENTS = new Set([
   'new_user_joined',       // Brand new user joined the bot
   'user_blocked_bot',     // User stopped or blocked the bot
   'file_store',           // Admin uploaded/stored a new file
+  'file_deduplicated',    // Admin uploaded a file that was deduplicated
   'batch_create',         // Admin created a batch
   'bundle_create',        // Admin created a multi-quality bundle
   'token_verify_success', // User solved shortener verification
@@ -126,7 +128,7 @@ export async function getActivityLogs(options = {}) {
 
   if (eventType && eventType !== 'all') {
     if (eventType === 'uploads') {
-      filter.eventType = { $in: ['file_store', 'batch_create'] };
+      filter.eventType = { $in: ['file_store', 'batch_create', 'file_deduplicated'] };
     } else if (eventType === 'tokens') {
       filter.eventType = { $in: ['temp_token_create', 'temp_token_access', 'temp_token_revoke'] };
     } else if (eventType === 'access') {

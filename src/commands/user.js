@@ -1002,7 +1002,8 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
       `• Uptime: <b>${uptime}</b>\n` +
       `• Memory: <b>${memUsedMB} MB</b> (RSS: ${rssMB} MB)\n` +
       `• Node: <b>${process.version}</b>\n` +
-      `• Platform: <b>${process.platform} ${process.arch}</b>`;
+      `• Platform: <b>${process.platform} ${process.arch}</b>\n` +
+      `• Bot API: <b>v8.0+ (Telegram 10.3+)</b>`;
 
     if (statusMsg.ok) {
       await editTelegramMessage(chatId, statusMsg.messageId, text);
@@ -1085,7 +1086,8 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
         `• Memory: <b>${memUsedMB} / ${memTotalMB} MB</b> (RSS: ${rssMB} MB)\n` +
         `• DB Status: ${dbIcon} <b>${dbLabel}</b>\n` +
         `• Node: <b>${process.version}</b>\n` +
-        `• Platform: <b>${process.platform} ${process.arch}</b>`;
+        `• Platform: <b>${process.platform} ${process.arch}</b>\n` +
+        `• Bot API: <b>v8.0+ (Telegram 10.3+)</b>`;
 
       await editTelegramMessage(chatId, msg.messageId, text);
     }

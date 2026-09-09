@@ -44,6 +44,7 @@ export async function storeFile(fileCode, dataObj, uploader = {}) {
       type: dataObj.type || 'media',
       dbChannelId: dataObj.dbChannelId,
       dbMessageId: dataObj.dbMessageId,
+      fileUniqueId: dataObj.fileUniqueId,
     }
   }).catch(() => {});
 }
@@ -51,6 +52,26 @@ export async function storeFile(fileCode, dataObj, uploader = {}) {
 export async function getFile(fileCode) {
   const files = await getCollection('files');
   return await files.findOne({ _id: fileCode });
+}
+
+export async function findFileByUniqueId(fileUniqueId) {
+  if (!fileUniqueId) return null;
+  const files = await getCollection('files');
+  return await files.findOne({ fileUniqueId, type: { $ne: 'batch' } });
+}
+
+export function extractMediaUniqueId(message) {
+  if (!message) return null;
+  if (message.document?.file_unique_id) return message.document.file_unique_id;
+  if (message.video?.file_unique_id) return message.video.file_unique_id;
+  if (message.audio?.file_unique_id) return message.audio.file_unique_id;
+  if (Array.isArray(message.photo) && message.photo.length > 0) {
+    return message.photo[message.photo.length - 1].file_unique_id;
+  }
+  if (message.voice?.file_unique_id) return message.voice.file_unique_id;
+  if (message.video_note?.file_unique_id) return message.video_note.file_unique_id;
+  if (message.animation?.file_unique_id) return message.animation.file_unique_id;
+  return null;
 }
 
 export async function setAdminWaitingForFile(chatId) {
@@ -409,7 +430,7 @@ export async function addToStoreSession(chatId, code) {
   const key = `admin:store:session:${chatId}`;
   await sessions.updateOne(
     { _id: key },
-    { $push: { codes: code }, $set: { expiresAt: new Date(Date.now() + 1800 * 1000) } },
+    { $addToSet: { codes: code }, $set: { expiresAt: new Date(Date.now() + 1800 * 1000) } },
     { upsert: true }
   );
   const doc = await sessions.findOne({ _id: key });

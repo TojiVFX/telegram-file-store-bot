@@ -83,6 +83,17 @@ class InMemoryCollection {
     return true;
   }
 
+  _clone(obj) {
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (obj instanceof Date) return new Date(obj.getTime());
+    if (Array.isArray(obj)) return obj.map(item => this._clone(item));
+    const copy = {};
+    for (const [k, v] of Object.entries(obj)) {
+      copy[k] = this._clone(v);
+    }
+    return copy;
+  }
+
   async createIndex() {
     return 'ok';
   }
@@ -90,7 +101,7 @@ class InMemoryCollection {
   async findOne(filter) {
     for (const doc of this.docs.values()) {
       if (this._matches(doc, filter)) {
-        return JSON.parse(JSON.stringify(doc));
+        return this._clone(doc);
       }
     }
     return null;
@@ -100,7 +111,7 @@ class InMemoryCollection {
     let matched = [];
     for (const doc of this.docs.values()) {
       if (this._matches(doc, filter)) {
-        matched.push(JSON.parse(JSON.stringify(doc)));
+        matched.push(this._clone(doc));
       }
     }
     const createCursor = (docs) => {
@@ -162,6 +173,14 @@ class InMemoryCollection {
         target[k].push(v);
       }
     }
+    if (update.$addToSet) {
+      for (const [k, v] of Object.entries(update.$addToSet)) {
+        if (!Array.isArray(target[k])) target[k] = [];
+        if (!target[k].includes(v)) {
+          target[k].push(v);
+        }
+      }
+    }
 
     return { matchedCount: 1, modifiedCount: 1, upsertedId: target._id };
   }
@@ -211,14 +230,14 @@ class InMemoryCollection {
       Object.assign(target, update.$set);
     }
 
-    return JSON.parse(JSON.stringify(target));
+    return this._clone(target);
   }
 
   async findOneAndDelete(filter) {
     for (const [id, doc] of this.docs.entries()) {
       if (this._matches(doc, filter)) {
         this.docs.delete(id);
-        return JSON.parse(JSON.stringify(doc));
+        return this._clone(doc);
       }
     }
     return null;
@@ -386,6 +405,8 @@ export async function getDb() {
         .catch(err => console.error('Error creating files type index:', err.message));
       database.collection('files').createIndex({ backupDbChannelId: 1 })
         .catch(err => console.error('Error creating files backupDbChannelId index:', err.message));
+      database.collection('files').createIndex({ fileUniqueId: 1 }, { sparse: true })
+        .catch(err => console.error('Error creating files fileUniqueId index:', err.message));
 
       db = database;
       isUsingMockDb = false;

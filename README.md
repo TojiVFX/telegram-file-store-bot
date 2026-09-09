@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/Node.js-v18+-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" />
   <img src="https://img.shields.io/badge/MongoDB-Atlas_/_Local-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB" />
   <img src="https://img.shields.io/badge/Express-4.21.2-000000?style=for-the-badge&logo=express&logoColor=white" alt="Express" />
-  <img src="https://img.shields.io/badge/Telegram_Bot_API-v7.0+-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram" />
+  <img src="https://img.shields.io/badge/Telegram-v10.3+_%7C_Bot_API_v8.0+-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram" />
   <img src="https://img.shields.io/badge/Security-Fail--Closed_&_CSPRNG-red?style=for-the-badge&logo=shield&logoColor=white" alt="Security" />
 </p>
 
@@ -55,6 +55,8 @@ Engineered for ultra-low latency, multi-bot concurrency, rock-solid security, an
 - 📢 **Force-Subscribe System**: Multi-channel support with both **Normal Membership** and **Join Request Mode**.
 - 📊 **Rich Analytics & Traffic Dashboards**: Download activity charts, top 10 files, daily link audits, and real-time system health checks.
 - 📝 **Bulk Store & Link Exports**: Forward multiple files and export links as 1-tap copyable blocks and `.txt` documents.
+- ♻️ **File Deduplication (Smart Hash Check)**: Automatically detects identical file uploads via Telegram's `file_unique_id` fingerprint, reusing existing database records and eliminating redundant storage copies.
+- 💬 **Modern Telegram Formatting**: Native support for Telegram 10.3+ and Bot API 8.0+ features, including expandable blockquotes (`<blockquote expandable>`), dynamic small-caps typography with full-size digits, and compact interactive cards.
 
 ---
 
@@ -118,6 +120,7 @@ Engineered for ultra-low latency, multi-bot concurrency, rock-solid security, an
 - Forward or send any media file (Document, Video, Audio, Photo) directly to the bot.
 - Generates a permanent link: `https://t.me/<bot_username>?start=file_<code_id>`
 - Automatically copies the file into your private database channel and records metadata (size, title, mime-type).
+- **Smart Deduplication**: Automatically checks incoming files against Telegram's permanent `file_unique_id`. If identical media was previously stored, the bot instantly reuses the existing storage record and link without creating duplicate posts in the database channel.
 
 ### 2. Batch Storage (Collector & Range)
 - **Range Mode**: Provide the first and last message links from your DB channel (e.g. `https://t.me/c/123/101 https://t.me/c/123/110`) to bundle up to 500 files at once.

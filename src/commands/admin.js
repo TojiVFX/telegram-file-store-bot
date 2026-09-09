@@ -10,10 +10,11 @@ import {
   getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
   isBulkStoreActive, setBulkStoreActive, addToStoreSession, getStoreSession, clearStoreSession, generateLinksExportText, generateRawLinksText,
   generateBundleCode, storeBundle, getBundleSession, setBundleSession, addQualityToBundle, clearBundleSession, detectMediaQuality, formatBytes,
-  cleanMediaFileName, extractMediaTitle, sortQualities
+  cleanMediaFileName, extractMediaTitle, sortQualities, extractMediaUniqueId, findFileByUniqueId
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral } from '../bot-users.js';
+import { logActivity } from '../bot-logs.js';
 
 export async function processAdminMessage(chatId, rawText, message, req) {
   const sessions = await getCollection('sessions');
@@ -72,6 +73,47 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       }
 
       let type = message.document ? 'document' : message.video ? 'video' : message.audio ? 'audio' : message.photo ? 'photo' : 'file';
+
+      const fileUniqueId = extractMediaUniqueId(message);
+      if (fileUniqueId) {
+        const existing = await findFileByUniqueId(fileUniqueId);
+        if (existing) {
+          const code = existing._id;
+          const count = await addToStoreSession(chatId, code);
+          const bot = await getBotUsername();
+          const link = `https://t.me/${bot}?start=${code}`;
+
+          const quality = existing.quality || detectMediaQuality(message);
+          const rawSize = existing.fileSize || message.video?.file_size || message.document?.file_size || message.audio?.file_size || 0;
+          const sizeLabel = existing.fileSizeLabel || formatBytes(rawSize);
+          const title = existing.title || extractMediaTitle(message);
+
+          const detailsLine = (type === 'video' || type === 'document')
+            ? `\n📁 <b>Title:</b> <code>${esc(title)}</code>\n📀 <b>Quality:</b> <code>${quality} • ${sizeLabel}</code>\n`
+            : (rawSize ? `\n💾 <b>Size:</b> <code>${sizeLabel}</code>\n` : '\n');
+
+          await sendTelegramMessage(chatId, `⚡ <b>File Already Exists (${count} Stored, Deduplicated)</b>\n<i>Reused existing record to avoid duplicate storage in DB channel.</i>${detailsLine}Link: <code>${link}</code>\n\nSend another file, or tap below when finished:`, {
+            inline_keyboard: [
+              [{ text: toSmallCaps(`Done & Get All Links (${count})`), callback_data: 'admin:bulk_store_done' }],
+              [{ text: toSmallCaps('Cancel'), callback_data: 'admin:bulk_store_cancel' }]
+            ]
+          });
+
+          logActivity({
+            eventType: 'file_deduplicated',
+            userId: chatId,
+            username: message.from?.username,
+            firstName: message.from?.first_name,
+            targetCode: code,
+            targetType: 'file',
+            details: `Bulk store deduplicated ${code} (${fileUniqueId})`,
+            metadata: { fileUniqueId, fileCode: code, mode: 'bulk' }
+          }).catch(() => {});
+
+          return true;
+        }
+      }
+
       const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
       if (copyResult.ok) {
         let backupMessageId = null;
@@ -95,6 +137,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           backupDbMessageId: backupMessageId || undefined,
           type: type,
           fileId: message.document?.file_id || message.video?.file_id || message.audio?.file_id || message.photo?.[0]?.file_id,
+          fileUniqueId: fileUniqueId || undefined,
           title: title || undefined,
           fileName: rawFileName || undefined,
           quality: (type === 'video' || type === 'document') ? quality : undefined,
@@ -962,6 +1005,44 @@ export async function processAdminMessage(chatId, rawText, message, req) {
 
     let type = message.document ? 'document' : message.video ? 'video' : message.audio ? 'audio' : message.photo ? 'photo' : null;
     if (type) {
+      const fileUniqueId = extractMediaUniqueId(message);
+      if (fileUniqueId) {
+        const existing = await findFileByUniqueId(fileUniqueId);
+        if (existing) {
+          const bot = await getBotUsername();
+          const link = `https://t.me/${bot}?start=${existing._id}`;
+          const title = existing.title || extractMediaTitle(message);
+          const quality = existing.quality || detectMediaQuality(message);
+          const rawSize = existing.fileSize || message.video?.file_size || message.document?.file_size || message.audio?.file_size || 0;
+          const sizeLabel = existing.fileSizeLabel || formatBytes(rawSize);
+
+          const detailsLine = (type === 'video' || type === 'document')
+            ? `\n\n📁 <b>Title:</b> <code>${esc(title)}</code>\n📀 <b>Quality:</b> <code>${quality}</code> • <b>Size:</b> <code>${sizeLabel}</code>\n`
+            : (rawSize ? `\n\n💾 <b>Size:</b> <code>${sizeLabel}</code>\n` : '\n\n');
+
+          await sendTelegramMessage(chatId, `⚡ <b>File Already Exists in Storage! (Deduplicated)</b>\n<i>Reused existing database record instead of uploading a duplicate.</i>${detailsLine}<b>Link:</b>\n<code>${link}</code>\n<i>(Tap link to copy)</i>`, {
+            inline_keyboard: [
+              [{ text: toSmallCaps('Generate Temp Link'), callback_data: `admin:temp_token_for:${existing._id}` }],
+              [{ text: toSmallCaps('Store Another File'), callback_data: 'admin:store_start' }, { text: toSmallCaps('Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }],
+              [{ text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }, { text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]
+            ]
+          });
+
+          logActivity({
+            eventType: 'file_deduplicated',
+            userId: chatId,
+            username: message.from?.username,
+            firstName: message.from?.first_name,
+            targetCode: existing._id,
+            targetType: 'file',
+            details: `Deduplicated upload for ${existing._id} (${fileUniqueId})`,
+            metadata: { fileUniqueId, fileCode: existing._id, mode: 'single' }
+          }).catch(() => {});
+
+          return true;
+        }
+      }
+
       const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
       if (copyResult.ok) {
         let backupMessageId = null;
@@ -985,6 +1066,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           backupDbMessageId: backupMessageId || undefined,
           type: type,
           fileId: message.document?.file_id || message.video?.file_id || message.audio?.file_id || message.photo?.[0]?.file_id,
+          fileUniqueId: fileUniqueId || undefined,
           title: title || undefined,
           fileName: rawFileName || undefined,
           quality: (type === 'video' || type === 'document') ? quality : undefined,
