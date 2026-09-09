@@ -259,7 +259,8 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     if (sentMsgId) {
-      await scheduleAutoDelete(chatId, [sentMsgId], bundleCode);
+      const deleteIds = messageId ? [sentMsgId, messageId] : [sentMsgId];
+      await scheduleAutoDelete(chatId, deleteIds, bundleCode);
     } else {
       await sendTelegramMessage(chatId, `❌ <b>Failed to deliver file</b> (Storage message missing or unreadable).`);
     }
@@ -306,7 +307,8 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     if (sentIds.length > 0) {
-      await scheduleAutoDelete(chatId, sentIds, bundleCode);
+      const deleteIds = messageId ? [...sentIds, messageId] : sentIds;
+      await scheduleAutoDelete(chatId, deleteIds, bundleCode);
     }
     incrementAccessCount(bundleCode);
     return;

@@ -49,7 +49,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       const buffer = Buffer.from(txtContent, 'utf-8');
       const filename = `bulk_store_${codes.length}_links_${new Date().toISOString().slice(0, 10)}.txt`;
 
-      await sendTelegramMessage(chatId, `📋 <b>Bulk Store Complete! (${codes.length} Files Stored)</b>\n\nTap the box below to copy all links at once:\n<pre>${rawBlock}</pre>`, {
+      await sendTelegramMessage(chatId, `📋 <b>Bulk Store Complete! (${codes.length} Files Stored)</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`, {
         inline_keyboard: [
           [{ text: toSmallCaps('Store More Files'), callback_data: 'admin:bulk_store_start' }],
           [{ text: toSmallCaps('Back to File Management'), callback_data: 'admin:file_mgmt' }]
@@ -785,7 +785,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
 
       if (records.length <= 30) {
         const rawBlock = generateRawLinksText(records, bot);
-        await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to copy all links at once:\n<pre>${rawBlock}</pre>`);
+        await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`);
       }
 
       const { sendTelegramFileBuffer } = await import('../bot-common.js');

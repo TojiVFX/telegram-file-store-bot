@@ -886,7 +886,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const buffer = Buffer.from(txtContent, 'utf-8');
     const filename = `bulk_store_${codes.length}_links_${new Date().toISOString().slice(0, 10)}.txt`;
 
-    await editTelegramMessage(chatId, messageId, `📋 <b>Bulk Store Complete! (${codes.length} Files Stored)</b>\n\nTap the box below to copy all links at once:\n<pre>${rawBlock}</pre>`, {
+    await editTelegramMessage(chatId, messageId, `📋 <b>Bulk Store Complete! (${codes.length} Files Stored)</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`, {
       inline_keyboard: [
         [{ text: toSmallCaps('Store More Files'), callback_data: 'admin:bulk_store_start' }],
         ...navButtons('admin:file_mgmt')
@@ -955,7 +955,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
 
     const botUsername = await getBotUsername();
     const rawBlock = generateRawLinksText(todayFiles, botUsername);
-    await sendTelegramMessage(chatId, `📋 <b>Today's Links (${todayFiles.length})</b>\n\nTap the monospace box below to copy all links at once:\n<pre>${rawBlock}</pre>`, {
+    await sendTelegramMessage(chatId, `📋 <b>Today's Links (${todayFiles.length})</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`, {
       inline_keyboard: [
         [{ text: toSmallCaps('Export Today (.txt)'), callback_data: 'admin:export_today_txt' }],
         [{ text: toSmallCaps('Back to Traffic Dashboard'), callback_data: 'admin:top_files' }]
@@ -998,7 +998,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
 
     if (records.length <= 30) {
       const rawBlock = generateRawLinksText(records, botUsername);
-      await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to copy all links at once:\n<pre>${rawBlock}</pre>`);
+      await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`);
     }
 
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b>\n\nTotal Records: <b>${records.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`);
@@ -1028,7 +1028,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
 
     if (filtered.length <= 30) {
       const rawBlock = generateRawLinksText(filtered, botUsername);
-      await sendTelegramMessage(chatId, `📋 <b>${title} (${filtered.length})</b>\n\nTap box to copy all links:\n<pre>${rawBlock}</pre>`);
+      await sendTelegramMessage(chatId, `📋 <b>${title} (${filtered.length})</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`);
     }
 
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${filtered.length} records)`);
@@ -1060,7 +1060,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
 
     if (allFiles.length <= 30) {
       const rawBlock = generateRawLinksText(allFiles, botUsername);
-      await sendTelegramMessage(chatId, `📋 <b>${title} (${allFiles.length})</b>\n\nTap box to copy all links:\n<pre>${rawBlock}</pre>`);
+      await sendTelegramMessage(chatId, `📋 <b>${title} (${allFiles.length})</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`);
     }
 
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${allFiles.length} records)`);

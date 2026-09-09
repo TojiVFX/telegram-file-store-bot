@@ -276,7 +276,7 @@ export async function handleStartPayload(chatId, payload, message, admin) {
 
     let text = `🎬 <b>${esc(title)}</b>\n\n` +
       `Select your preferred video resolution to download:\n` +
-      (isAutoDelete ? `\n⚠️ <i>Auto-Delete active: Files will delete in ${timerLabel} after delivery.</i>` : '');
+      (isAutoDelete ? `\n<blockquote expandable>⚠️ <i>Auto-Delete active: Files will delete in ${timerLabel} after delivery. Forward to Saved Messages to keep permanently!</i></blockquote>` : '');
 
     const buttons = [];
     for (let i = 0; i < qualities.length; i += 2) {

@@ -437,7 +437,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
 
       if (filtered.length <= 30) {
         const rawBlock = generateRawLinksText(filtered, botUsername);
-        await sendTelegramMessage(chatId, `📋 <b>${title} (${filtered.length})</b>\n\nTap box to copy all links:\n<pre>${rawBlock}</pre>`);
+        await sendTelegramMessage(chatId, `📋 <b>${title} (${filtered.length})</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`);
       }
 
       await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${filtered.length} records)`);
@@ -489,7 +489,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
 
     if (records.length <= 30) {
       const rawBlock = generateRawLinksText(records, botUsername);
-      await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to copy all links at once:\n<pre>${rawBlock}</pre>`);
+      await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`);
     }
 
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b> (${records.length} records)`);

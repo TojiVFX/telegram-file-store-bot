@@ -244,16 +244,16 @@ export function formatStartMessage(customTemplate, userObj = {}, chatId = '') {
 }
 
 // ─── Help Messages (Single Source of Truth) ───────────────────────────────────
-export function getUserHelpMessage(admin = false) {
-  const isAdminUser = Boolean(admin) === true;
+export function getUserHelpMessage(isAdminUser = false) {
   const adminSection = isAdminUser
-    ? `\n🛠 <b>Administrator Shortcuts:</b>\n` +
+    ? `\n\n🛠 <b>Administrator Shortcuts:</b>\n` +
       `• <code>/adminhelp</code> — Complete admin command reference & guide\n` +
-      `• <code>/setting</code> — Open interactive visual Admin Dashboard\n`
+      `• <code>/setting</code> — Open interactive visual Admin Dashboard`
     : '';
 
   const text = `📖 <b>Bot Help & User Guide</b>\n\n` +
     `Welcome to the <b>Filestore Bot</b>! Here is everything you need to know about using this bot:\n\n` +
+    `<blockquote expandable>` +
     `📥 <b>Getting & Downloading Files</b>\n` +
     `• Click any shared file, batch, or bundle link.\n` +
     `• Complete channel subscription or verification if prompted.\n` +
@@ -275,9 +275,10 @@ export function getUserHelpMessage(admin = false) {
     `• Bypass force-subscribe channel requirements\n` +
     `• Zero cooldowns or speed restrictions\n\n` +
     `🏓 <b>Bot Speed & Latency</b>\n` +
-    `• <code>/ping</code> — Check bot responsiveness, server uptime, and connection latency\n` +
+    `• <code>/ping</code> — Check bot responsiveness, server uptime, and connection latency` +
+    `</blockquote>` +
     adminSection +
-    `\nNeed more assistance? Contact our support via the About menu.`;
+    `\n\nNeed more assistance? Contact our support via the About menu.`;
 
   const buttons = [
     [{ text: toSmallCaps('My Active Tokens'), callback_data: 'user:my_tokens' }, { text: toSmallCaps('My Profile'), callback_data: 'user:me' }]
@@ -295,7 +296,8 @@ export function getUserHelpMessage(admin = false) {
 
 export function getAdminHelpMessage() {
   const text = `🛠 <b>Administrator Command Reference & Guide</b>\n\n` +
-    `Manage files, storage channels, analytics, and bot settings using the commands below or via the interactive dashboard:\n\n` +
+    `Manage files, storage channels, analytics, and bot settings using the commands below:\n\n` +
+    `<blockquote expandable>` +
     `⚙️ <b>Dashboard & Diagnostics</b>\n` +
     `• <code>/setting</code> — Open interactive graphical Admin Dashboard\n` +
     `• <code>/status</code> — Live health monitor (DB latency, Webhooks, RAM, Uptime)\n` +
@@ -326,7 +328,8 @@ export function getAdminHelpMessage() {
     `• <code>/broadcast &lt;message&gt;</code> — Mass broadcast with draft preview, test send, and pin options\n\n` +
     `✏️ <b>Record Management</b>\n` +
     `• <code>/editfile &lt;code&gt; &lt;new_title&gt;</code> (or <code>/rename</code>) — Update title of stored file, batch, or bundle\n` +
-    `• <code>/delete &lt;code&gt;</code> — Permanently remove record from database and storage channels`;
+    `• <code>/delete &lt;code&gt;</code> — Permanently remove record from database and storage channels` +
+    `</blockquote>`;
 
   const buttons = [
     [{ text: toSmallCaps('Open Dashboard'), callback_data: 'admin:dashboard' }, { text: toSmallCaps('File Management'), callback_data: 'admin:file_mgmt' }],
@@ -1050,7 +1053,7 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
 
   const timerSeconds = parseInt(s?.autoDeleteTimer, 10) || 300; // default 5 mins
   const ms = timerSeconds * 1000;
-  const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
+  const ids = [...new Set((Array.isArray(messageIds) ? messageIds : [messageIds]).filter(Boolean))];
 
   const formatTimerLabel = (sec) => {
     if (sec < 60) return `${sec} seconds`;
