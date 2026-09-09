@@ -139,7 +139,7 @@ async function handleUpdate(req) {
             firstName: mcm.from?.first_name,
             targetCode: String(chat.id),
             targetType: 'channel',
-            details: chat.title || 'Channel',
+            details: `Bot added as admin to channel: "${chat.title}"`,
             metadata: {
               channelTitle: chat.title,
               channelId: String(chat.id),

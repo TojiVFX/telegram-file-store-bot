@@ -92,7 +92,7 @@ export async function logActivity(entry) {
         if (!shouldBroadcast) return;
 
         const text = `📡 <b>Activity Log Feed</b>\n\n${formatLogEntryTelegram(doc)}`;
-        await sendTelegramMessage(logChannelId, text, null, false, 2, true, false);
+        await sendTelegramMessage(logChannelId, text);
       } catch {}
     })();
 
@@ -229,17 +229,6 @@ export function formatLogEntryTelegram(log, idx = null) {
     userTag = `<a href="tg://user?id=${log.userId}">${displayName}</a> (<code>${log.userId}</code>)`;
   } else if (log.firstName) {
     userTag = esc(log.firstName);
-  }
-
-  if (log.eventType === 'channel_connected') {
-    const channelTitle = log.metadata?.channelTitle || (log.details ? log.details.replace(/^Bot added as admin to channel:\s*"?/, '').replace(/"?$/, '').replace(/^Channel:\s*/, '') : '') || 'Channel';
-    let line = `${meta.icon} <b>Channel Connected</b> [<code>${timeStr}</code>]\n` +
-               `   👤 <b>Admin:</b> ${userTag}\n` +
-               `   📢 <b>Channel:</b> <code>${esc(channelTitle)}</code>\n`;
-    if (log.targetCode) {
-      line += `   🎯 <b>Channel ID:</b> <code>${esc(log.targetCode)}</code>\n`;
-    }
-    return line;
   }
 
   let line = `${meta.icon} <b>${meta.label}</b> [<code>${timeStr}</code>]\n` +
