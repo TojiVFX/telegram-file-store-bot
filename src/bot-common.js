@@ -641,11 +641,12 @@ export function toSmallCapsSafe(text) {
   // 1. Anchor tags including anchor text (<a href="...">...</a>) e.g. user deeplinks
   // 2. Code blocks (<code>...</code>) and pre blocks (<pre>...</pre>)
   // 3. Other HTML tags (<b>, </b>, <i>, </i>, etc.)
-  // 4. Telegram usernames (@username)
-  // 5. URLs (https://..., http://..., tg://...)
-  // 6. Bot commands (/command)
-  // 7. Placeholders ({placeholder})
-  const protectedRegex = /(<a\b[^>]*>[\s\S]*?<\/a>|<code\b[^>]*>[\s\S]*?<\/code>|<pre\b[^>]*>[\s\S]*?<\/pre>|<\/?[a-zA-Z][^>]*>|@[a-zA-Z0-9_]+|(?:https?|tg):\/\/\S+|\/[a-zA-Z0-9_@]+|\{[a-zA-Z0-9_]+\})/gi;
+  // 4. HTML entities (&quot;, &amp;, &lt;, &gt;, &#039;, etc.)
+  // 5. Telegram usernames (@username)
+  // 6. URLs (https://..., http://..., tg://...)
+  // 7. Bot commands (/command)
+  // 8. Placeholders ({placeholder})
+  const protectedRegex = /(<a\b[^>]*>[\s\S]*?<\/a>|<code\b[^>]*>[\s\S]*?<\/code>|<pre\b[^>]*>[\s\S]*?<\/pre>|<\/?[a-zA-Z][^>]*>|&[a-zA-Z0-9#]+;|@[a-zA-Z0-9_]+|(?:https?|tg):\/\/\S+|\/[a-zA-Z0-9_@]+|\{[a-zA-Z0-9_]+\})/gi;
   const parts = text.split(protectedRegex);
   return parts.map((part, index) => {
     if (index % 2 === 1) {
@@ -712,11 +713,11 @@ export function parseValidityHours(raw, fallback = 24) {
 }
 
 // ─── Telegram API helpers ─────────────────────────────────────────────────────
-export async function sendTelegramMessage(chatId, text, replyMarkup = null, protectContent = false, maxRetries = 2, disableWebPagePreview = true) {
+export async function sendTelegramMessage(chatId, text, replyMarkup = null, protectContent = false, maxRetries = 2, disableWebPagePreview = true, styled = true) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
-    const styledText = toSmallCapsSafe(text);
+    const styledText = styled ? toSmallCapsSafe(text) : text;
     const body = {
       chat_id: chatId, text: styledText, parse_mode: 'HTML',
       disable_web_page_preview: disableWebPagePreview, protect_content: protectContent,
@@ -730,7 +731,7 @@ export async function sendTelegramMessage(chatId, text, replyMarkup = null, prot
     if (res.status === 429 && maxRetries > 0) {
       const waitSec = data?.parameters?.retry_after || 1;
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
-      return sendTelegramMessage(chatId, text, replyMarkup, protectContent, maxRetries - 1, disableWebPagePreview);
+      return sendTelegramMessage(chatId, text, replyMarkup, protectContent, maxRetries - 1, disableWebPagePreview, styled);
     }
     return { ok: res.ok, messageId: data.result?.message_id, detail: data };
   } catch (err) {

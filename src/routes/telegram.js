@@ -1,6 +1,6 @@
 import {
   getCollection, getSettings, log, getToken, getMainToken, esc, isRateLimited, answerCallbackQuery,
-  botContext, sendTelegramMessage, deleteTelegramMessage
+  botContext, deleteTelegramMessage
 } from '../bot-common.js';
 import {
   getBotUsername, isBotAdmin, registerWebhook, setMyCommands, checkSubscription
@@ -124,7 +124,6 @@ async function handleUpdate(req) {
       if (isPromoterAdmin) {
         const channels = await getCollection('channels');
         await Promise.all([
-          sendTelegramMessage(promoterId, `✅ <b>Bot added as Admin!</b>\n\nI am now an administrator in <b>${esc(chat.title)}</b>.\n\nYou can now use /batch to create links from this channel.`),
           channels.updateOne(
             { _id: String(chat.id) },
             { $set: { title: chat.title, addedAt: new Date() } },
@@ -140,7 +139,11 @@ async function handleUpdate(req) {
             firstName: mcm.from?.first_name,
             targetCode: String(chat.id),
             targetType: 'channel',
-            details: `Bot added as admin to channel: "${chat.title}"`,
+            details: chat.title || 'Channel',
+            metadata: {
+              channelTitle: chat.title,
+              channelId: String(chat.id),
+            },
           }).catch(() => {})
         ]);
       }
