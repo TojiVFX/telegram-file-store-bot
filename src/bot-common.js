@@ -534,7 +534,7 @@ export function toSmallCaps(text) {
   return text.split('').map(c => map[c] || c).join('');
 }
 
-// ─── Button Formatting Helper (No Emojis, Small Caps, Subscript Digits) ──────
+// ─── Button Formatting Helper (No Emojis, Small Caps Words, Full-Size Digits) ──────
 export function formatButtonText(text) {
   if (!text) return '';
 
@@ -570,10 +570,11 @@ export function formatButtonText(text) {
     raw = symbolMap[raw];
   }
 
-  // Strip emojis, Variation Selectors, and common decorative/ASCII symbols (+ < > • |)
+  // Strip emojis, Variation Selectors, and common decorative/ASCII symbols (+ < > ✖ ◀ ▶ ⬅ ➡ ➡️ |)
+  // Preserve bullet (•) and dash (-) for clean separation in buttons
   let clean = raw
     .replace(/[\p{Extended_Pictographic}\uFE00-\uFE0F]/gu, '')
-    .replace(/[+<>•✖◀▶⬅➡➡️\|]/g, '')
+    .replace(/[+<>✖◀▶⬅➡➡️\|]/g, '')
     .trim()
     .replace(/\s+/g, ' ');
 
@@ -588,8 +589,7 @@ export function formatButtonText(text) {
     U:'ᴜ',V:'ᴠ',W:'ᴡ',X:'x',Y:'ʏ',Z:'ᴢ',
     a:'ᴀ',b:'ʙ',c:'ᴄ',d:'ᴅ',e:'ᴇ',f:'ꜰ',g:'ɢ',h:'ʜ',i:'ɪ',j:'ᴊ',
     k:'ᴋ',l:'ʟ',m:'ᴍ',n:'ɴ',o:'ᴏ',p:'ᴘ',q:'ǫ',r:'ʀ',s:'ꜱ',t:'ᴛ',
-    u:'ᴜ',v:'ᴠ',w:'ᴡ',x:'x',y:'ʏ',z:'ᴢ',
-    '0':'₀','1':'₁','2':'₂','3':'₃','4':'₄','5':'₅','6':'₆','7':'₇','8':'₈','9':'₉'
+    u:'ᴜ',v:'ᴠ',w:'ᴡ',x:'x',y:'ʏ',z:'ᴢ'
   };
   return clean.split('').map(c => map[c] || c).join('');
 }
