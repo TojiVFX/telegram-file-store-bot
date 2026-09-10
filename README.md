@@ -29,8 +29,9 @@ Engineered for ultra-low latency, multi-bot concurrency, rock-solid security, an
 - [📖 Help System & Interactive Guides](#-help-system--interactive-guides)
 - [⚙️ Environment Variables](#️-environment-variables)
 - [🚀 Quick Start & Deployment](#-quick-start--deployment)
-  - [Option A: Deploy to Render](#option-a-deploy-to-render-recommended)
-  - [Option B: Manual / VPS / Local Deployment](#option-b-manual--vps--local-deployment)
+  - [Option A: Deploy to Koyeb (Recommended Free Tier)](#option-a-deploy-to-koyeb-recommended-free-tier)
+  - [Option B: Deploy to Render](#option-b-deploy-to-render)
+  - [Option C: Manual / VPS / Local Deployment](#option-c-manual--vps--local-deployment)
 - [🤖 Webhook Configuration](#-webhook-configuration)
 - [📚 Complete Command Reference](#-complete-command-reference)
   - [Admin Commands](#admin-commands)
@@ -238,18 +239,35 @@ Configure these variables in your hosting environment (Render, Railway, VPS, or 
 
 ## 🚀 Quick Start & Deployment
 
-### Option A: Deploy to Render (Recommended)
+### Option A: Deploy to Koyeb (Recommended Free Tier)
+
+1. Fork or push this repository to your GitHub account.
+2. Log in to the [Koyeb Control Panel](https://app.koyeb.com/) and click **Create Service**.
+3. Select **GitHub** as the deployment source and pick your repository.
+4. **Build & Deployment Settings**:
+   - **Builder**: Dockerfile (automatically detected) or Cloud Native Buildpack.
+   - **Port**: `8000` (or leave default, matches container `PORT`).
+5. **Health Checks**:
+   - Set protocol to `HTTP` and path to `/health`.
+6. **Environment Variables**:
+   - Add your required environment variables (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `MONGODB_URI`, `ADMIN_CHAT_ID`, `TELEGRAM_DB_CHANNEL_ID`).
+   - Set `BOT_DOMAIN` to your Koyeb app domain (e.g. `your-app-name-yourorg.koyeb.app`).
+7. Click **Deploy**. Koyeb will build the image, start the container, and the bot will automatically register its webhook with Telegram!
+
+---
+
+### Option B: Deploy to Render
 
 1. Fork or push this repository to your GitHub account.
 2. Log in to [Render](https://render.com) and click **New +** → **Blueprint**.
 3. Select your repository. Render will automatically detect [`render.yaml`](file:///d:/telegram-file-store-bot/render.yaml).
 4. Fill in the required environment variables in the Render Dashboard.
 5. Click **Apply**. Once deployed, Render will set up the health check (`/health`) and start the service.
-6. Open `https://<YOUR_BOT_DOMAIN>/setWebhook` in your browser to register your webhook with Telegram.
+6. The bot will automatically register its webhook on boot if `BOT_DOMAIN` and `TELEGRAM_BOT_TOKEN` are set.
 
 ---
 
-### Option B: Manual / VPS / Local Deployment
+### Option C: Manual / VPS / Local Deployment
 
 ```bash
 # 1. Clone repository
@@ -270,7 +288,20 @@ npm run lint
 npm start
 ```
 
-For 24/7 background operation on a Linux VPS, use **PM2**:
+#### Running with Docker
+```bash
+# Build Docker image
+docker build -t telegram-file-store-bot .
+
+# Run container with environment variables
+docker run -d \
+  --name filestore-bot \
+  -p 8000:8000 \
+  --env-file .env \
+  telegram-file-store-bot
+```
+
+For 24/7 background operation on a Linux VPS without Docker, use **PM2**:
 ```bash
 npm install -g pm2
 pm2 start src/server.js --name "filestore-bot"

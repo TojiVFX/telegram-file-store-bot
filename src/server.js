@@ -4,7 +4,7 @@ import { registerWebhook, startAutoDeleteWorker, startDailyBackupWorker } from '
 
 const envCheck = validateEnv();
 if (!envCheck.ok) {
-  console.warn('[Filestore Bot] Running in unconfigured/preview mode. Please configure environment variables in your Render environment.');
+  console.warn('[Filestore Bot] Running in unconfigured/preview mode. Please configure environment variables in your deployment environment (Koyeb/Render/VPS).');
 }
 
 const PORT = process.env.PORT || 3000;
@@ -37,8 +37,8 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     }
   }
 
-  // Render Free-Tier Keep-Alive Pinger (prevents 15-minute inactivity spin-down)
-  if (domain && process.env.RENDER_KEEP_ALIVE !== 'false') {
+  // Cloud Free-Tier Keep-Alive Pinger (prevents inactivity spin-down on Koyeb / Render)
+  if (domain && process.env.KEEP_ALIVE !== 'false' && process.env.RENDER_KEEP_ALIVE !== 'false') {
     const formattedDomain = domain.startsWith('http://') || domain.startsWith('https://') ? domain : `https://${domain}`;
     const healthUrl = `${formattedDomain}/health`;
     const PING_INTERVAL = 10 * 60 * 1000; // 10 minutes
@@ -47,11 +47,11 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
         await fetch(healthUrl);
       } catch {}
     }, PING_INTERVAL);
-    console.log('[Filestore Bot] Render Keep-Alive self-pinger active (10m interval).');
+    console.log('[Filestore Bot] Keep-Alive self-pinger active (10m interval).');
   }
 });
 
-// Graceful shutdown handling for Render deployments
+// Graceful shutdown handling for container/cloud deployments
 const shutdown = (signal) => {
   console.log(`[Filestore Bot] Received ${signal}. Shutting down gracefully...`);
   server.close(async () => {
