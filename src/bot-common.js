@@ -345,7 +345,13 @@ export async function getDb() {
 
   dbPromise = (async () => {
     try {
-      client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+      client = new MongoClient(MONGODB_URI, {
+        serverSelectionTimeoutMS: 5000,
+        maxPoolSize: 10,
+        minPoolSize: 1,
+        maxIdleTimeMS: 30000,
+        connectTimeoutMS: 10000,
+      });
       await client.connect();
       const database = client.db();
 
@@ -457,7 +463,7 @@ export async function updateSettings(fields) {
 const rateLimitMap = new Map();
 const RATE_LIMIT_PRUNE_INTERVAL_MS = 60_000;
 
-function pruneExpiredRateLimits() {
+export function pruneExpiredRateLimits() {
   const now = Date.now();
   for (const [key, record] of rateLimitMap.entries()) {
     if (now > record.resetAt) {

@@ -14,6 +14,7 @@ COPY src/ ./src/
 # Default environment configuration
 ENV NODE_ENV=production
 ENV PORT=8000
+ENV NODE_OPTIONS="--max-old-space-size=256 --optimize-for-size --expose-gc"
 
 # Koyeb routes to port 8000 by default (process.env.PORT is also respected by the app)
 EXPOSE 8000

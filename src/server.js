@@ -1,6 +1,7 @@
 import app from './app.js';
 import { validateEnv } from './env-validator.js';
 import { registerWebhook, startAutoDeleteWorker, startDailyBackupWorker } from './bot-helpers.js';
+import { startMemoryRecycler } from './memory-cleaner.js';
 
 const envCheck = validateEnv();
 if (!envCheck.ok) {
@@ -12,11 +13,10 @@ const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`[Filestore Bot] Server is listening on http://0.0.0.0:${PORT}`);
 
-  // Start the persistent auto-delete worker
+  // Start background workers
   startAutoDeleteWorker();
-
-  // Start automated daily database backup worker
   startDailyBackupWorker();
+  startMemoryRecycler();
 
   // Auto-register Telegram webhook if BOT_DOMAIN and TELEGRAM_BOT_TOKEN are configured
   let domain = (process.env.BOT_DOMAIN || '').trim()

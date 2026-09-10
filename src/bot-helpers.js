@@ -71,8 +71,13 @@ export async function getDbChannelReadinessError() {
   return null;
 }
 
-// ─── Bot username cache ───────────────────────────────────────────────────────
 const botUsernameCache = new Map();
+
+export function pruneBotHelperCaches() {
+  if (botUsernameCache.size > 50) {
+    botUsernameCache.clear();
+  }
+}
 
 export async function getBotUsername(customToken = null) {
   const token = customToken || getToken();
@@ -1179,15 +1184,16 @@ export async function processDueAutoDeletes() {
   }
 }
 
-export function startAutoDeleteWorker(intervalMs = 15000) {
+export function startAutoDeleteWorker(intervalMs = 30000) {
   if (autoDeleteWorkerRunning) return;
   autoDeleteWorkerRunning = true;
   // Run once immediately upon startup
   processDueAutoDeletes().catch(() => {});
-  // Recurring polling
-  setInterval(() => {
+  // Recurring polling with unref to minimize event loop wakeups
+  const timer = setInterval(() => {
     processDueAutoDeletes().catch(() => {});
   }, intervalMs);
+  timer.unref?.();
 }
 
 // ─── Database Backup System ───────────────────────────────────────────────────
