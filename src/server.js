@@ -19,7 +19,9 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   startDailyBackupWorker();
 
   // Auto-register Telegram webhook if BOT_DOMAIN and TELEGRAM_BOT_TOKEN are configured
-  const domain = (process.env.BOT_DOMAIN || '').trim();
+  let domain = (process.env.BOT_DOMAIN || '').trim()
+    .replace(/\/webhook(\/telegram)?\/?$/i, '')
+    .replace(/\/+$/, '');
   const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim().replace(/^bot/i, '');
   if (domain && token) {
     const formattedDomain = domain.startsWith('http://') || domain.startsWith('https://') ? domain : `https://${domain}`;

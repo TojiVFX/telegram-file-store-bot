@@ -39,7 +39,10 @@ function checkAdminAuth(req) {
   return timingSafeEqual(secretBuf, providedBuf);
 }
 
-app.post('/webhook/telegram', asyncHandler(telegramHandler));   // ← updates go here
+// Accept webhook updates on the primary path and fallback routes
+app.post('/webhook/telegram', asyncHandler(telegramHandler));
+app.post('/webhook', asyncHandler(telegramHandler));
+app.post('/', asyncHandler(telegramHandler));
 
 app.get('/getMe', asyncHandler(async (req, res) => {
   if (!checkAdminAuth(req)) {
@@ -63,7 +66,9 @@ const handleSetWebhook = asyncHandler(async (req, res) => {
     return res.status(500).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN is not configured' });
   }
 
-  let domain = (process.env.BOT_DOMAIN || '').trim();
+  let domain = (process.env.BOT_DOMAIN || '').trim()
+    .replace(/\/webhook(\/telegram)?\/?$/i, '')
+    .replace(/\/+$/, '');
   if (!domain) {
     return res.status(400).json({ ok: false, error: 'BOT_DOMAIN environment variable is not configured' });
   }
