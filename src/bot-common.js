@@ -1,18 +1,5 @@
 import { MongoClient } from 'mongodb';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { Agent, setGlobalDispatcher } from 'undici';
-
-// Configure high-performance HTTP keep-alive connection pooling
-try {
-  setGlobalDispatcher(new Agent({
-    keepAliveTimeout: 60_000,
-    keepAliveMaxTimeout: 120_000,
-    connections: 50,
-    pipelining: 10,
-  }));
-} catch (err) {
-  console.warn('[Filestore Bot] Could not configure undici keep-alive agent:', err.message);
-}
 
 export const botContext = new AsyncLocalStorage();
 
