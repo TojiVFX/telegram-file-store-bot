@@ -163,17 +163,13 @@ async function handleUpdate(req) {
     // banned user could still act via old inline keyboards and no one was
     // ever rate-limited for callback spam.
     if (!admin) {
-      const [banned, rateLimited] = await Promise.all([
-        isBanned(chatId),
-        isRateLimited(chatId),
-      ]);
-
+      const banned = await isBanned(chatId);
       if (banned) {
         await answerCallbackQuery(cbId, '❌ You are banned from using this bot.', true);
         return;
       }
 
-      if (rateLimited) {
+      if (await isRateLimited(chatId)) {
         log('warn', 'Rate limit exceeded (callback)', { chatId });
         await answerCallbackQuery(cbId, '⏳ Please slow down and try again shortly.', true);
         return;
@@ -219,13 +215,10 @@ async function handleUpdate(req) {
 
   const admin = await isAdmin(chatId);
   if (!admin) {
-    const [banned, rateLimited] = await Promise.all([
-      isBanned(chatId),
-      isRateLimited(chatId),
-    ]);
+    const banned = await isBanned(chatId);
     if (banned) return;
 
-    if (rateLimited) {
+    if (await isRateLimited(chatId)) {
       log('warn', 'Rate limit exceeded', { chatId });
       return;
     }

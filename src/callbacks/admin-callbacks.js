@@ -1300,6 +1300,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
         ...navButtons('admin:dashboard')
       ]
     });
+    await answerCallbackQuery(cq.id);
     return;
   } else if (action === 'bundle_start') {
     const dbError = await getDbChannelReadinessError();
@@ -1350,6 +1351,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
         ...navButtons('admin:dashboard')
       ]
     });
+    await answerCallbackQuery(cq.id);
     return;
   } else if (action === 'cancel_session') {
     const { clearBatchSession, clearBundleSession, checkAndClearAdminWaiting } = await import('../filestore.js');
@@ -1463,18 +1465,21 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
   } else if (action.startsWith('fs_cfg:')) {
     const cfgType = action.split(':')[1];
     await renderFsCfg(chatId, messageId, cfgType);
+    return;
   } else if (action.startsWith('fs_toggle:')) {
     const val = action.split(':')[1];
     await updateSettings({ enabled: val });
     await logHistory(`verification_${val === '1' ? 'enabled' : 'disabled'}`, 'tg');
     await answerCallbackQuery(cq.id, `Token verification ${val === '1' ? 'enabled' : 'disabled'}.`);
     await renderFsCfg(chatId, messageId, 'tkn');
+    return;
   } else if (action.startsWith('fs_toggle_ref:')) {
     const val = action.split(':')[1];
     await updateSettings({ referralDisabled: val });
     await logHistory(`referrals_${val === '1' ? 'disabled' : 'enabled'}`, 'tg');
     await answerCallbackQuery(cq.id, `Referrals system ${val === '1' ? 'disabled' : 'enabled'}.`);
     await renderFsCfg(chatId, messageId, 'tkn');
+    return;
   } else if (action === 'fs_toggle_smode') {
     const s = await getSettings();
     const currentMode = s?.shortenerMode || 'failover';

@@ -440,16 +440,17 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         }
 
         const quality = detectMediaQuality(message);
-        const rawSize = message.video?.file_size || message.document?.file_size || 0;
+        const rawSize = message.video?.file_size || message.document?.file_size || message.audio?.file_size || 0;
         const sizeLabel = formatBytes(rawSize);
         const qualityFileId = message.video?.file_id || message.document?.file_id || message.audio?.file_id;
+        const rawFileName = message.document?.file_name || message.video?.file_name || message.audio?.file_name || '';
         const qItem = {
           quality,
           fileSize: rawSize,
           fileSizeLabel: sizeLabel,
           dbMessageId: copyResult.messageId,
           backupDbMessageId: backupMsgId,
-          fileName,
+          fileName: rawFileName,
           fileId: qualityFileId || undefined,
           type: message.video ? 'video' : (message.document ? 'document' : 'media')
         };
