@@ -2,11 +2,28 @@ import {
   getCollection, getSettings, log, sendTelegramMessage
 } from './bot-common.js';
 
+const userLastSeenCache = new Map();
+const LAST_SEEN_THROTTLE_MS = 15 * 60 * 1000; // 15 minutes
+
+export function pruneUserLastSeenCache() {
+  const cutoff = Date.now() - 60 * 60 * 1000; // Prune entries older than 1 hour
+  for (const [id, time] of userLastSeenCache.entries()) {
+    if (time < cutoff) userLastSeenCache.delete(id);
+  }
+}
+setInterval(pruneUserLastSeenCache, 30 * 60 * 1000).unref?.();
+
 export async function upsertUser(message) {
   try {
     const chatId  = String(message.chat.id);
+    const now = Date.now();
+    const last = userLastSeenCache.get(chatId);
+    if (last && (now - last) < LAST_SEEN_THROTTLE_MS) {
+      return;
+    }
+    userLastSeenCache.set(chatId, now);
+
     const from    = message.from || {};
-    const today   = new Date().toISOString().slice(0, 10);
     const users   = await getCollection('users');
 
     const updated = {
@@ -14,7 +31,7 @@ export async function upsertUser(message) {
       username:  from.username ? from.username.toLowerCase() : null,
       firstName: from.first_name || null,
       lastName:  from.last_name || null,
-      lastSeen:  new Date().toISOString(),
+      lastSeen:  new Date(now).toISOString(),
     };
 
     await users.updateOne(
@@ -22,7 +39,7 @@ export async function upsertUser(message) {
       {
         $set: updated,
         $setOnInsert: {
-          joinedAt:      new Date().toISOString(),
+          joinedAt:      new Date(now).toISOString(),
           banned:        false,
           referralCount: 0,
           referrerId:    null,
@@ -428,26 +445,41 @@ export async function getUserStats() {
   }
 }
 
+let cachedAdminIds = null;
+let cachedAdminSet = null;
+let cachedPrimaryAdminId = undefined;
+
 export function getAdminIds() {
+  if (cachedAdminIds !== null) return cachedAdminIds;
   const raw = (process.env.ADMIN_CHAT_ID || '').trim();
-  if (!raw) return [];
-  return raw
+  if (!raw) {
+    cachedAdminIds = [];
+    return cachedAdminIds;
+  }
+  cachedAdminIds = raw
     .split(',')
     .map(id => id.trim())
     .filter(Boolean);
+  return cachedAdminIds;
+}
+
+function getAdminSet() {
+  if (!cachedAdminSet) {
+    cachedAdminSet = new Set(getAdminIds());
+  }
+  return cachedAdminSet;
 }
 
 export function getAdminId() {
+  if (cachedPrimaryAdminId !== undefined) return cachedPrimaryAdminId;
   const ids = getAdminIds();
-  return ids.length > 0 ? Number(ids[0]) : null;
+  cachedPrimaryAdminId = ids.length > 0 ? Number(ids[0]) : null;
+  return cachedPrimaryAdminId;
 }
 
 export async function isAdmin(chatId) {
   if (chatId === null || chatId === undefined) return false;
-  const ids = getAdminIds();
-  if (!ids.length) return false;
-  const strId = String(chatId).trim();
-  return ids.includes(strId);
+  return getAdminSet().has(String(chatId).trim());
 }
 
 export async function savePendingReferral(referrerId, newUserId) {

@@ -5,20 +5,27 @@ const REQUIRED_ENV = [
   'TELEGRAM_WEBHOOK_SECRET',
 ];
 
+let cachedResult = null;
+
 export function validateEnv() {
+  if (cachedResult !== null) return cachedResult;
+
   const missing = REQUIRED_ENV.filter((key) => !(process.env[key] || '').trim());
   if (missing.length) {
     const msg = `Missing required environment variable(s): ${missing.join(', ')}`;
     console.error(`\n❌ ${msg}\n   See README.md → "Environment Variables" for what each one should contain.\n`);
-    return { ok: false, message: msg };
+    cachedResult = { ok: false, message: msg };
+    return cachedResult;
   }
 
   const adminIds = (process.env.ADMIN_CHAT_ID || '').split(',').map(s => s.trim()).filter(Boolean);
   if (!adminIds.length || !adminIds.every(id => /^-?\d+$/.test(id))) {
     const msg = `ADMIN_CHAT_ID must contain one or more numeric Telegram chat IDs (e.g. "12345678" or "12345678,87654321")`;
     console.error(`\n❌ ${msg}\n`);
-    return { ok: false, message: msg };
+    cachedResult = { ok: false, message: msg };
+    return cachedResult;
   }
 
-  return { ok: true };
+  cachedResult = { ok: true };
+  return cachedResult;
 }

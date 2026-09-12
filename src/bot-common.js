@@ -347,9 +347,9 @@ export async function getDb() {
     try {
       client = new MongoClient(MONGODB_URI, {
         serverSelectionTimeoutMS: 5000,
-        maxPoolSize: 10,
+        maxPoolSize: 5,
         minPoolSize: 1,
-        maxIdleTimeMS: 30000,
+        maxIdleTimeMS: 15000,
         connectTimeoutMS: 10000,
       });
       await client.connect();
@@ -437,7 +437,7 @@ export async function getCollection(name) {
 // ─── Settings Helpers ─────────────────────────────────────────────────────────
 let cachedSettings = null;
 let cachedSettingsTime = 0;
-const SETTINGS_CACHE_TTL = 10 * 1000; // 10 seconds TTL
+const SETTINGS_CACHE_TTL = 15 * 60 * 1000; // 15 minutes TTL (invalidated immediately by updateSettings)
 
 export async function getSettings() {
   const now = Date.now();

@@ -8,6 +8,7 @@
 
 import { pruneExpiredRateLimits } from './bot-common.js';
 import { pruneBotHelperCaches } from './bot-helpers.js';
+import { pruneUserLastSeenCache } from './bot-users.js';
 
 let isRecycling = false;
 
@@ -23,6 +24,7 @@ export function recycleMemory(trigger = 'periodic') {
     // 1. Purge internal in-memory caches
     pruneExpiredRateLimits();
     pruneBotHelperCaches();
+    pruneUserLastSeenCache();
 
     // 2. Force V8 Garbage Collection to release memory back to OS
     if (typeof global.gc === 'function') {
