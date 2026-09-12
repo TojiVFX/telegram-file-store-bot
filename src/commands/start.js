@@ -76,19 +76,18 @@ async function alertAdminShortenerDown() {
   );
 }
 
-export async function handleStartPayload(chatId, payload, message, admin) {
+export async function handleStartPayload(chatId, payload, message, admin, skipTokenCheck = false) {
   const botUsername = await getBotUsername();
   const sessions = await getCollection('sessions');
 
-  // Anti-flood: 10-second cooldown on file and batch requests (skip for admin)
-  if (payload && (payload.startsWith('file_') || payload.startsWith('batch_'))) {
-    if (!admin) {
+  // Anti-flood: 10-second cooldown on file, batch, and bundle requests (skip for admin and redemption)
+  if (payload && (payload.startsWith('file_') || payload.startsWith('batch_') || payload.startsWith('bundle_'))) {
+    if (!admin && !skipTokenCheck) {
       const cd = checkRequestCooldown(chatId);
       if (cd.limited) {
         await sendTelegramMessage(chatId, `⏳ <b>Please Wait</b>\n\nYou can request another file in <b>${cd.remainingSec}s</b> to prevent server flood.`);
         return;
       }
-      updateRequestCooldown(chatId);
     }
   }
 
@@ -183,8 +182,8 @@ export async function handleStartPayload(chatId, payload, message, admin) {
       await sendTelegramMessage(chatId, `✨ <b>You are free like a bird!</b> Premium access is active.`);
     }
 
-    // 2. Token Verification Check (skip if admin or premium)
-    if (!admin && !premium) {
+    // 2. Token Verification Check (skip if admin, premium, or redemption hop)
+    if (!admin && !premium && !skipTokenCheck) {
       const s = await getSettings();
       const verEnabled = s?.enabled === '1';
       const tutorialFileId = s?.tutorialFileId;
@@ -255,6 +254,12 @@ export async function handleStartPayload(chatId, payload, message, admin) {
       return;
     }
 
+    if (!admin) updateRequestCooldown(chatId);
+    const s = await getSettings();
+    if (parseValidityHours(s?.validityHours) === 0) {
+      sessions.deleteOne({ _id: `user:token:main:${chatId}` }).catch(() => {});
+    }
+
     logActivity({
       eventType: 'bundle_access',
       userId: chatId,
@@ -265,8 +270,6 @@ export async function handleStartPayload(chatId, payload, message, admin) {
       details: `Accessed bundle ${payload}`,
     }).catch(() => {});
     incrementAccessCount(payload);
-
-    const s = await getSettings();
     const isAutoDelete = s?.autoDeleteEnabled === '1';
     const timerSec = parseInt(s?.autoDeleteTimer, 10) || 300;
     const timerLabel = timerSec < 60 ? `${timerSec}s` : timerSec < 3600 ? `${Math.round(timerSec / 60)}m` : `${Math.round(timerSec / 3600)}h`;
@@ -325,6 +328,12 @@ export async function handleStartPayload(chatId, payload, message, admin) {
       return;
     }
 
+    if (!admin) updateRequestCooldown(chatId);
+    const s = await getSettings();
+    if (parseValidityHours(s?.validityHours) === 0) {
+      sessions.deleteOne({ _id: `user:token:main:${chatId}` }).catch(() => {});
+    }
+
     logActivity({
       eventType: 'batch_access',
       userId: chatId,
@@ -336,7 +345,6 @@ export async function handleStartPayload(chatId, payload, message, admin) {
     }).catch(() => {});
     incrementAccessCount(payload);
 
-    const s = await getSettings();
     const isAutoDelete = s?.autoDeleteEnabled === '1';
     const timerSec = parseInt(s?.autoDeleteTimer, 10) || 300;
     const timerLabel = timerSec < 60 ? `${timerSec} seconds` : timerSec < 3600 ? `${Math.round(timerSec / 60)} minute(s)` : `${Math.round(timerSec / 3600)} hour(s)`;
@@ -391,6 +399,11 @@ export async function handleStartPayload(chatId, payload, message, admin) {
     const s = await getSettings();
     const protect = s?.protectContent === '1';
     if (f) {
+      if (!admin) updateRequestCooldown(chatId);
+      if (parseValidityHours(s?.validityHours) === 0) {
+        sessions.deleteOne({ _id: `user:token:main:${chatId}` }).catch(() => {});
+      }
+
       logActivity({
         eventType: 'file_access',
         userId: chatId,

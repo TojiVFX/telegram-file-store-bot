@@ -1,10 +1,10 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, logHistory
+  getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, logHistory, getChat
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, getBackupDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser,
-  forwardMessage, extractChannelMessageRange
+  forwardMessage, extractChannelMessageRange, getForceSubChannelsList
 } from '../bot-helpers.js';
 import {
   getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
@@ -502,10 +502,13 @@ export async function processAdminMessage(chatId, rawText, message, req) {
   const wsDoc = await sessions.findOne({ _id: `admin:waiting_setting:${chatId}` });
   const waitingFor = wsDoc && wsDoc.expiresAt > new Date() ? wsDoc.val : null;
   if (waitingFor) {
-    if (rawText === '/cancel') {
+    if (rawText && rawText.startsWith('/')) {
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
-      await sendTelegramMessage(chatId, `✅ Cancelled.`);
-      return true;
+      if (rawText === '/cancel') {
+        await sendTelegramMessage(chatId, `✅ Cancelled.`);
+        return true;
+      }
+      return null;
     }
 
     if (waitingFor === 'fs_fsub_msg_forward') {
@@ -674,11 +677,121 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     }
 
     if (waitingFor === 'dbChannelId') {
-      if (!/^-100\d+$/.test(rawText)) {
-        await sendTelegramMessage(chatId, `❌ <b>Invalid DB Channel ID!</b>\n\nChannel ID must match pattern <code>-100dddddddddd</code>. Please try again or send /cancel.`);
+      const forwardChat   = message.forward_from_chat;
+      const forwardOrigin = message.forward_origin;
+      const typedId        = rawText.trim();
+
+      let targetCid;
+      if (forwardChat?.type === 'channel') {
+        targetCid = forwardChat.id;
+      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
+        targetCid = forwardOrigin.chat.id;
+      } else if (/^-100\d+$/.test(typedId)) {
+        targetCid = typedId;
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the DB channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).\n\nSend /cancel to abort.`);
         return true;
       }
-    } else if (waitingFor === 'logChannelId') {
+
+      if (!(await isBotAdmin(targetCid))) {
+        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this DB channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
+        return true;
+      }
+
+      await updateSettings({ dbChannelId: String(targetCid) });
+      await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+      await sendTelegramMessage(chatId, `✅ <b>Database Channel Configured!</b>\n\nChannel ID: <code>${targetCid}</code>`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back to Settings'), callback_data: 'admin:fs_settings' }]]
+      });
+      return true;
+    }
+
+    if (waitingFor === 'fs_fsub_bulk_import') {
+      const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
+      if (!lines.length) {
+        await sendTelegramMessage(chatId, `❌ <b>No channels provided.</b> Send channel IDs or /cancel to abort.`);
+        return true;
+      }
+
+      const s = await getSettings();
+      const globalMode = s?.forceSubscribeMode || 'normal';
+      const existingChannels = getForceSubChannelsList(s?.forceSubscribeChannels, globalMode);
+      const channelMap = new Map(existingChannels.map(c => [String(c.id), c]));
+
+      let addedCount = 0;
+      let updatedCount = 0;
+      const errors = [];
+
+      for (const line of lines) {
+        const [rawId, mode, label, title] = line.split(':').map(part => (part || '').trim());
+        if (!/^-100\d+$/.test(rawId)) {
+          errors.push(`Invalid ID: <code>${esc(rawId)}</code>`);
+          continue;
+        }
+
+        const validMode = (mode === 'join_request' || mode === 'normal') ? mode : globalMode;
+        let channelTitle = title;
+        if (!channelTitle) {
+          try {
+            const chatRes = await getChat(rawId);
+            if (chatRes?.ok && chatRes.result?.title) {
+              channelTitle = chatRes.result.title;
+            }
+          } catch {}
+        }
+        if (!channelTitle) channelTitle = rawId;
+
+        const channelObj = {
+          id: rawId,
+          mode: validMode,
+          buttonLabel: label || null,
+          title: channelTitle
+        };
+
+        if (channelMap.has(rawId)) {
+          channelMap.set(rawId, { ...channelMap.get(rawId), ...channelObj });
+          updatedCount++;
+        } else {
+          channelMap.set(rawId, channelObj);
+          addedCount++;
+        }
+      }
+
+      const finalChannels = Array.from(channelMap.values());
+      await updateSettings({ forceSubscribeChannels: JSON.stringify(finalChannels) });
+      await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+
+      let resp = `✅ <b>Bulk Import Complete!</b>\n\n• Added: <b>${addedCount}</b>\n• Updated: <b>${updatedCount}</b>\n• Total Channels: <b>${finalChannels.length}</b>`;
+      if (errors.length) {
+        resp += `\n\n⚠️ <i>Warnings / Skipped:</i>\n${errors.join('\n')}`;
+      }
+      await sendTelegramMessage(chatId, resp, {
+        inline_keyboard: [[{ text: toSmallCaps('Force Subscribe Settings'), callback_data: 'admin:fs_cfg:fsub' }]]
+      });
+      return true;
+    }
+
+    if (waitingFor.startsWith('fs_fsub_lbl_')) {
+      const idx = parseInt(waitingFor.replace('fs_fsub_lbl_', ''), 10);
+      const s = await getSettings();
+      const globalMode = s?.forceSubscribeMode || 'normal';
+      const channels = getForceSubChannelsList(s?.forceSubscribeChannels, globalMode);
+      if (channels[idx]) {
+        channels[idx].buttonLabel = rawText.trim();
+        await updateSettings({ forceSubscribeChannels: JSON.stringify(channels) });
+        await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+        await sendTelegramMessage(chatId, `✅ <b>Updated Button Label!</b>\n\nChannel: <b>${esc(channels[idx].title || channels[idx].id)}</b>\nLabel: <code>${esc(rawText.trim())}</code>`, {
+          inline_keyboard: [[{ text: toSmallCaps('Back to Force Sub'), callback_data: 'admin:fs_cfg:fsub' }]]
+        });
+        return true;
+      } else {
+        await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+        await sendTelegramMessage(chatId, `❌ Channel not found at specified index.`);
+        return true;
+      }
+    }
+
+    if (waitingFor === 'logChannelId') {
       const trimmed = rawText.trim();
       if (!/^-100\d+$/.test(trimmed) && !/^@[a-zA-Z0-9_]{4,}$/.test(trimmed)) {
         await sendTelegramMessage(chatId, `❌ <b>Invalid Log Channel ID!</b>\n\nMust be in format <code>-100dddddddddd</code> or <code>@channel_username</code>. Please try again or send /cancel.`);

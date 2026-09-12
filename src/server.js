@@ -44,11 +44,12 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     const formattedDomain = domain.startsWith('http://') || domain.startsWith('https://') ? domain : `https://${domain}`;
     const healthUrl = `${formattedDomain}/health`;
     const PING_INTERVAL = 10 * 60 * 1000; // 10 minutes
-    setInterval(async () => {
+    const pinger = setInterval(async () => {
       try {
         await fetch(healthUrl);
       } catch {}
     }, PING_INTERVAL);
+    pinger.unref?.();
     console.log('[Filestore Bot] Keep-Alive self-pinger active (10m interval).');
   }
 });

@@ -259,8 +259,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     if (sentMsgId) {
-      const deleteIds = messageId ? [sentMsgId, messageId] : [sentMsgId];
-      await scheduleAutoDelete(chatId, deleteIds, bundleCode);
+      await scheduleAutoDelete(chatId, [sentMsgId], bundleCode);
     } else {
       await sendTelegramMessage(chatId, `❌ <b>Failed to deliver file</b> (Storage message missing or unreadable).`);
     }

@@ -113,7 +113,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
         details: `Shortener token verified successfully (valid ${hours}h)`,
       }).catch(() => {});
 
-      return handleStartPayload(chatId, originalPayload, message, admin);
+      return handleStartPayload(chatId, originalPayload, message, admin, true);
     }
     return handleStartPayload(chatId, payload, message, admin);
   }
@@ -121,12 +121,13 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
   const canGenerate = admin;
 
   if (/^\/(bundle|quality)/i.test(rawText) && canGenerate) {
+    const isQualityCmd = /^\/quality/i.test(rawText);
     const customTitle = rawText.replace(/^\/(bundle|quality)/i, '').trim();
+
     const dbChannelId = await getDbChannelId();
     if (!dbChannelId) {
       const mainBotUsername = await getMainBotUsername();
       const setLink = `https://t.me/${mainBotUsername}?start=setting`;
-
       await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
       return;
     }
@@ -138,50 +139,36 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
     }
 
     const { setBundleSession } = await import('../filestore.js');
-    await setBundleSession(chatId, { step: 'collect', qualities: [], title: customTitle || '' });
 
-    const titleNote = customTitle
-      ? `📌 <b>Release Title:</b> <code>${esc(customTitle)}</code>\n\n`
-      : `📌 <b>Release Title:</b> <i>Not set</i> (type the anime/movie name anytime to set it)\n\n`;
+    if (isQualityCmd) {
+      await setBundleSession(chatId, { step: 'collect', qualities: [], title: customTitle || '' });
 
-    await sendTelegramMessage(chatId, `🎛 <b>Create Multi-Quality Bundle</b>\n\n${titleNote}Send or forward each video resolution for this release (e.g. 480p, 720p, 1080p).\n\n💡 <i>The bot auto-detects video resolution and file size!</i>\n\nSend /done when finished, or /cancel to abort.`, {
-      inline_keyboard: [
-        [{ text: toSmallCaps('Finish Bundle'), callback_data: 'admin:bundle_done' }],
-        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
-      ]
-    });
-    return;
-  }
+      const titleNote = customTitle
+        ? `📌 <b>Release Title:</b> <code>${esc(customTitle)}</code>\n\n`
+        : `📌 <b>Release Title:</b> <i>Not set</i> (type the anime/movie name anytime to set it)\n\n`;
 
-  if (/^\/bundle/i.test(rawText) && canGenerate) {
-    const dbChannelId = await getDbChannelId();
-    if (!dbChannelId) {
-      const mainBotUsername = await getMainBotUsername();
-      const setLink = `https://t.me/${mainBotUsername}?start=setting`;
-      await sendTelegramMessage(chatId, `❌ <b>Database Channel not set!</b>\n\nPlease configure your DB Channel ID in the bot settings first.\n\n<a href="${setLink}">⚙️ Open Settings</a>`);
+      await sendTelegramMessage(chatId, `🎛 <b>Create Multi-Quality Bundle</b>\n\n${titleNote}Send or forward each video resolution for this release (e.g. 480p, 720p, 1080p).\n\n💡 <i>The bot auto-detects video resolution and file size!</i>\n\nSend /done when finished, or /cancel to abort.`, {
+        inline_keyboard: [
+          [{ text: toSmallCaps('Finish Bundle'), callback_data: 'admin:bundle_done' }],
+          [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
+        ]
+      });
       return;
     }
 
-    if (!(await isBotAdmin(dbChannelId))) {
-      const helpMsg = `❌ <b>Permissions Required!</b>\n\nI am not an administrator in the DB channel (<code>${dbChannelId}</code>) or I don't have permission to post messages.\n\n<b>To fix this:</b>\n1. Add this bot as an Admin in your DB channel.\n2. Ensure 'Post Messages' permission is enabled.`;
-      await sendTelegramMessage(chatId, helpMsg);
-      return;
-    }
-
+    // /bundle command flow:
     const { extractChannelMessageRange, extractChannelMessage } = await import('../bot-helpers.js');
 
     // 1. Check if user sent range directly with command: /bundle <link1> <link2>
     const range = await extractChannelMessageRange(rawText);
     if (range) {
       const { processBundleRange } = await import('../commands/admin.js');
-      await processBundleRange(chatId, range, null, '', { userId: chatId, username: message.from?.username, firstName: message.from?.first_name });
+      await processBundleRange(chatId, range, null, customTitle || '', { userId: chatId, username: message.from?.username, firstName: message.from?.first_name });
       return;
     }
 
     // 2. Check if user sent single first link with command: /bundle <link1>
-    const { setBundleSession } = await import('../filestore.js');
     const single = await extractChannelMessage(message);
-
     if (single) {
       const promptMsg = await sendTelegramMessage(chatId, `🎛 <b>Create Multi-Quality Bundle</b>\n\n` +
         `✅ <b>First Message Saved:</b> <code>#${single.msgId}</code>\n\n` +
@@ -195,14 +182,18 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
         srcChannelId: single.channelId,
         srcFirstMsgId: single.msgId,
         qualities: [],
-        title: '',
+        title: customTitle || '',
         sessionMsgId: promptMsg?.result?.message_id
       });
       return;
     }
 
     // 3. Plain /bundle interactive start:
+    const titleNote = customTitle
+      ? `📌 <b>Release Title:</b> <code>${esc(customTitle)}</code>\n\n`
+      : '';
     const promptMsg = await sendTelegramMessage(chatId, `🎛 <b>Create Multi-Quality Bundle</b>\n\n` +
+      titleNote +
       `Send the <b>first message link</b> (or forward the first video):\n` +
       `Example: <code>https://t.me/c/1234567890/101</code>\n\n` +
       `<i>💡 You can also send both links together:</i>\n` +
@@ -215,7 +206,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
     await setBundleSession(chatId, {
       step: 'first',
       qualities: [],
-      title: '',
+      title: customTitle || '',
       sessionMsgId: promptMsg?.result?.message_id
     });
     return;
@@ -296,16 +287,19 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
   }
 
   if (/^\/(backup|exportdb)/i.test(rawText) && admin) {
-    const { sendTelegramFileBuffer } = await import('../bot-common.js');
-    const filesColl = await getCollection('files');
-    const allFiles = await filesColl.find({}).toArray();
-
-    const jsonStr = JSON.stringify(allFiles, null, 2);
-    const buffer = Buffer.from(jsonStr, 'utf-8');
-    const filename = `filestore_backup_${new Date().toISOString().slice(0, 10)}.json`;
-    const caption = `💾 <b>Database Backup</b>\n\nTotal Stored Records: <b>${allFiles.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`;
-
-    await sendTelegramFileBuffer(chatId, buffer, filename, caption);
+    const statusMsg = await sendTelegramMessage(chatId, `⏳ <i>Generating full database backup...</i>`);
+    try {
+      const { sendDatabaseBackup } = await import('../bot-helpers.js');
+      const sendRes = await sendDatabaseBackup(chatId);
+      if (statusMsg?.ok && statusMsg?.messageId) {
+        await deleteTelegramMessage(chatId, statusMsg.messageId).catch(() => {});
+      }
+      if (!sendRes?.ok) {
+        await sendTelegramMessage(chatId, `❌ <b>Failed to send database backup:</b> ${sendRes?.reason || 'Unknown error'}`);
+      }
+    } catch (err) {
+      await sendTelegramMessage(chatId, `❌ <b>Database backup failed:</b> ${err.message}`);
+    }
     return;
   }
 
@@ -533,24 +527,6 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
         [{ text: toSmallCaps('Cancel'), callback_data: 'admin:broadcast_cancel_draft' }]
       ]
     });
-    return;
-  }
-
-  if (/^\/backup/i.test(rawText) && admin) {
-    const statusMsg = await sendTelegramMessage(chatId, `⏳ <i>Generating full database backup...</i>`);
-    try {
-      const { sendDatabaseBackup } = await import('../bot-helpers.js');
-      const sendRes = await sendDatabaseBackup(chatId);
-      if (statusMsg?.ok && statusMsg?.messageId) {
-        await deleteTelegramMessage(chatId, statusMsg.messageId).catch(() => {});
-      }
-      if (!sendRes?.ok) {
-        await sendTelegramMessage(chatId, `❌ <b>Failed to send database backup:</b> ${sendRes?.reason || 'Unknown error'}`);
-      }
-    } catch (err) {
-      await sendTelegramMessage(chatId, `❌ <b>Database backup failed:</b> ${err.message}`);
-    }
-    return;
   }
 
   if (/^\/ban(\s+|$)/i.test(rawText) && admin) {
@@ -904,6 +880,17 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
 
   if (/^\/me$/i.test(rawText.trim())) {
     const cs = await getSettings();
+    if (cs.referralDisabled === '1') {
+      const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\n<i>Referral system is disabled on this bot.</i>`;
+      if (cs?.bannerProfile) {
+        const { sendTelegramPhoto } = await import('../bot-common.js');
+        await sendTelegramPhoto(chatId, cs.bannerProfile, text);
+      } else {
+        await sendTelegramMessage(chatId, text);
+      }
+      return;
+    }
+
     const botUsername = await getBotUsername();
     const { getReferralStats, hasPremium } = await import('../bot-users.js');
     const refs = await getReferralStats(chatId);
@@ -1091,30 +1078,6 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
 
       await editTelegramMessage(chatId, msg.messageId, text);
     }
-    return;
-  }
-
-  if (/^\/me/i.test(rawText)) {
-    const cs = await getSettings();
-
-    if (cs.referralDisabled === '1') {
-       await sendTelegramMessage(chatId, `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\n<i>Referral system is disabled on this bot.</i>`);
-       return;
-    }
-
-    const refs = await getReferralStats(chatId);
-    const premium = await hasPremium(chatId);
-    let premiumText = 'Standard';
-    if (premium) {
-      const user = await users.findOne({ _id: String(chatId) });
-      const globalTtl = user && user.premiumUntil ? Math.round((new Date(user.premiumUntil).getTime() - Date.now()) / 1000) : 0;
-      premiumText = `Premium (${globalTtl > 0 ? Math.ceil(globalTtl / (24 * 3600)) : 'Lifetime'} days left)`;
-    }
-    const botUsername = await getBotUsername();
-    const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
-    const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\nStatus: <b>${premiumText}</b>\nReferrals: <b>${refs}</b>\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n<i>Share this link to earn Premium access! 3 referrals = 24h Premium.</i>`;
-    await sendTelegramMessage(chatId, text);
-    return;
   }
 
   if (/^\/(temptoken|sharetemp)/i.test(rawText)) {

@@ -45,9 +45,12 @@ export async function isBotAdmin(channelId) {
   const botId = await getBotId();
   const res = await getChatMember(channelId, botId);
   if (res.ok) {
-    const status = res.result?.status;
-    // Must be admin or creator
-    return ['administrator', 'creator'].includes(status);
+    const member = res.result;
+    const status = member?.status;
+    if (status === 'creator') return true;
+    if (status === 'administrator') {
+      return member.can_post_messages !== false;
+    }
   }
   return false;
 }
@@ -842,14 +845,18 @@ export async function checkChannelsHealth() {
           const chatRes = await getChat(c.id);
           const adminRes = await isBotAdmin(c.id);
           const title = c.title && c.title !== c.id ? c.title : (chatRes.ok ? chatRes.result?.title : c.id);
+          const isPublic = Boolean(chatRes.result?.username);
+          const channelMode = c.mode || globalMode;
+          const requiresAdmin = channelMode === 'join_request' || !isPublic;
+          const isOk = chatRes.ok && (!requiresAdmin || adminRes);
           return {
             id: c.id,
             title,
-            mode: c.mode || globalMode,
-            isOk: chatRes.ok && adminRes,
+            mode: channelMode,
+            isOk,
             accessible: chatRes.ok,
             isAdmin: adminRes,
-            error: !chatRes.ok ? (chatRes.description || chatRes.reason || 'Cannot access channel') : (!adminRes ? 'Bot is not an admin' : null),
+            error: !chatRes.ok ? (chatRes.description || chatRes.reason || 'Cannot access channel') : (requiresAdmin && !adminRes ? 'Bot is not an admin' : null),
           };
         } catch (err) {
           return {
@@ -1084,6 +1091,7 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
   const jobId = `auto_del_${chatId}_${Date.now()}_${randomBytes(4).toString('hex')}`;
 
   // Persist to MongoDB so deletions survive Render restarts / redeployments
+  let dbPersisted = false;
   try {
     const autoDeletes = await getCollection('auto_deletes');
     await autoDeletes.insertOne({
@@ -1094,19 +1102,22 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
       deleteAt: new Date(Date.now() + ms),
       createdAt: new Date(),
     });
+    dbPersisted = true;
   } catch (err) {
     log('error', 'Failed to persist auto-delete job to database', { errorMessage: err.message });
   }
 
   // Set in-memory timeout with atomic findOneAndDelete to prevent race condition / double messages
-  setTimeout(async () => {
+  const delTimer = setTimeout(async () => {
     try {
-      const autoDeletes = await getCollection('auto_deletes');
-      const claimed = await autoDeletes.findOneAndDelete({ _id: jobId });
-      const job = claimed?.value !== undefined ? claimed.value : claimed;
-      if (!job) {
-        // Already processed by background worker or another instance
-        return;
+      if (dbPersisted) {
+        const autoDeletes = await getCollection('auto_deletes');
+        const claimed = await autoDeletes.findOneAndDelete({ _id: jobId });
+        const job = claimed?.value !== undefined ? claimed.value : claimed;
+        if (!job) {
+          // Already processed by background worker or another instance
+          return;
+        }
       }
 
       await deleteTelegramMessages(chatId, ids).catch(() => {});
@@ -1135,6 +1146,7 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
       log('error', 'Auto-delete timer error', { errorMessage: err.message });
     }
   }, ms);
+  delTimer.unref?.();
 }
 
 // ─── Background Auto-Delete Worker ───────────────────────────────────────────
@@ -1198,7 +1210,7 @@ export function startAutoDeleteWorker(intervalMs = 30000) {
 
 // ─── Database Backup System ───────────────────────────────────────────────────
 export async function generateDatabaseBackupBuffer() {
-  const collectionsToExport = ['files', 'batches', 'bundles', 'users', 'channels', 'settings'];
+  const collectionsToExport = ['files', 'users', 'channels', 'settings', 'stats', 'temp_tokens'];
   const backupData = {
     version: '1.0',
     timestamp: new Date().toISOString(),
@@ -1215,6 +1227,7 @@ export async function generateDatabaseBackupBuffer() {
     }
   }
 
+  const allFiles = backupData.collections.files || [];
   const jsonStr = JSON.stringify(backupData, null, 2);
   const buffer = Buffer.from(jsonStr, 'utf-8');
   const dateStr = new Date().toISOString().slice(0, 10);
@@ -1225,9 +1238,9 @@ export async function generateDatabaseBackupBuffer() {
     filename,
     sizeBytes: buffer.length,
     summary: {
-      files: backupData.collections.files?.length || 0,
-      batches: backupData.collections.batches?.length || 0,
-      bundles: backupData.collections.bundles?.length || 0,
+      files: allFiles.filter(f => f.type !== 'batch' && f.type !== 'bundle').length,
+      batches: allFiles.filter(f => f.type === 'batch').length,
+      bundles: allFiles.filter(f => f.type === 'bundle').length,
       users: backupData.collections.users?.length || 0,
     }
   };
@@ -1255,9 +1268,17 @@ export function startDailyBackupWorker() {
   if (dailyBackupWorkerStarted) return;
   dailyBackupWorkerStarted = true;
 
-  // Schedule daily backup every 24 hours
-  setInterval(async () => {
+  const runBackupCheck = async () => {
     try {
+      const sessions = await getCollection('sessions');
+      const lastDoc = await sessions.findOne({ _id: 'worker:daily_backup_last' });
+      const lastRun = lastDoc?.val ? new Date(lastDoc.val).getTime() : 0;
+      const now = Date.now();
+
+      if (now - lastRun < 24 * 60 * 60 * 1000) {
+        return;
+      }
+
       const { getLogChannelId } = await import('./bot-logs.js');
       const { getAdminIds } = await import('./bot-users.js');
       const logChannelId = await getLogChannelId();
@@ -1266,12 +1287,25 @@ export function startDailyBackupWorker() {
 
       if (targetChatId) {
         await sendDatabaseBackup(targetChatId);
+        await sessions.updateOne(
+          { _id: 'worker:daily_backup_last' },
+          { $set: { val: new Date().toISOString() } },
+          { upsert: true }
+        );
         log('info', 'Automated daily database backup completed', { targetChatId });
       }
     } catch (err) {
       log('error', 'Daily backup worker error', { errorMessage: err.message });
     }
-  }, 24 * 60 * 60 * 1000);
+  };
+
+  // Run initial check upon startup
+  runBackupCheck().catch(() => {});
+  // Poll hourly with unref to minimize event loop wakeups
+  const timer = setInterval(() => {
+    runBackupCheck().catch(() => {});
+  }, 60 * 60 * 1000);
+  timer.unref?.();
 }
 
 export async function registerWebhook(token, webhookUrl) {

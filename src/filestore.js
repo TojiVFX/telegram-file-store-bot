@@ -826,7 +826,7 @@ export async function getTopFiles(limit = 10) {
 
 export async function getDownloadActivity(days = 7) {
   try {
-    const files = await getCollection('files');
+    const logs = await getCollection('activity_logs');
 
     // Build day-by-day map for last N days
     const dayMap = {};
@@ -842,17 +842,24 @@ export async function getDownloadActivity(days = 7) {
     cutoffDate.setDate(cutoffDate.getDate() - (days - 1));
     const cutoffKey = cutoffDate.toISOString().slice(0, 10);
 
-    // Only query files accessed within the last N days with light projection
-    const recentFiles = await files.find(
-      { lastAccessedAt: { $gte: cutoffKey }, accessCount: { $gt: 0 } },
-      { projection: { lastAccessedAt: 1, accessCount: 1 } }
-    ).toArray();
+    const agg = await logs.aggregate([
+      {
+        $match: {
+          date: { $gte: cutoffKey },
+          eventType: { $in: ['file_access', 'batch_access', 'bundle_access'] }
+        }
+      },
+      {
+        $group: {
+          _id: '$date',
+          count: { $sum: 1 }
+        }
+      }
+    ]).toArray();
 
-    // Count accesses per day from lastAccessedAt
-    for (const f of recentFiles) {
-      const dateKey = String(f.lastAccessedAt || '').slice(0, 10);
-      if (dayMap[dateKey]) {
-        dayMap[dateKey].count += (f.accessCount || 0);
+    for (const item of agg) {
+      if (dayMap[item._id]) {
+        dayMap[item._id].count = item.count;
       }
     }
 
@@ -866,30 +873,23 @@ export async function getDownloadActivity(days = 7) {
 export async function getDailyFileStats() {
   try {
     const files = await getCollection('files');
+    const logs = await getCollection('activity_logs');
     const today = new Date().toISOString().slice(0, 10);
 
-    const [createdToday, totalLinks, aggResult] = await Promise.all([
+    const [createdToday, totalLinks, downloadsToday, allTimeAgg] = await Promise.all([
       files.countDocuments({ createdAt: { $gte: today } }),
       files.countDocuments(),
+      logs.countDocuments({
+        date: today,
+        eventType: { $in: ['file_access', 'batch_access', 'bundle_access'] }
+      }),
       files.aggregate([
-        {
-          $facet: {
-            allTimeDownloads: [
-              { $match: { accessCount: { $gt: 0 } } },
-              { $group: { _id: null, total: { $sum: '$accessCount' } } }
-            ],
-            downloadsToday: [
-              { $match: { lastAccessedAt: { $gte: today }, accessCount: { $gt: 0 } } },
-              { $group: { _id: null, total: { $sum: '$accessCount' } } }
-            ]
-          }
-        }
+        { $match: { accessCount: { $gt: 0 } } },
+        { $group: { _id: null, total: { $sum: '$accessCount' } } }
       ]).toArray()
     ]);
 
-    const facet = aggResult[0] || {};
-    const allTimeDownloads = facet.allTimeDownloads?.[0]?.total || 0;
-    const downloadsToday = facet.downloadsToday?.[0]?.total || 0;
+    const allTimeDownloads = allTimeAgg[0]?.total || 0;
 
     return {
       createdToday,
@@ -1379,7 +1379,8 @@ export async function deleteStoredRecord(code) {
 
   // Clean up any session locks or temp tokens referencing this code
   const sessions = await getCollection('sessions');
-  await sessions.deleteMany({ _id: { $regex: cleanCode } }).catch(() => {});
+  const escapedCode = cleanCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  await sessions.deleteMany({ _id: { $regex: escapedCode } }).catch(() => {});
 
   const tempTokens = await getCollection('temp_tokens');
   await tempTokens.deleteMany({ targetCode: cleanCode }).catch(() => {});
@@ -1435,9 +1436,14 @@ export async function rebuildChannelStorage(targetChannelId, onProgress = null) 
     const files = await getCollection('files');
     const allDocs = await files.find({}).toArray();
 
-    // Filter documents that can be processed via cached fileId
+    // Filter documents that can be processed via cached fileId or source channels
     const eligibleDocs = allDocs.filter(d => {
       if (d.type === 'bundle' && Array.isArray(d.qualities) && d.qualities.some(q => q.fileId)) return true;
+      if (d.type === 'batch') {
+        const hasBackup = d.backupDbChannelId && Array.isArray(d.backupDbMessageIds) && d.backupDbMessageIds.length > 0;
+        const hasPrimary = d.dbChannelId && Array.isArray(d.dbMessageIds) && d.dbMessageIds.length > 0;
+        return hasBackup || hasPrimary;
+      }
       if (d.fileId) return true;
       return false;
     });
@@ -1485,6 +1491,36 @@ export async function rebuildChannelStorage(targetChannelId, onProgress = null) 
             restored++;
           } else {
             failed++;
+          }
+        } else if (doc.type === 'batch') {
+          const { copyIntoDbChannel } = await import('./bot-helpers.js');
+          const hasBackup = doc.backupDbChannelId && Array.isArray(doc.backupDbMessageIds) && doc.backupDbMessageIds.length > 0;
+          const srcCid = hasBackup ? doc.backupDbChannelId : doc.dbChannelId;
+          const srcMsgIds = hasBackup ? doc.backupDbMessageIds : doc.dbMessageIds;
+
+          let batchFailed = false;
+          const newMsgIds = [];
+
+          for (const mid of srcMsgIds) {
+            const cRes = await copyIntoDbChannel(targetCid, srcCid, mid);
+            if (cRes?.ok && cRes.messageId) {
+              newMsgIds.push(cRes.messageId);
+            } else {
+              batchFailed = true;
+              break;
+            }
+            await new Promise(r => setTimeout(r, 60));
+          }
+
+          if (!batchFailed && newMsgIds.length === srcMsgIds.length) {
+            await files.updateOne(
+              { _id: doc._id },
+              { $set: { dbChannelId: targetCid, dbMessageIds: newMsgIds, rebuiltAt: new Date().toISOString() } }
+            );
+            restored++;
+          } else {
+            failed++;
+            log('warn', 'rebuildChannelStorage failed for batch', { code: doc._id });
           }
         } else if (doc.fileId) {
           const caption = doc.title ? `<b>${esc(doc.title)}</b>` : '';
