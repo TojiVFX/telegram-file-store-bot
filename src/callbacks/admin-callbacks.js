@@ -229,7 +229,6 @@ export async function renderStorageAudit(chatId, messageId = null) {
     const pTitleDisplay = primaryInfo.link ? `<a href="${primaryInfo.link}">${pTitle}</a>` : `<b>${pTitle}</b>`;
     primaryBlock = `• <b>Primary DB Channel:</b> ${pTitleDisplay}\n` +
       `  ID: <code>${primaryInfo.id}</code>\n` +
-      (primaryInfo.link ? `  Link: ${primaryInfo.link}\n` : '') +
       `  Status: <b>${primaryInfo.isAdmin ? '✅ Admin (Active)' : '❌ Not Admin / Inaccessible'}</b>\n\n`;
   } else {
     primaryBlock = `• <b>Primary DB Channel:</b> <code>Not Set</code>\n` +
@@ -242,7 +241,6 @@ export async function renderStorageAudit(chatId, messageId = null) {
     const bTitleDisplay = backupInfo.link ? `<a href="${backupInfo.link}">${bTitle}</a>` : `<b>${bTitle}</b>`;
     backupBlock = `• <b>Backup DB Channel:</b> ${bTitleDisplay}\n` +
       `  ID: <code>${backupInfo.id}</code>\n` +
-      (backupInfo.link ? `  Link: ${backupInfo.link}\n` : '') +
       `  Status: <b>${backupInfo.isAdmin ? '✅ Admin (Active)' : '❌ Bot Not Admin / Inaccessible'}</b>\n\n`;
   } else {
     backupBlock = `• <b>Backup DB Channel:</b> <code>Not Configured</code>\n` +
