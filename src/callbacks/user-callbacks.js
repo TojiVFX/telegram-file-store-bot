@@ -1,5 +1,5 @@
-import { getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessage, answerCallbackQuery } from '../bot-common.js';
-import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate, formatStartMessage } from '../bot-helpers.js';
+import { getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessage, answerCallbackQuery, getToken, getCurrentBotId } from '../bot-common.js';
+import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate, formatStartMessage, getMainBotUsername } from '../bot-helpers.js';
 import { generateTempToken, revokeTempToken, listActiveTempTokens, formatDuration } from '../filestore.js';
 
 export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin) {
@@ -9,6 +9,42 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       '💡 How to keep your files:\n\nTap and hold any file message, select "Forward", then choose "Saved Messages". You will keep it permanently even after auto-delete!',
       true
     );
+    return;
+  }
+
+  if (action === 'clone_health') {
+    await answerCallbackQuery(cq.id).catch(() => {});
+    const currentBotId = getCurrentBotId();
+    const workerUsername = await getBotUsername();
+    const mainBotUsername = await getMainBotUsername();
+
+    // Measure Telegram API ping latency
+    const pingStart = Date.now();
+    let apiStatus = '🟢 Online';
+    let latencyMs = 0;
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${getToken()}/getMe`);
+      latencyMs = Date.now() - pingStart;
+      if (!res.ok) apiStatus = '🔴 API Warning';
+    } catch {
+      apiStatus = '🔴 Network Error';
+    }
+
+    const report = `🟢 <b>Worker Node Health & Diagnostic</b>\n\n` +
+      `• <b>Node ID:</b> <code>${currentBotId || 'Worker'}</code>\n` +
+      `• <b>Bot:</b> @${esc(workerUsername || 'Worker')}\n` +
+      `• <b>Status:</b> ${apiStatus}\n` +
+      `• <b>API Latency:</b> <b>${latencyMs}ms</b>\n` +
+      `• <b>Role:</b> Ghost Fleet Delivery Node\n` +
+      `• <b>Main Gateway:</b> @${esc(mainBotUsername || 'MainBot')}\n\n` +
+      `<i>Node is healthy and ready to receive dispatch delivery jobs from the Main Gateway.</i>`;
+
+    const buttons = [
+      [{ text: toSmallCaps('⚙️ Manage in Main Bot'), url: `https://t.me/${mainBotUsername}?start=clone_view_${currentBotId}` }],
+      [{ text: toSmallCaps('🔄 Refresh Health'), callback_data: 'user:clone_health' }]
+    ];
+
+    await editTelegramMessage(chatId, messageId, report, { inline_keyboard: buttons });
     return;
   }
 

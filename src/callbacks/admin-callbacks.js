@@ -64,16 +64,18 @@ async function renderAutoDelMgmt(chatId, messageId) {
   await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
 }
 
-async function renderGhostFleetMgmt(chatId, messageId) {
+export async function renderGhostFleetMgmt(chatId, messageId = null) {
   const { getAllWorkerBots } = await import('../ghost-fleet.js');
   const s = await getSettings();
   const enabled = s.ghostFleetEnabled === '1';
   const workers = await getAllWorkerBots();
+  const relayId = s.relayChatId ? `<code>${s.relayChatId}</code> (Active 🛡️)` : '<i>Not configured (workers use direct copy or fallback)</i>';
 
   let text = `👻 <b>The Ghost Fleet (Decoupled Worker Bots)</b>\n\n` +
     `• Mode: <b>${enabled ? '🟢 Active (Decoupled Delivery)' : '⚪ Inactive (Direct Delivery)'}</b>\n` +
+    `• Air-Gap Relay Tunnel: ${relayId}\n` +
     `• Connected Nodes: <b>${workers.filter(w => w.enabled).length}/${workers.length}</b>\n\n` +
-    `<i>When active, the main bot never delivers media directly. It mints a 1-time secure dispatch token and delegates delivery to a disposable worker bot, keeping your main bot 100% immune to bans and DMCA reports.</i>\n\n`;
+    `<i>When active, the main bot never delivers media directly. With the Air-Gap Relay Tunnel configured, worker bots deliver media without ever being added to your DB Channel!</i>\n\n`;
 
   const workerButtons = [];
   if (workers.length === 0) {
@@ -102,12 +104,23 @@ async function renderGhostFleetMgmt(chatId, messageId) {
   buttons.push([
     { text: toSmallCaps('➕ Add Worker Bot'), callback_data: 'admin:add_worker_prompt' }
   ]);
+  const relayRow = [
+    { text: toSmallCaps(s.relayChatId ? '📡 Change Relay Tunnel' : '📡 Set Relay Tunnel'), callback_data: 'admin:set_relay_prompt' }
+  ];
+  if (s.relayChatId) {
+    relayRow.push({ text: toSmallCaps('❌ Clear Relay'), callback_data: 'admin:clear_relay' });
+  }
+  buttons.push(relayRow);
   if (workerButtons.length > 0) {
     buttons.push(...workerButtons);
   }
   buttons.push(...navButtons('admin:dashboard'));
 
-  await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  if (messageId) {
+    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  } else {
+    await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+  }
 }
 
 async function renderBannersMgmt(chatId, messageId) {
@@ -1457,6 +1470,27 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     } else {
       await safeAnswer(cq.id, `Could not remove worker (it might be configured in .env).`, true);
     }
+    await renderGhostFleetMgmt(chatId, messageId);
+  } else if (action === 'set_relay_prompt') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'relay_chat_id', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    const promptText = `📡 <b>Configure Air-Gapped Relay Tunnel</b>\n\n` +
+      `Create a private group or channel (e.g. "Transit Tunnel") and add:\n` +
+      `1. <b>Main Bot</b> (as Admin with Post & Delete Messages permissions)\n` +
+      `2. <b>Worker Bot(s)</b> (as Admin with Post Messages permissions)\n\n` +
+      `Forward any message from that group/channel here, or type the ID directly (e.g. <code>-100123456789</code>).\n\n` +
+      `<i>Your Main DB Storage Channel remains 100% sacred and isolated — no worker bots will ever touch it!</i>\n\n` +
+      `Send /cancel to abort.`;
+    await editTelegramMessage(chatId, messageId, promptText, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:ghost_fleet' }]]
+    });
+    return;
+  } else if (action === 'clear_relay') {
+    await updateSettings({ relayChatId: '' });
+    await safeAnswer(cq.id, 'Air-Gap Relay Tunnel removed.');
     await renderGhostFleetMgmt(chatId, messageId);
   } else if (action === 'batch_start') {
     const dbError = await getDbChannelReadinessError();

@@ -206,19 +206,25 @@ export function getExportLinksKeyboard() {
 }
 
 export async function buildStartMenuButtons(admin) {
+  if (!isMainBot()) {
+    const mainBotUsername = await getMainBotUsername();
+    const botId = await getBotId();
+    if (admin) {
+      return [
+        [{ text: toSmallCaps('⚙️ Manage in Main Bot'), url: `https://t.me/${mainBotUsername}?start=clone_view_${botId}` }],
+        [{ text: toSmallCaps('🔄 Check Health'), callback_data: 'user:clone_health' }]
+      ];
+    }
+    return [
+      [{ text: toSmallCaps('🚀 Open Main Bot'), url: `https://t.me/${mainBotUsername}` }]
+    ];
+  }
+
   const buttons = [
     [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
   ];
   if (admin) {
-    if (isMainBot()) {
-      buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
-    } else {
-      const botId = await getBotId();
-      if (botId) {
-        const mainBotUsername = await getMainBotUsername();
-        buttons.unshift([{ text: 'Clone Dashboard', url: `https://t.me/${mainBotUsername}?start=clone_view_${botId}` }]);
-      }
-    }
+    buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
   }
   return buttons.map(row => row.map(btn => ({ ...btn, text: toSmallCaps(btn.text) })));
 }
@@ -510,13 +516,28 @@ export async function copyIntoDbChannel(dbChannelId, fromChatId, msgId, protectC
 }
 
 export async function copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent = false) {
-  return botContext.run({ token: getMainToken() }, async () => {
-    const res = await copyMessage(toChatId, dbChannelId, msgId, protectContent);
-    if (!res?.ok && isChannelFatalError(res?.reason)) {
-      alertAdminChannelFailure(dbChannelId, 'DB Storage Channel', res.reason).catch(() => {});
+  const token = getToken();
+  const isWorker = token !== getMainToken();
+
+  // If running in a worker context, check if an Air-Gapped Relay Tunnel is active
+  if (isWorker) {
+    const { getRelayChatId, deliverViaRelayTunnel } = await import('./ghost-fleet.js');
+    const relayChatId = await getRelayChatId();
+    if (relayChatId) {
+      const relayRes = await deliverViaRelayTunnel(toChatId, dbChannelId, msgId, protectContent);
+      if (relayRes?.ok) return relayRes;
     }
-    return res;
-  });
+  }
+
+  let res = await copyMessage(toChatId, dbChannelId, msgId, protectContent);
+  if (!res?.ok && isWorker) {
+    // If worker bot lacks channel access and no relay, fallback to main bot token
+    res = await botContext.run({ token: getMainToken() }, () => copyMessage(toChatId, dbChannelId, msgId, protectContent));
+  }
+  if (!res?.ok && isChannelFatalError(res?.reason)) {
+    alertAdminChannelFailure(dbChannelId, 'DB Storage Channel', res.reason).catch(() => {});
+  }
+  return res;
 }
 
 export async function checkChannelMessageExists(channelId, messageId) {
@@ -1008,17 +1029,27 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     ? dbMessageIds.length
     : (dbFirstMsgId && dbLastMsgId ? dbLastMsgId - dbFirstMsgId + 1 : 0);
 
+  const isWorker = getToken() !== getMainToken();
+  let hasRelay = false;
+  if (isWorker) {
+    const { getRelayChatId } = await import('./ghost-fleet.js');
+    hasRelay = Boolean(await getRelayChatId());
+  }
+
   if (Array.isArray(dbMessageIds)) {
-    // Attempt fast batch copy via Telegram copyMessages first if no backup channel is needed
+    // Attempt fast batch copy via Telegram copyMessages first if no backup channel is needed and not in relay mode
     const hasBackup = Boolean(backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds.length);
     let batchCopied = false;
 
     // Telegram copyMessages requires IDs to be strictly increasing
     const isIncreasing = dbMessageIds.every((id, idx) => idx === 0 || id > dbMessageIds[idx - 1]);
-    if (isIncreasing && !hasBackup && dbMessageIds.length > 1) {
-      const copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
-        copyTelegramMessages(toChatId, dbChannelId, dbMessageIds, protectContent)
-      );
+    if (isIncreasing && !hasBackup && !hasRelay && dbMessageIds.length > 1) {
+      let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, dbMessageIds, protectContent);
+      if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
+        copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
+          copyTelegramMessages(toChatId, dbChannelId, dbMessageIds, protectContent)
+        );
+      }
       if (copyBatchRes?.ok && copyBatchRes.messageIds.length === dbMessageIds.length) {
         sentMessageIds.push(...copyBatchRes.messageIds);
         batchCopied = true;
@@ -1035,7 +1066,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
 
         // Seamless failover to backup DB channel if primary message fails
         if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds[i]) {
-          res = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[i], protectContent);
+          res = await copyFromDbChannel(toChatId, backupDbChannelId, backupMsgIds[i], protectContent);
         }
 
         if (res?.ok && res?.messageId) {
@@ -1057,10 +1088,13 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     }
 
     let batchCopied = false;
-    if (rangeIds.length > 1) {
-      const copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
-        copyTelegramMessages(toChatId, dbChannelId, rangeIds, protectContent)
-      );
+    if (rangeIds.length > 1 && !hasRelay) {
+      let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, rangeIds, protectContent);
+      if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
+        copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
+          copyTelegramMessages(toChatId, dbChannelId, rangeIds, protectContent)
+        );
+      }
       if (copyBatchRes?.ok && copyBatchRes.messageIds.length === rangeIds.length) {
         sentMessageIds.push(...copyBatchRes.messageIds);
         batchCopied = true;

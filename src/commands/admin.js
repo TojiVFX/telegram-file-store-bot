@@ -604,6 +604,38 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       return true;
     }
 
+    if (waitingFor === 'relay_chat_id') {
+      const forwardChat   = message.forward_from_chat;
+      const forwardOrigin = message.forward_origin;
+      const typedId        = rawText.trim();
+
+      let targetCid;
+      if (forwardChat?.id) {
+        targetCid = forwardChat.id;
+      } else if (forwardOrigin?.chat?.id) {
+        targetCid = forwardOrigin.chat.id;
+      } else if (/^-100\d+$/.test(typedId)) {
+        targetCid = typedId;
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the relay group/channel, or send the chat ID directly</b> (e.g. <code>-100123456789</code>).`);
+        return true;
+      }
+
+      if (!(await isBotAdmin(targetCid))) {
+        await sendTelegramMessage(chatId, `❌ <b>Main Bot is not an admin in this Relay chat!</b>\n\nPlease add the Main Bot as an administrator in the relay group/channel with Post & Delete Messages permissions and try again.`);
+        return true;
+      }
+
+      await updateSettings({ relayChatId: String(targetCid) });
+      await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+
+      await sendTelegramMessage(chatId, `✅ <b>Air-Gapped Relay Tunnel Configured!</b>\n\n• Relay Chat ID: <code>${targetCid}</code>\n\nAll worker deliveries will now transit through this tunnel. <b>Your Main DB Channel remains 100% sacred and isolated with ZERO workers inside it!</b>`, {
+        inline_keyboard: [[{ text: toSmallCaps('Ghost Fleet Manager'), callback_data: 'admin:ghost_fleet' }]]
+      });
+
+      return true;
+    }
+
     if (waitingFor === 'rebuild_channel_id') {
       const forwardChat   = message.forward_from_chat;
       const forwardOrigin = message.forward_origin;

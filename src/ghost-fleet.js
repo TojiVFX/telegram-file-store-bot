@@ -302,3 +302,114 @@ export async function registerAllWorkerWebhooks(domain, secretToken) {
     }
   }
 }
+
+/**
+ * Retrieves configured Relay Tunnel Chat ID (a private transit group/channel)
+ * where Main Bot and Worker Bots meet for air-gapped deliveries.
+ */
+export async function getRelayChatId() {
+  const s = await getSettings();
+  return s?.relayChatId || process.env.RELAY_CHAT_ID || null;
+}
+
+/**
+ * Executes an Air-Gapped media delivery through the Relay Tunnel:
+ * 1. Main Bot (with DB channel permissions) copies media into Relay Tunnel.
+ * 2. Worker Bot (with worker token) copies media from Relay Tunnel to User.
+ * 3. Immediate cleanup: deletes transit message from Relay Tunnel.
+ *
+ * Result: User receives media from @WorkerBot, while the Main DB Channel
+ * never contains any worker bots!
+ */
+export async function deliverViaRelayTunnel(toChatId, dbChannelId, dbMessageId, protectContent = false) {
+  const relayChatId = await getRelayChatId();
+  if (!relayChatId) return { ok: false, reason: 'relay_not_configured' };
+
+  const { copyMessage } = await import('./bot-helpers.js');
+  const { deleteTelegramMessage } = await import('./bot-common.js');
+
+  // Step 1: Main Bot copies media from protected DB Channel to the Relay Tunnel
+  const transitRes = await botContext.run({ token: getMainToken() }, () =>
+    copyMessage(relayChatId, dbChannelId, dbMessageId, false)
+  );
+
+  if (!transitRes?.ok || !transitRes?.messageId) {
+    log('error', 'Relay transit copy failed', { relayChatId, dbChannelId, dbMessageId, reason: transitRes?.reason });
+    return { ok: false, reason: transitRes?.reason || 'transit_copy_failed' };
+  }
+
+  const transitMsgId = transitRes.messageId;
+
+  try {
+    // Step 2: Worker Bot copies media from Relay Tunnel directly to User
+    const workerRes = await copyMessage(toChatId, relayChatId, transitMsgId, protectContent);
+
+    // Step 3: Delete the intermediate transit message from the Relay Tunnel immediately
+    deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
+
+    return workerRes;
+  } catch (err) {
+    // Ensure cleanup even on error
+    deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
+    return { ok: false, reason: err.message };
+  }
+}
+
+/**
+ * Sequences a batch of messages through the Relay Tunnel:
+ * For each message in the batch:
+ *   Main Bot copies to Relay -> Worker Bot copies to User -> Transit message deleted.
+ */
+export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, backupDbChannelId, backupMsgIds, protectContent = false, onProgress = null) {
+  const relayChatId = await getRelayChatId();
+  if (!relayChatId) return { ok: false, reason: 'relay_not_configured', sentMessageIds: [] };
+
+  const { copyMessage } = await import('./bot-helpers.js');
+  const { deleteTelegramMessage } = await import('./bot-common.js');
+
+  const sentMessageIds = [];
+  const totalCount = msgIds.length;
+  let failedCount = 0;
+
+  for (let i = 0; i < msgIds.length; i++) {
+    const srcMsgId = msgIds[i];
+    let transitRes = await botContext.run({ token: getMainToken() }, () =>
+      copyMessage(relayChatId, dbChannelId, srcMsgId, false)
+    );
+
+    // If primary DB message failed and backup is configured, try backup
+    if ((!transitRes?.ok || !transitRes?.messageId) && backupDbChannelId && Array.isArray(backupMsgIds) && backupMsgIds[i]) {
+      transitRes = await botContext.run({ token: getMainToken() }, () =>
+        copyMessage(relayChatId, backupDbChannelId, backupMsgIds[i], false)
+      );
+    }
+
+    if (transitRes?.ok && transitRes?.messageId) {
+      const transitMsgId = transitRes.messageId;
+      try {
+        const workerRes = await copyMessage(toChatId, relayChatId, transitMsgId, protectContent);
+        deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
+        if (workerRes?.ok && workerRes?.messageId) {
+          sentMessageIds.push(workerRes.messageId);
+        } else {
+          failedCount++;
+        }
+      } catch {
+        deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
+        failedCount++;
+      }
+    } else {
+      failedCount++;
+    }
+
+    if (typeof onProgress === 'function') {
+      await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+    }
+
+    if (totalCount > 3) {
+      await new Promise(r => setTimeout(r, 60));
+    }
+  }
+
+  return { ok: sentMessageIds.length > 0, sentMessageIds, failedCount };
+}

@@ -1,5 +1,5 @@
 import {
-  getCollection, getSettings, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc
+  getCollection, getSettings, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, isMainBot, getCurrentBotId
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser, checkChannelsHealth
@@ -36,6 +36,87 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
         });
       } catch {}
     })();
+  }
+
+  // ─── Clone / Worker Bot Router ────────────────────────────────────────────────
+  // Worker bots act strictly as media delivery nodes.
+  // All file uploads, channel storage, settings, and commands are centralized on the Main Bot.
+  if (!isMainBot()) {
+    const mainBotUsername = await getMainBotUsername();
+    const currentBotId = getCurrentBotId();
+
+    // 1. Ghost Fleet dispatch delivery token: allow through to deliver media!
+    if (/^\/start\s+dispatch_/i.test(rawText)) {
+      const payload = rawText.split(' ')[1];
+      return handleStartPayload(chatId, payload, message, admin);
+    }
+
+    // 2. /start without dispatch token
+    if (/^\/start/i.test(rawText)) {
+      if (admin) {
+        const workerUsername = await getBotUsername();
+        const text = `👻 <b>Ghost Fleet Worker Node</b>\n\n` +
+          `• <b>Node ID:</b> <code>${currentBotId || 'Worker'}</code>\n` +
+          `• <b>Bot:</b> @${esc(workerUsername || 'Worker')}\n` +
+          `• <b>Role:</b> Isolated Media Delivery Node\n` +
+          `• <b>Gateway:</b> @${esc(mainBotUsername || 'MainBot')}\n\n` +
+          `<i>This bot functions strictly as an isolated media delivery node. All file uploads, channel configs, broadcasts, settings, and commands are controlled centrally on your Main Bot.</i>`;
+        const buttons = [
+          [{ text: toSmallCaps('⚙️ Manage in Main Bot'), url: `https://t.me/${mainBotUsername}?start=clone_view_${currentBotId}` }],
+          [{ text: toSmallCaps('🔄 Check Node Health'), callback_data: 'user:clone_health' }]
+        ];
+        await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+        return;
+      } else {
+        const text = `⚡ <b>Filestore Delivery Node</b>\n\n` +
+          `👋 Welcome! This bot is an automated delivery node for <b>@${esc(mainBotUsername || 'MainBot')}</b>.\n\n` +
+          `To browse files, search content, or access your media links, please visit our main bot.`;
+        const buttons = [
+          [{ text: toSmallCaps('🚀 Open Main Bot'), url: `https://t.me/${mainBotUsername}` }]
+        ];
+        await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+        return;
+      }
+    }
+
+    // 3. Any other command (starts with /) on clone bot
+    if (rawText.startsWith('/')) {
+      if (admin) {
+        const text = `⚠️ <b>Commands Centralized on Main Bot</b>\n\n` +
+          `This worker node does not execute administrative commands directly.\n\n` +
+          `Please manage your files, channels, settings, and commands on your <b>Main Gateway Bot</b> (@${esc(mainBotUsername || 'MainBot')}).`;
+        const buttons = [
+          [{ text: toSmallCaps('⚙️ Go to Main Bot Admin'), url: `https://t.me/${mainBotUsername}?start=setting` }]
+        ];
+        await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+        return;
+      } else {
+        const text = `👋 <b>Filestore Delivery Node</b>\n\n` +
+          `Commands are disabled on this delivery node. Please use our Main Bot (<b>@${esc(mainBotUsername || 'MainBot')}</b>) instead.`;
+        const buttons = [
+          [{ text: toSmallCaps('🚀 Go to Main Bot'), url: `https://t.me/${mainBotUsername}` }]
+        ];
+        await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+        return;
+      }
+    }
+
+    // 4. Any direct file/media sent to clone bot
+    const hasMedia = message.document || message.video || message.audio || (message.photo && message.photo.length > 0);
+    if (hasMedia) {
+      if (admin) {
+        const text = `⚠️ <b>Uploads Disabled on Worker Node</b>\n\n` +
+          `To store files, batches, or multi-quality bundles, please send or forward them to your <b>Main Gateway Bot</b> (@${esc(mainBotUsername || 'MainBot')}).`;
+        const buttons = [
+          [{ text: toSmallCaps('🚀 Open Main Bot'), url: `https://t.me/${mainBotUsername}` }]
+        ];
+        await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+        return;
+      }
+      return;
+    }
+
+    return;
   }
 
   if (admin) {

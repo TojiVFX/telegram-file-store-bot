@@ -446,6 +446,12 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
     return;
   }
 
+  if ((payload?.startsWith('clone_view_') || payload === 'ghost_fleet') && admin) {
+    const { renderGhostFleetMgmt } = await import('../callbacks/admin-callbacks.js');
+    await renderGhostFleetMgmt(chatId, null);
+    return;
+  }
+
   if (payload?.startsWith('file_')) {
     const f = await getFile(payload);
     const s = await getSettings();
