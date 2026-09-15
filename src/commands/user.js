@@ -7,7 +7,7 @@ import {
 import {
   getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
   generateTempToken, getTempToken, revokeTempToken, listActiveTempTokens, parseDurationString, formatDuration,
-  recordVerificationRedeemed, deleteStoredRecord, updateStoredRecordTitle
+  recordVerificationRedeemed, deleteStoredRecord, updateStoredRecordTitle, getFile, getBatch, getBundle
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, getBannedUsers, broadcastToAll, getUserStats, addReferral, hasPremium, getReferralStats, upsertUser, getUserProfile, getTopReferrers } from '../bot-users.js';
@@ -706,14 +706,60 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
     return;
   }
 
-  if (/^\/delete\s+(\S+)/i.test(rawText) && admin) {
-    const code = rawText.match(/^\/delete\s+(\S+)/i)[1].trim();
-    const delRes = await deleteStoredRecord(code);
-    if (!delRes.ok) {
-      await sendTelegramMessage(chatId, `❌ Record <code>${esc(code)}</code> not found or could not be deleted.`);
+  if (/^\/delete(\s+|$)/i.test(rawText) && admin) {
+    const parts = rawText.trim().split(/\s+/);
+    if (parts.length < 2) {
+      await sendTelegramMessage(chatId, `ℹ️ <b>Usage:</b> <code>/delete &lt;file_code|batch_code|bundle_code&gt;</code>\n\nExample: <code>/delete file_abc123</code>\n\n<i>Destructive action is protected with a 2-step confirmation dialog.</i>`);
       return;
     }
-    await sendTelegramMessage(chatId, `🗑 <b>Record Deleted Successfully!</b>\n\n• Code: <code>${esc(delRes.code)}</code>\n• Type: <b>${delRes.type}</b>\n• Title: <b>${esc(delRes.title)}</b>\n\n<i>Database record and channel messages have been purged.</i>`);
+    const code = parts[1].trim();
+    let record = null;
+    let recordType = 'file';
+    if (code.startsWith('batch_')) {
+      record = await getBatch(code);
+      recordType = 'Batch';
+    } else if (code.startsWith('bundle_')) {
+      record = await getBundle(code);
+      recordType = 'Release Bundle';
+    } else {
+      record = await getFile(code);
+      recordType = 'Single File';
+    }
+
+    if (!record) {
+      await sendTelegramMessage(chatId, `❌ Record <code>${esc(code)}</code> not found in database.`);
+      return;
+    }
+
+    const title = record.title || record.fileName || record.bundleTitle || 'Untitled Record';
+    const confirmCard = `⚠️ <b>CONFIRM RECORD WIPE (Step 1/2)</b>\n\n` +
+      `Are you sure you want to permanently delete this record?\n\n` +
+      `• <b>Code:</b> <code>${esc(code)}</code>\n` +
+      `• <b>Type:</b> <b>${recordType}</b>\n` +
+      `• <b>Title:</b> <b>${esc(title)}</b>\n\n` +
+      `🚨 <b>Warning:</b> <i>This will permanently wipe this record from MongoDB and delete its file(s) from your storage channel(s). This action cannot be reversed!</i>`;
+
+    await sendTelegramMessage(chatId, confirmCard, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('🗑 Yes, Permanently Wipe Record'), callback_data: `admin:wipe_rec_exec:${code}` }],
+        [{ text: toSmallCaps('❌ Cancel'), callback_data: 'admin:wipe_rec_cancel' }]
+      ]
+    });
+    return;
+  }
+
+  if (/^\/(wipe|cleandb)(\s+|$)/i.test(rawText) && admin) {
+    const wipeCard = `🧹 <b>Wipe & Maintenance Control (2-Step Protected)</b>\n\n` +
+      `Select an operation to perform safely with confirmation:\n\n` +
+      `• <b>System Cache & Expired Data:</b> Purge expired temporary tokens, old session caches, processed auto-delete jobs, and logs older than 30 days.\n` +
+      `• <b>Wipe Specific Record:</b> Run <code>/delete &lt;code&gt;</code> to permanently delete any single file, batch, or bundle with 2-step verification.\n\n` +
+      `<i>All destructive wipe operations require secondary confirmation before executing.</i>`;
+    await sendTelegramMessage(chatId, wipeCard, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('🧹 Wipe Expired System Data'), callback_data: 'admin:wipe_sys_prompt' }],
+        [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]
+      ]
+    });
     return;
   }
 

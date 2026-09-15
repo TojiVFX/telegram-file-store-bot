@@ -336,7 +336,8 @@ export function getAdminHelpMessage() {
     `• <code>/broadcast &lt;message&gt;</code> — Mass broadcast with draft preview, test send, and pin options\n\n` +
     `✏️ <b>Record Management</b>\n` +
     `• <code>/editfile &lt;code&gt; &lt;new_title&gt;</code> (or <code>/rename</code>) — Update title of stored file, batch, or bundle\n` +
-    `• <code>/delete &lt;code&gt;</code> — Permanently remove record from database and storage channels` +
+    `• <code>/delete &lt;code&gt;</code> — Permanently remove record from DB & storage channels (2-step confirmed)\n` +
+    `• <code>/wipe</code> (or <code>/cleandb</code>) — Data wipe & system cleanup hub with 2-step verification` +
     `</blockquote>`;
 
   const buttons = [
@@ -910,6 +911,68 @@ export async function checkChannelsHealth() {
 
     return results;
   });
+}
+
+/**
+ * Resolves channel title, invite link (cached in session for 7 days), and admin status.
+ * Used by Storage & Backup Audit to display channel name alongside ID and direct link.
+ */
+export async function getChannelDisplayDetails(channelId) {
+  if (!channelId) return null;
+  const adminRes = await isBotAdmin(channelId);
+  let title = null;
+  let link = null;
+  let username = null;
+  let accessible = false;
+
+  try {
+    const chatRes = await getChat(channelId);
+    if (chatRes.ok && chatRes.result) {
+      accessible = true;
+      title = chatRes.result.title || null;
+      if (chatRes.result.username) {
+        username = chatRes.result.username;
+        link = `https://t.me/${username}`;
+      } else if (chatRes.result.invite_link) {
+        link = chatRes.result.invite_link;
+      }
+    }
+  } catch (err) {
+    log('warn', 'getChannelDisplayDetails: getChat failed', { channelId, error: err?.message });
+  }
+
+  // If no direct link found yet and bot is an admin, check cached invite link or generate a new one
+  if (!link && adminRes) {
+    try {
+      const sessions = await getCollection('sessions');
+      const cacheKey = `channel:link:${channelId}`;
+      const cacheDoc = await sessions.findOne({ _id: cacheKey });
+      if (cacheDoc && cacheDoc.val && cacheDoc.expiresAt > new Date()) {
+        link = cacheDoc.val;
+      } else {
+        const linkRes = await createChatInviteLink(channelId, false);
+        if (linkRes.ok && linkRes.result?.invite_link) {
+          link = linkRes.result.invite_link;
+          await sessions.updateOne(
+            { _id: cacheKey },
+            { $set: { val: link, expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000) } },
+            { upsert: true }
+          );
+        }
+      }
+    } catch (err) {
+      log('warn', 'getChannelDisplayDetails: createChatInviteLink failed', { channelId, error: err?.message });
+    }
+  }
+
+  return {
+    id: channelId,
+    title: title || 'Private Storage Channel',
+    username,
+    link,
+    isAdmin: adminRes,
+    accessible
+  };
 }
 
 

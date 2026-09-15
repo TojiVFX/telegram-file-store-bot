@@ -1,8 +1,8 @@
 import {
-  getCollection, getSettings, updateSettings, toSmallCaps, editTelegramMessage, answerCallbackQuery, sendTelegramMessage, logHistory, deleteTelegramMessage, sendTelegramVideo, sendTelegramPhoto, esc
+  getCollection, getSettings, updateSettings, toSmallCaps, editTelegramMessage, answerCallbackQuery, sendTelegramMessage, logHistory, deleteTelegramMessage, sendTelegramVideo, sendTelegramPhoto, esc, log
 } from '../bot-common.js';
 import {
-  getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId, getAdminDashboardKeyboard, getExportHubKeyboard, getExportTimeKeyboard, getExportLinksKeyboard, getDbChannelReadinessError
+  getBotUsername, getForceSubChannelsList, isBotAdmin, getDbChannelId, getAdminDashboardKeyboard, getExportHubKeyboard, getExportTimeKeyboard, getExportLinksKeyboard, getDbChannelReadinessError, getBackupDbChannelId
 } from '../bot-helpers.js';
 
 // ─── Shared nav row ─────────────────────────────────────────────────────────────
@@ -210,24 +210,48 @@ async function renderFsCfg(chatId, messageId, cfgType) {
 }
 
 export async function renderStorageAudit(chatId, messageId = null) {
-  const { getDbChannelId, getBackupDbChannelId, isBotAdmin } = await import('../bot-helpers.js');
+  const { getDbChannelId, getBackupDbChannelId, getChannelDisplayDetails } = await import('../bot-helpers.js');
   const { getStorageAuditStats } = await import('../filestore.js');
 
   const primaryCid = await getDbChannelId();
   const backupCid = await getBackupDbChannelId();
 
-  const primaryAdmin = primaryCid ? await isBotAdmin(primaryCid) : false;
-  const backupAdmin = backupCid ? await isBotAdmin(backupCid) : false;
+  const primaryInfo = primaryCid ? await getChannelDisplayDetails(primaryCid) : null;
+  const backupInfo = backupCid ? await getChannelDisplayDetails(backupCid) : null;
 
   const stats = await getStorageAuditStats();
   const redundancyPct = stats.total > 0 ? Math.round((stats.mirrored / stats.total) * 100) : 100;
   const cdnPct = stats.total > 0 ? Math.round(((stats.cachedFileIds || 0) / stats.total) * 100) : 100;
 
+  let primaryBlock = '';
+  if (primaryInfo) {
+    const pTitle = esc(primaryInfo.title);
+    const pTitleDisplay = primaryInfo.link ? `<a href="${primaryInfo.link}">${pTitle}</a>` : `<b>${pTitle}</b>`;
+    primaryBlock = `• <b>Primary DB Channel:</b> ${pTitleDisplay}\n` +
+      `  ID: <code>${primaryInfo.id}</code>\n` +
+      (primaryInfo.link ? `  Link: ${primaryInfo.link}\n` : '') +
+      `  Status: <b>${primaryInfo.isAdmin ? '✅ Admin (Active)' : '❌ Not Admin / Inaccessible'}</b>\n\n`;
+  } else {
+    primaryBlock = `• <b>Primary DB Channel:</b> <code>Not Set</code>\n` +
+      `  Status: <b>❌ Not Configured</b>\n\n`;
+  }
+
+  let backupBlock = '';
+  if (backupInfo) {
+    const bTitle = esc(backupInfo.title);
+    const bTitleDisplay = backupInfo.link ? `<a href="${backupInfo.link}">${bTitle}</a>` : `<b>${bTitle}</b>`;
+    backupBlock = `• <b>Backup DB Channel:</b> ${bTitleDisplay}\n` +
+      `  ID: <code>${backupInfo.id}</code>\n` +
+      (backupInfo.link ? `  Link: ${backupInfo.link}\n` : '') +
+      `  Status: <b>${backupInfo.isAdmin ? '✅ Admin (Active)' : '❌ Bot Not Admin / Inaccessible'}</b>\n\n`;
+  } else {
+    backupBlock = `• <b>Backup DB Channel:</b> <code>Not Configured</code>\n` +
+      `  Status: <b>⚠️ Inactive</b>\n\n`;
+  }
+
   let text = `🛡 <b>Storage & Redundancy Audit</b>\n\n` +
-    `• <b>Primary DB Channel:</b> <code>${primaryCid || 'Not Set'}</code>\n` +
-    `  Status: <b>${primaryAdmin ? '✅ Admin (Active)' : '❌ Not Admin / Missing'}</b>\n\n` +
-    `• <b>Backup DB Channel:</b> <code>${backupCid || 'Not Configured'}</code>\n` +
-    `  Status: <b>${backupCid ? (backupAdmin ? '✅ Admin (Active)' : '❌ Bot Not Admin') : '⚠️ Inactive'}</b>\n\n` +
+    primaryBlock +
+    backupBlock +
     `📊 <b>Redundancy Health:</b>\n` +
     `• Total Stored Records: <b>${stats.total}</b>\n` +
     `• Mirrored in Backup: <b>${stats.mirrored}</b>\n` +
@@ -244,6 +268,17 @@ export async function renderStorageAudit(chatId, messageId = null) {
   }
 
   const buttons = [];
+  const quickLinks = [];
+  if (primaryInfo?.link) {
+    quickLinks.push({ text: toSmallCaps(`🔗 ${primaryInfo.title.slice(0, 15)}`), url: primaryInfo.link });
+  }
+  if (backupInfo?.link) {
+    quickLinks.push({ text: toSmallCaps(`🛡 ${backupInfo.title.slice(0, 15)}`), url: backupInfo.link });
+  }
+  if (quickLinks.length > 0) {
+    buttons.push(quickLinks);
+  }
+
   if (!backupCid) {
     buttons.push([{ text: toSmallCaps('Set Backup Channel'), callback_data: 'admin:set_backup_channel_prompt' }]);
     buttons.push([{ text: toSmallCaps('Scan & Heal Links'), callback_data: 'admin:scan_heal_links' }]);
@@ -282,24 +317,17 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
   // ever being defined here, which would throw a ReferenceError on that path.
   const { from } = cq || {};
 
-  const requiresCustomToast = action.startsWith('fs_fsub_toggle:') ||
-                              action.startsWith('fs_fsub_del_confirm:') ||
-                              action.startsWith('fs_fsub_setmode:') ||
-                              action.startsWith('fs_toggle:') ||
-                              action.startsWith('fs_toggle_ref:') ||
-                              action.startsWith('fs_set_ttl_val:') ||
-                              action === 'fs_set_fsmode' ||
-                              action === 'fs_noop' ||
-                              action.startsWith('fs_set_premium:') ||
-                              action === 'batch_done' ||
-                              action === 'bundle_done' ||
-                              action === 'run_retro_mirror' ||
-                              action === 'promote_backup_exec' ||
-                              action === 'scan_heal_links';
+  let answered = false;
+  const safeAnswer = async (...args) => {
+    if (answered || !cq?.id) return;
+    answered = true;
+    if (args[0] === cq.id) {
+      return answerCallbackQuery(...args);
+    }
+    return answerCallbackQuery(cq.id, ...args);
+  };
 
-  if (!requiresCustomToast) {
-    answerCallbackQuery(cq.id).catch(() => {});
-  }
+  try {
 
   const sessions = await getCollection('sessions');
 
@@ -336,7 +364,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const channels = getForceSubChannelsList(fsub, globalMode);
 
     if (channels.length === 0) {
-       await answerCallbackQuery(cq.id, 'No Force Subscribe channels configured.', true);
+       await safeAnswer(cq.id, 'No Force Subscribe channels configured.', true);
        return;
     }
 
@@ -374,7 +402,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     if (channels[index]) {
       channels[index].mode = channels[index].mode === 'join_request' ? 'normal' : 'join_request';
       await updateSettings({ forceSubscribeChannels: JSON.stringify(channels) });
-      await answerCallbackQuery(cq.id, `Mode toggled to ${channels[index].mode === 'join_request' ? 'Join Request' : 'Normal'} Mode!`);
+      await safeAnswer(cq.id, `Mode toggled to ${channels[index].mode === 'join_request' ? 'Join Request' : 'Normal'} Mode!`);
     }
     await renderFsCfg(chatId, messageId, 'fsub');
     return;
@@ -399,7 +427,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       });
       return;
     }
-    await answerCallbackQuery(cq.id, "Channel not found.", true);
+    await safeAnswer(cq.id, "Channel not found.", true);
     return;
   }
 
@@ -413,7 +441,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       const removed = channels.splice(index, 1)[0];
       const newValue = channels.length > 0 ? JSON.stringify(channels) : '';
       await updateSettings({ forceSubscribeChannels: newValue });
-      await answerCallbackQuery(cq.id, `Removed ${removed.title}!`);
+      await safeAnswer(cq.id, `Removed ${removed.title}!`);
     }
     await renderFsCfg(chatId, messageId, 'fsub');
     return;
@@ -436,7 +464,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const selectedMode = action.split(':')[1];
     const pendingRaw = await sessions.findOne({ _id: `admin:fsub_pending_add:${chatId}` });
     if (!pendingRaw || pendingRaw.expiresAt < new Date()) {
-      await answerCallbackQuery(cq.id, "Session expired.", true);
+      await safeAnswer(cq.id, "Session expired.", true);
       return;
     }
     const chan = pendingRaw.val;
@@ -454,7 +482,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     await editTelegramMessage(chatId, messageId, `✨ <i>Successfully Added ${esc(chan.title)} As Your Force Sub Channel</i>`, {
       inline_keyboard: [[{ text: '< BACK', callback_data: 'admin:fs_cfg:fsub' }]]
     });
-    await answerCallbackQuery(cq.id);
+    await safeAnswer(cq.id);
     return;
   }
 
@@ -506,12 +534,12 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
   } else if (action === 'broadcast_cancel') {
     const { cancelBroadcast } = await import('../bot-users.js');
     cancelBroadcast();
-    await answerCallbackQuery(cq.id, 'Broadcast cancellation requested.', true);
+    await safeAnswer(cq.id, 'Broadcast cancellation requested.', true);
     return;
   } else if (action === 'broadcast_test') {
     const draftDoc = await sessions.findOne({ _id: `admin:broadcast_draft:${chatId}` });
     if (!draftDoc) {
-      await answerCallbackQuery(cq.id, 'Draft expired or not found.', true);
+      await safeAnswer(cq.id, 'Draft expired or not found.', true);
       return;
     }
 
@@ -519,20 +547,81 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       const { copyMessage } = await import('../bot-helpers.js');
       const copyRes = await copyMessage(chatId, draftDoc.fromChatId, draftDoc.messageId, false, draftDoc.replyMarkup);
       if (copyRes?.ok) {
-        await answerCallbackQuery(cq.id, 'Preview message sent below!');
+        await safeAnswer(cq.id, 'Preview message sent below!');
       } else {
-        await answerCallbackQuery(cq.id, `Preview failed: ${copyRes?.reason || 'unknown'}`, true);
+        await safeAnswer(cq.id, `Preview failed: ${copyRes?.reason || 'unknown'}`, true);
       }
     } else if (draftDoc.text || draftDoc.captionOrText) {
       await sendTelegramMessage(chatId, draftDoc.text || draftDoc.captionOrText, draftDoc.replyMarkup, false, 2, false);
-      await answerCallbackQuery(cq.id, 'Preview message sent below!');
+      await safeAnswer(cq.id, 'Preview message sent below!');
     }
     return;
   } else if (action === 'broadcast_confirm' || action === 'broadcast_confirm_pin') {
     const isPin = action === 'broadcast_confirm_pin';
     const draftDoc = await sessions.findOne({ _id: `admin:broadcast_draft:${chatId}` });
     if (!draftDoc) {
-      await answerCallbackQuery(cq.id, 'Draft expired or not found.', true);
+      await safeAnswer(cq.id, 'Draft expired or not found.', true);
+      return;
+    }
+
+    const { getUserStats } = await import('../bot-users.js');
+    const s = await getUserStats();
+    const mediaType = draftDoc.mediaType || 'Text';
+
+    const confirmCard = `⚠️ <b>FINAL CONFIRMATION: MASS BROADCAST (Step 2/2)</b>\n\n` +
+      `You are about to broadcast this message to all <b>${s.totalUsers}</b> registered users!\n\n` +
+      `• <b>Audience:</b> <b>${s.totalUsers} Active Users</b>\n` +
+      `• <b>Delivery Mode:</b> <b>${isPin ? '📌 Send & Pin to All Users' : 'Normal Delivery'}</b>\n` +
+      `• <b>Message Type:</b> <b>${mediaType}</b>\n\n` +
+      `🚨 <b>CRITICAL WARNING:</b>\n` +
+      `<i>Once initiated, this broadcast will be pushed immediately into the delivery queue and cannot be stopped once started. Make sure your message content, formatting, and buttons are 100% correct!</i>\n\n` +
+      `Are you absolutely sure you want to proceed?`;
+
+    await editTelegramMessage(chatId, messageId, confirmCard, {
+      inline_keyboard: [
+        [{ text: toSmallCaps(isPin ? '🚨 YES, SEND & PIN TO ALL' : '🚨 YES, BROADCAST TO ALL NOW'), callback_data: isPin ? 'admin:broadcast_final_pin' : 'admin:broadcast_final_exec' }],
+        [{ text: toSmallCaps('◀️ Back to Preview'), callback_data: 'admin:broadcast_back_to_draft' }],
+        [{ text: toSmallCaps('❌ Cancel Broadcast'), callback_data: 'admin:broadcast_cancel_draft' }]
+      ]
+    });
+    return;
+  } else if (action === 'broadcast_back_to_draft') {
+    const draftDoc = await sessions.findOne({ _id: `admin:broadcast_draft:${chatId}` });
+    if (!draftDoc) {
+      await safeAnswer(cq.id, 'Draft expired or not found.', true);
+      return;
+    }
+    const { getUserStats } = await import('../bot-users.js');
+    const s = await getUserStats();
+    const mediaType = draftDoc.mediaType || 'Text';
+    const isForward = !!draftDoc.isForward;
+    const hasButtons = !!draftDoc.hasButtons;
+    const captionOrText = draftDoc.captionOrText || draftDoc.text || '';
+
+    const previewCard = `📢 <b>Broadcast Preview</b>\n\n` +
+      `• <b>Target Audience:</b> <b>${s.totalUsers}</b> registered users\n` +
+      `• <b>Type:</b> <b>${mediaType}${isForward ? ' (Forwarded)' : ''}</b>\n` +
+      `• <b>Inline Buttons:</b> <b>${hasButtons ? 'Yes (Preserved)' : 'None'}</b>\n` +
+      `• <b>Open Graph:</b> <b>Allowed</b>\n\n` +
+      (captionOrText ? `<b>Content:</b>\n────────────────────\n${captionOrText.slice(0, 300)}${captionOrText.length > 300 ? '...' : ''}\n────────────────────\n\n` : '') +
+      `You can send a test preview to your private chat first to check formatting before delivering to all users.`;
+
+    await editTelegramMessage(chatId, messageId, previewCard, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('Send Test Preview to Me'), callback_data: 'admin:broadcast_test' }],
+        [
+          { text: toSmallCaps('Confirm & Send to All'), callback_data: 'admin:broadcast_confirm' },
+          { text: toSmallCaps('📌 Send & Pin to All'), callback_data: 'admin:broadcast_confirm_pin' }
+        ],
+        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:broadcast_cancel_draft' }]
+      ]
+    });
+    return;
+  } else if (action === 'broadcast_final_exec' || action === 'broadcast_final_pin') {
+    const isPin = action === 'broadcast_final_pin';
+    const draftDoc = await sessions.findOne({ _id: `admin:broadcast_draft:${chatId}` });
+    if (!draftDoc) {
+      await safeAnswer(cq.id, 'Draft expired or not found.', true);
       return;
     }
 
@@ -620,7 +709,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const targetId = action.replace('unban:', '');
     const { unbanUser, getBannedUsers } = await import('../bot-users.js');
     await unbanUser(targetId);
-    await answerCallbackQuery(cq.id, `✅ User ${targetId} unbanned!`, true);
+    await safeAnswer(cq.id, `✅ User ${targetId} unbanned!`, true);
 
     const list = await getBannedUsers();
     const maxShow = 20;
@@ -662,6 +751,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
         [{ text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }, { text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }],
         [{ text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
         [{ text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }, { text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
+        [{ text: toSmallCaps('🧹 System Wipe / Cleanup'), callback_data: 'admin:wipe_sys_prompt' }],
         ...navButtons('admin:dashboard')
       ]
     });
@@ -706,13 +796,13 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const backupCid = await getBackupDbChannelId();
 
     if (!primaryCid || !backupCid) {
-      await answerCallbackQuery(cq.id, 'Both primary and backup channels must be configured!', true);
+      await safeAnswer(cq.id, 'Both primary and backup channels must be configured!', true);
       return;
     }
 
     await editTelegramMessage(chatId, messageId, `⏳ <b>Mirroring unmirrored records to backup channel...</b>\n\nPlease wait a moment while files are copied.`);
     const mirrorResult = await runRetroactiveMirror(primaryCid, backupCid, 100);
-    await answerCallbackQuery(cq.id, `Mirrored: ${mirrorResult.mirroredSuccess}, Failed: ${mirrorResult.mirroredFailed}`, true);
+    await safeAnswer(cq.id, `Mirrored: ${mirrorResult.mirroredSuccess}, Failed: ${mirrorResult.mirroredFailed}`, true);
     await renderStorageAudit(chatId, messageId);
     return;
   } else if (action === 'promote_backup_confirm') {
@@ -730,14 +820,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const { getBackupDbChannelId } = await import('../bot-helpers.js');
     const backupCid = await getBackupDbChannelId();
     if (!backupCid) {
-      await answerCallbackQuery(cq.id, 'No backup channel configured!', true);
+      await safeAnswer(cq.id, 'No backup channel configured!', true);
       return;
     }
     await updateSettings({
       dbChannelId: backupCid,
       backupDbChannelId: ''
     });
-    await answerCallbackQuery(cq.id, 'Backup channel successfully promoted to Primary!', true);
+    await safeAnswer(cq.id, 'Backup channel successfully promoted to Primary!', true);
     await renderStorageAudit(chatId, messageId);
     return;
   } else if (action === 'scan_heal_links') {
@@ -747,14 +837,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const backupCid = await getBackupDbChannelId();
 
     if (!primaryCid) {
-      await answerCallbackQuery(cq.id, 'Primary DB Channel not configured!', true);
+      await safeAnswer(cq.id, 'Primary DB Channel not configured!', true);
       return;
     }
 
     await editTelegramMessage(chatId, messageId, `🩺 <b>Scanning stored links...</b>\n\nTesting messages and auto-repairing from backup if needed.\nPlease wait a moment.`);
 
     const report = await scanAndRepairBrokenLinks(primaryCid, backupCid, 50);
-    await answerCallbackQuery(cq.id, `Healthy: ${report.healthy}, Healed: ${report.healed}, Dead: ${report.unrecoverable}`, true);
+    await safeAnswer(cq.id, `Healthy: ${report.healthy}, Healed: ${report.healed}, Dead: ${report.unrecoverable}`, true);
     await renderStorageAudit(chatId, messageId);
     return;
   } else if (action === 'backup_db') {
@@ -768,7 +858,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const caption = `💾 <b>Database Backup</b>\n\nTotal Stored Records: <b>${allFiles.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`;
 
     await sendTelegramFileBuffer(chatId, buffer, filename, caption);
-    await answerCallbackQuery(cq.id, 'Database backup sent to chat!');
+    await safeAnswer(cq.id, 'Database backup sent to chat!');
     return;
   } else if (action === 'top_files') {
     const { getTopFiles, getDailyFileStats } = await import('../filestore.js');
@@ -869,13 +959,13 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const { getStoreSession, setBulkStoreActive, clearStoreSession, generateRawLinksText, generateLinksExportText } = await import('../filestore.js');
     const codes = await getStoreSession(chatId);
     if (!codes.length) {
-      await answerCallbackQuery(cq.id, 'No files stored in this session yet.', true);
+      await safeAnswer(cq.id, 'No files stored in this session yet.', true);
       return;
     }
 
     await setBulkStoreActive(chatId, false);
     await clearStoreSession(chatId);
-    await answerCallbackQuery(cq.id);
+    await safeAnswer(cq.id);
 
     const botUsername = await getBotUsername();
     const filesColl = await getCollection('files');
@@ -900,7 +990,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const { setBulkStoreActive, clearStoreSession } = await import('../filestore.js');
     await setBulkStoreActive(chatId, false);
     await clearStoreSession(chatId);
-    await answerCallbackQuery(cq.id, 'Bulk Store cancelled.');
+    await safeAnswer(cq.id, 'Bulk Store cancelled.');
     await editTelegramMessage(chatId, messageId, `<b>Bulk Store cancelled.</b>`, {
       inline_keyboard: navButtons('admin:file_mgmt')
     });
@@ -912,7 +1002,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const allFiles = await filesColl.find({}).sort({ createdAt: -1 }).toArray();
 
     if (!allFiles.length) {
-      await answerCallbackQuery(cq.id, 'No stored links found in database.', true);
+      await safeAnswer(cq.id, 'No stored links found in database.', true);
       return;
     }
 
@@ -923,7 +1013,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const caption = `📄 <b>All Stored Links Export</b>\n\nTotal Records: <b>${allFiles.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`;
 
     await sendTelegramFileBuffer(chatId, buffer, filename, caption);
-    await answerCallbackQuery(cq.id, 'Links exported as .txt file!');
+    await safeAnswer(cq.id, 'Links exported as .txt file!');
     return;
   } else if (action === 'export_today_txt') {
     const { getTodayFiles, generateLinksExportText } = await import('../filestore.js');
@@ -931,7 +1021,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const todayFiles = await getTodayFiles();
 
     if (!todayFiles.length) {
-      await answerCallbackQuery(cq.id, 'No links created today.', true);
+      await safeAnswer(cq.id, 'No links created today.', true);
       return;
     }
 
@@ -942,14 +1032,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const caption = `📄 <b>Today's Links Export</b>\n\nTotal Links Created Today: <b>${todayFiles.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`;
 
     await sendTelegramFileBuffer(chatId, buffer, filename, caption);
-    await answerCallbackQuery(cq.id, "Today's links exported as .txt file!");
+    await safeAnswer(cq.id, "Today's links exported as .txt file!");
     return;
   } else if (action === 'today_copy_text') {
     const { getTodayFiles, generateRawLinksText } = await import('../filestore.js');
     const todayFiles = await getTodayFiles();
 
     if (!todayFiles.length) {
-      await answerCallbackQuery(cq.id, 'No links created today.', true);
+      await safeAnswer(cq.id, 'No links created today.', true);
       return;
     }
 
@@ -961,7 +1051,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
         [{ text: toSmallCaps('Back to Traffic Dashboard'), callback_data: 'admin:top_files' }]
       ]
     });
-    await answerCallbackQuery(cq.id, 'Copyable list sent below!');
+    await safeAnswer(cq.id, 'Copyable list sent below!');
     return;
   } else if (action === 'export_hub') {
     const text = `📄 <b>Export Links Hub</b>\n\nSelect what type of links you want to export:\n\n• <b>Single Files:</b> Individual uploaded file & media links\n• <b>Batches:</b> Multi-file collection links\n• <b>All Links:</b> Every file and batch combined`;
@@ -986,7 +1076,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const typeLabel = filterType === 'batch' ? 'Batches' : filterType === 'media' ? 'Single Files' : 'Links';
 
     if (!records.length) {
-      await answerCallbackQuery(cq.id, `No ${typeLabel.toLowerCase()} found in the last ${durationLabel}.`, true);
+      await safeAnswer(cq.id, `No ${typeLabel.toLowerCase()} found in the last ${durationLabel}.`, true);
       return;
     }
 
@@ -1002,7 +1092,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     }
 
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b>\n\nTotal Records: <b>${records.length}</b>\nSize: <b>${(buffer.length / 1024).toFixed(2)} KB</b>`);
-    await answerCallbackQuery(cq.id, `Exported ${records.length} ${typeLabel.toLowerCase()}!`);
+    await safeAnswer(cq.id, `Exported ${records.length} ${typeLabel.toLowerCase()}!`);
     return;
   } else if (action.startsWith('exp_today:')) {
     const filterType = action.split(':')[1] || 'all';
@@ -1016,7 +1106,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const typeLabel = isBatchOnly ? 'Batches' : isFileOnly ? 'Single Files' : 'Links';
 
     if (!filtered.length) {
-      await answerCallbackQuery(cq.id, `No ${typeLabel.toLowerCase()} created today.`, true);
+      await safeAnswer(cq.id, `No ${typeLabel.toLowerCase()} created today.`, true);
       return;
     }
 
@@ -1032,7 +1122,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     }
 
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${filtered.length} records)`);
-    await answerCallbackQuery(cq.id, `Exported ${filtered.length} ${typeLabel.toLowerCase()}!`);
+    await safeAnswer(cq.id, `Exported ${filtered.length} ${typeLabel.toLowerCase()}!`);
     return;
   } else if (action.startsWith('exp_all:')) {
     const filterType = action.split(':')[1] || 'all';
@@ -1048,7 +1138,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const typeLabel = isBatchOnly ? 'Batches' : isFileOnly ? 'Single Files' : 'Links';
 
     if (!allFiles.length) {
-      await answerCallbackQuery(cq.id, `No ${typeLabel.toLowerCase()} found in database.`, true);
+      await safeAnswer(cq.id, `No ${typeLabel.toLowerCase()} found in database.`, true);
       return;
     }
 
@@ -1064,7 +1154,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     }
 
     await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title} Export</b> (${allFiles.length} records)`);
-    await answerCallbackQuery(cq.id, `Exported ${allFiles.length} ${typeLabel.toLowerCase()}!`);
+    await safeAnswer(cq.id, `Exported ${allFiles.length} ${typeLabel.toLowerCase()}!`);
     return;
   } else if (action.startsWith('exp_custom_prompt:')) {
     const filterType = action.split(':')[1] || 'all';
@@ -1200,7 +1290,23 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
         ...navButtons('admin:file_mgmt')
       ]
     });
-  } else if (action === 'trigger_cleanup') {
+  } else if (action === 'trigger_cleanup' || action === 'wipe_sys_prompt') {
+    const text = `⚠️ <b>CONFIRM SYSTEM WIPE & CLEANUP (Step 1/2)</b>\n\n` +
+      `You are about to run a system-wide data purge.\n\n` +
+      `This will permanently wipe:\n` +
+      `• All expired temporary sharing tokens\n` +
+      `• All expired session cache keys\n` +
+      `• Old auto-delete message logs (> 7 days)\n` +
+      `• Activity logs older than 30 days\n\n` +
+      `<i>Active files, batches, user profiles, and valid access tokens will NOT be deleted.</i>\n\n` +
+      `Are you sure you want to proceed?`;
+    await editTelegramMessage(chatId, messageId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('🚨 Confirm & Wipe Expired Data'), callback_data: 'admin:wipe_sys_exec' }],
+        [{ text: toSmallCaps('❌ Cancel'), callback_data: 'admin:dashboard' }]
+      ]
+    });
+  } else if (action === 'wipe_sys_exec') {
     const { runWeeklyCleanup } = await import('../filestore.js');
     const result = await runWeeklyCleanup();
     const cleanupText = `🧹 <b>System Cleanup Completed</b>\n\n` +
@@ -1210,6 +1316,23 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       `• 30-Day Activity Logs Cleared: <b>${result.cleanedLogs}</b>\n\n` +
       `<i>Total records purged: <b>${result.totalPurged}</b>. Active stored files remain untouched.</i>`;
     await editTelegramMessage(chatId, messageId, cleanupText, {
+      inline_keyboard: navButtons('admin:dashboard')
+    });
+  } else if (action.startsWith('wipe_rec_exec:')) {
+    const code = action.slice('wipe_rec_exec:'.length).trim();
+    const { deleteStoredRecord } = await import('../filestore.js');
+    const delRes = await deleteStoredRecord(code);
+    if (!delRes.ok) {
+      await editTelegramMessage(chatId, messageId, `❌ Record <code>${esc(code)}</code> not found or could not be deleted.`, {
+        inline_keyboard: navButtons('admin:file_mgmt')
+      });
+      return;
+    }
+    await editTelegramMessage(chatId, messageId, `🗑 <b>Record Wiped Successfully!</b>\n\n• Code: <code>${esc(delRes.code)}</code>\n• Type: <b>${delRes.type}</b>\n• Title: <b>${esc(delRes.title)}</b>\n\n<i>Database record and channel messages have been permanently purged.</i>`, {
+      inline_keyboard: navButtons('admin:file_mgmt')
+    });
+  } else if (action === 'wipe_rec_cancel') {
+    await editTelegramMessage(chatId, messageId, `❌ <i>Record deletion cancelled. Stored files remain untouched.</i>`, {
       inline_keyboard: navButtons('admin:file_mgmt')
     });
   } else if (action === 'auto_del_mgmt') {
@@ -1225,22 +1348,22 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
   } else if (action.startsWith('set_timer_enable:')) {
     const sec = action.split(':')[1];
     await updateSettings({ autoDeleteTimer: sec, autoDeleteEnabled: '1' });
-    await answerCallbackQuery(cq.id, `Auto Delete Enabled (${sec < 60 ? sec + 's' : sec < 3600 ? Math.round(sec / 60) + ' mins' : Math.round(sec / 3600) + ' hours'})`);
+    await safeAnswer(cq.id, `Auto Delete Enabled (${sec < 60 ? sec + 's' : sec < 3600 ? Math.round(sec / 60) + ' mins' : Math.round(sec / 3600) + ' hours'})`);
     await renderAutoDelMgmt(chatId, messageId);
   } else if (action.startsWith('toggle_autodel:')) {
     const val = action.split(':')[1];
     await updateSettings({ autoDeleteEnabled: val });
-    await answerCallbackQuery(cq.id, `Auto Delete ${val === '1' ? 'Enabled' : 'Disabled'}`);
+    await safeAnswer(cq.id, `Auto Delete ${val === '1' ? 'Enabled' : 'Disabled'}`);
     await renderAutoDelMgmt(chatId, messageId);
   } else if (action.startsWith('set_timer:')) {
     const sec = action.split(':')[1];
     await updateSettings({ autoDeleteTimer: sec, autoDeleteEnabled: '1' });
-    await answerCallbackQuery(cq.id, `Timer updated!`);
+    await safeAnswer(cq.id, `Timer updated!`);
     await renderAutoDelMgmt(chatId, messageId);
   } else if (action.startsWith('toggle_protect:')) {
     const val = action.split(':')[1];
     await updateSettings({ protectContent: val });
-    await answerCallbackQuery(cq.id, `Content Protection ${val === '1' ? 'Enabled' : 'Disabled'}`);
+    await safeAnswer(cq.id, `Content Protection ${val === '1' ? 'Enabled' : 'Disabled'}`);
     await renderAutoDelMgmt(chatId, messageId);
   } else if (action === 'batch_start') {
     const dbError = await getDbChannelReadinessError();
@@ -1270,10 +1393,10 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const { getBatchSession, storeBatch, clearBatchSession, generateBatchCode } = await import('../filestore.js');
     const batchSession = await getBatchSession(chatId);
     if (!batchSession || !batchSession.collectedIds?.length) {
-      await answerCallbackQuery(cq.id, 'No files collected.');
+      await safeAnswer(cq.id, 'No files collected.');
       return;
     }
-    await answerCallbackQuery(cq.id);
+    await safeAnswer(cq.id);
 
     const dbChannelId = await getDbChannelId();
     const batchCode   = generateBatchCode();
@@ -1300,7 +1423,6 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
         ...navButtons('admin:dashboard')
       ]
     });
-    await answerCallbackQuery(cq.id);
     return;
   } else if (action === 'bundle_start') {
     const dbError = await getDbChannelReadinessError();
@@ -1322,7 +1444,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const { getBundleSession, storeBundle, generateBundleCode, clearBundleSession, sortQualities } = await import('../filestore.js');
     const bSession = await getBundleSession(chatId);
     if (!bSession || !bSession.qualities?.length) {
-      await answerCallbackQuery(cq.id, 'No files added to bundle yet.', true);
+      await safeAnswer(cq.id, 'No files added to bundle yet.', true);
       return;
     }
 
@@ -1351,7 +1473,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
         ...navButtons('admin:dashboard')
       ]
     });
-    await answerCallbackQuery(cq.id);
+    await safeAnswer(cq.id);
     return;
   } else if (action === 'cancel_session') {
     const { clearBatchSession, clearBundleSession, checkAndClearAdminWaiting } = await import('../filestore.js');
@@ -1392,7 +1514,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const val = action.split(':')[1];
     await updateSettings({ sponsorBtnEnabled: val });
     await logHistory(`sponsor_btn_${val === '1' ? 'enabled' : 'disabled'}`, 'tg');
-    await answerCallbackQuery(cq.id, `Sponsor button ${val === '1' ? 'enabled' : 'disabled'}.`);
+    await safeAnswer(cq.id, `Sponsor button ${val === '1' ? 'enabled' : 'disabled'}.`);
     await renderSponsorMgmt(chatId, messageId);
     return;
   } else if (action === 'sponsor_set_text') {
@@ -1426,7 +1548,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     });
     return;
   } else if (action === 'manual_backup') {
-    await answerCallbackQuery(cq.id, 'Generating database backup...');
+    await safeAnswer(cq.id, 'Generating database backup...');
     const { sendDatabaseBackup } = await import('../bot-helpers.js');
     await sendDatabaseBackup(chatId);
     return;
@@ -1459,7 +1581,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
   } else if (action.startsWith('del_banner:')) {
     const bannerKey = action.split(':')[1];
     await updateSettings({ [bannerKey]: null });
-    await answerCallbackQuery(cq.id, 'Banner removed.');
+    await safeAnswer(cq.id, 'Banner removed.');
     await renderBannersMgmt(chatId, messageId);
     return;
   } else if (action.startsWith('fs_cfg:')) {
@@ -1470,14 +1592,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const val = action.split(':')[1];
     await updateSettings({ enabled: val });
     await logHistory(`verification_${val === '1' ? 'enabled' : 'disabled'}`, 'tg');
-    await answerCallbackQuery(cq.id, `Token verification ${val === '1' ? 'enabled' : 'disabled'}.`);
+    await safeAnswer(cq.id, `Token verification ${val === '1' ? 'enabled' : 'disabled'}.`);
     await renderFsCfg(chatId, messageId, 'tkn');
     return;
   } else if (action.startsWith('fs_toggle_ref:')) {
     const val = action.split(':')[1];
     await updateSettings({ referralDisabled: val });
     await logHistory(`referrals_${val === '1' ? 'disabled' : 'enabled'}`, 'tg');
-    await answerCallbackQuery(cq.id, `Referrals system ${val === '1' ? 'disabled' : 'enabled'}.`);
+    await safeAnswer(cq.id, `Referrals system ${val === '1' ? 'disabled' : 'enabled'}.`);
     await renderFsCfg(chatId, messageId, 'tkn');
     return;
   } else if (action === 'fs_toggle_smode') {
@@ -1485,7 +1607,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const currentMode = s?.shortenerMode || 'failover';
     const newMode = currentMode === 'split' ? 'failover' : 'split';
     await updateSettings({ shortenerMode: newMode });
-    await answerCallbackQuery(cq.id, `Traffic mode set to ${newMode.toUpperCase()}`);
+    await safeAnswer(cq.id, `Traffic mode set to ${newMode.toUpperCase()}`);
     await renderFsCfg(chatId, messageId, 'tkn');
     return;
   } else if (action === 'fs_set_sratio') {
@@ -1570,9 +1692,9 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     if (!isNaN(hours) && hours >= 0 && hours <= 24) {
       await updateSettings({ validityHours: String(hours) });
       const label = hours === 0 ? 'Every File/Batch (0h)' : `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
-      await answerCallbackQuery(cq.id, `Validity updated to ${label}!`);
+      await safeAnswer(cq.id, `Validity updated to ${label}!`);
     } else {
-      await answerCallbackQuery(cq.id, `Invalid hours selection.`, true);
+      await safeAnswer(cq.id, `Invalid hours selection.`, true);
     }
     await renderFsCfg(chatId, messageId, 'tkn');
     return;
@@ -1596,7 +1718,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     });
   } else if (action === 'fs_del_sphoto') {
     await updateSettings({ startPhoto: null });
-    await answerCallbackQuery(cq.id, 'Start photo removed.');
+    await safeAnswer(cq.id, 'Start photo removed.');
     await renderFsCfg(chatId, messageId, 'start');
     return;
   } else if (action === 'fs_set_tut') {
@@ -1609,7 +1731,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin:cancel_session' }]]
     });
   } else if (action === 'fs_noop') {
-    await answerCallbackQuery(cq.id);
+    await safeAnswer(cq.id);
     return;
   } else if (action === 'fs_set_fsub') {
     await sessions.updateOne(
@@ -1633,7 +1755,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const s = await getSettings();
     const newMode = s.forceSubscribeMode === 'join_request' ? 'normal' : 'join_request';
     await updateSettings({ forceSubscribeMode: newMode });
-    await answerCallbackQuery(cq.id, `Mode set to ${newMode}.`);
+    await safeAnswer(cq.id, `Mode set to ${newMode}.`);
     await renderFsCfg(chatId, messageId, 'fsub');
     return;
   } else if (action === 'fs_premium_prompt') {
@@ -1655,7 +1777,7 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const targetDoc = await sessions.findOne({ _id: `admin:premium_target:${chatId}` });
     const targetUserId = targetDoc && targetDoc.expiresAt > new Date() ? targetDoc.val : null;
     if (!targetUserId) {
-      await answerCallbackQuery(cq.id, 'Session expired.');
+      await safeAnswer(cq.id, 'Session expired.');
       return;
     }
 
@@ -1681,8 +1803,9 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     return;
   }
 
-  if (requiresCustomToast) {
-    await answerCallbackQuery(cq.id).catch(() => {});
+  } finally {
+    if (!answered && cq?.id) {
+      answerCallbackQuery(cq.id).catch(() => {});
+    }
   }
-  return;
 }
