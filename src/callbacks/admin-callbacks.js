@@ -268,10 +268,10 @@ export async function renderStorageAudit(chatId, messageId = null) {
   const buttons = [];
   const quickLinks = [];
   if (primaryInfo?.link) {
-    quickLinks.push({ text: toSmallCaps(`🔗 ${primaryInfo.title.slice(0, 15)}`), url: primaryInfo.link });
+    quickLinks.push({ text: toSmallCaps('Primary Channel'), url: primaryInfo.link });
   }
   if (backupInfo?.link) {
-    quickLinks.push({ text: toSmallCaps(`🛡 ${backupInfo.title.slice(0, 15)}`), url: backupInfo.link });
+    quickLinks.push({ text: toSmallCaps('Backup Channel'), url: backupInfo.link });
   }
   if (quickLinks.length > 0) {
     buttons.push(quickLinks);
