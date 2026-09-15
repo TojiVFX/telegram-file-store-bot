@@ -31,8 +31,14 @@ async function renderAutoDelMgmt(chatId, messageId) {
   const timerSec = parseInt(s.autoDeleteTimer, 10) || 300;
   const timerLabel = timerSec < 60 ? `${timerSec}s` : timerSec < 3600 ? `${Math.round(timerSec / 60)} mins` : `${Math.round(timerSec / 3600)} hours`;
   const protect = s.protectContent === '1';
+  const stealth = s.stealthStorage === '1';
 
-  const text = `<b>Security & Auto Delete Settings</b>\n\nAuto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\nTimer: <b>${autoDel ? timerLabel : 'Disabled'}</b>\nContent Protection: <b>${protect ? 'ON' : 'OFF'}</b>`;
+  const text = `<b>Security, Stealth & Auto Delete Settings</b>\n\n` +
+    `• Auto Delete: <b>${autoDel ? 'ON' : 'OFF'}</b>\n` +
+    `• Timer: <b>${autoDel ? timerLabel : 'Disabled'}</b>\n` +
+    `• Content Protection: <b>${protect ? 'ON' : 'OFF'}</b>\n` +
+    `• Stealth Storage (Cloaker): <b>${stealth ? 'ON (Cloaked)' : 'OFF (Raw Titles)'}</b>\n\n` +
+    `<i>Stealth Storage cloaks channel post captions with opaque hash tokens (#REF_xxx) to prevent copyright scrapers and keyword indexing in your storage channels.</i>`;
 
   const buttons = [];
   if (!autoDel) {
@@ -52,6 +58,53 @@ async function renderAutoDelMgmt(chatId, messageId) {
   }
 
   buttons.push([{ text: toSmallCaps(protect ? 'Disable Content Protection' : 'Enable Content Protection'), callback_data: `admin:toggle_protect:${protect ? 0 : 1}` }]);
+  buttons.push([{ text: toSmallCaps(stealth ? 'Disable Stealth Storage' : 'Enable Stealth Storage'), callback_data: `admin:toggle_stealth:${stealth ? 0 : 1}` }]);
+  buttons.push(...navButtons('admin:dashboard'));
+
+  await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+}
+
+async function renderGhostFleetMgmt(chatId, messageId) {
+  const { getAllWorkerBots } = await import('../ghost-fleet.js');
+  const s = await getSettings();
+  const enabled = s.ghostFleetEnabled === '1';
+  const workers = await getAllWorkerBots();
+
+  let text = `👻 <b>The Ghost Fleet (Decoupled Worker Bots)</b>\n\n` +
+    `• Mode: <b>${enabled ? '🟢 Active (Decoupled Delivery)' : '⚪ Inactive (Direct Delivery)'}</b>\n` +
+    `• Connected Nodes: <b>${workers.filter(w => w.enabled).length}/${workers.length}</b>\n\n` +
+    `<i>When active, the main bot never delivers media directly. It mints a 1-time secure dispatch token and delegates delivery to a disposable worker bot, keeping your main bot 100% immune to bans and DMCA reports.</i>\n\n`;
+
+  const workerButtons = [];
+  if (workers.length === 0) {
+    text += `⚠️ <i>No worker bots connected yet. Tap 'Add Worker Bot' below or configure <code>WORKER_BOT_TOKENS=token1,token2</code> in your .env.</i>\n`;
+  } else {
+    text += `<b>Worker Delivery Nodes:</b>\n`;
+    for (const w of workers) {
+      const statusIcon = w.isAlive !== false ? '🟢' : '🔴';
+      const statusText = w.isAlive !== false ? 'Online' : (w.error || 'Offline');
+      const name = w.username ? `@${esc(w.username)}` : `ID: ${w.botId}`;
+      text += `• ${statusIcon} <b>${name}</b> [${(w.source || 'db').toUpperCase()}] — <i>${statusText}</i>\n`;
+      if (w.source === 'db') {
+        workerButtons.push([{
+          text: toSmallCaps(`🗑 Remove ${w.username ? '@' + w.username : w.botId}`),
+          callback_data: `admin:remove_worker:${w.botId}`
+        }]);
+      }
+    }
+  }
+
+  const buttons = [];
+  buttons.push([
+    { text: toSmallCaps(enabled ? 'Disable Ghost Fleet' : 'Enable Ghost Fleet'), callback_data: `admin:toggle_ghost_fleet:${enabled ? 0 : 1}` },
+    { text: toSmallCaps('🔄 Check Health'), callback_data: 'admin:refresh_workers' }
+  ]);
+  buttons.push([
+    { text: toSmallCaps('➕ Add Worker Bot'), callback_data: 'admin:add_worker_prompt' }
+  ]);
+  if (workerButtons.length > 0) {
+    buttons.push(...workerButtons);
+  }
   buttons.push(...navButtons('admin:dashboard'));
 
   await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
@@ -1363,6 +1416,48 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     await updateSettings({ protectContent: val });
     await safeAnswer(cq.id, `Content Protection ${val === '1' ? 'Enabled' : 'Disabled'}`);
     await renderAutoDelMgmt(chatId, messageId);
+  } else if (action.startsWith('toggle_stealth:')) {
+    const val = action.split(':')[1];
+    await updateSettings({ stealthStorage: val });
+    await safeAnswer(cq.id, `Stealth Storage ${val === '1' ? 'Enabled' : 'Disabled'}`);
+    await renderAutoDelMgmt(chatId, messageId);
+  } else if (action === 'ghost_fleet') {
+    await renderGhostFleetMgmt(chatId, messageId);
+  } else if (action.startsWith('toggle_ghost_fleet:')) {
+    const val = action.split(':')[1];
+    await updateSettings({ ghostFleetEnabled: val });
+    await safeAnswer(cq.id, `Ghost Fleet ${val === '1' ? 'Enabled' : 'Disabled'}`);
+    await renderGhostFleetMgmt(chatId, messageId);
+  } else if (action === 'refresh_workers') {
+    const { refreshWorkerBots } = await import('../ghost-fleet.js');
+    await refreshWorkerBots();
+    await safeAnswer(cq.id, 'Worker bots health re-checked!');
+    await renderGhostFleetMgmt(chatId, messageId);
+  } else if (action === 'add_worker_prompt') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_action:${chatId}` },
+      { $set: { val: 'add_worker', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    const promptText = `🤖 <b>Add Ghost Fleet Worker Bot</b>\n\n` +
+      `Create a new bot with @BotFather and paste its API token here.\n\n` +
+      `<b>Format:</b>\n<code>123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ</code>\n\n` +
+      `<i>Worker bots will automatically connect to your webhook mesh and handle media deliveries.</i>\n\n` +
+      `Send /cancel to abort.`;
+    await editTelegramMessage(chatId, messageId, promptText, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:ghost_fleet' }]]
+    });
+    return;
+  } else if (action.startsWith('remove_worker:')) {
+    const botId = action.split(':')[1];
+    const { removeWorkerBot } = await import('../ghost-fleet.js');
+    const removed = await removeWorkerBot(botId);
+    if (removed) {
+      await safeAnswer(cq.id, `Worker bot removed.`);
+    } else {
+      await safeAnswer(cq.id, `Could not remove worker (it might be configured in .env).`, true);
+    }
+    await renderGhostFleetMgmt(chatId, messageId);
   } else if (action === 'batch_start') {
     const dbError = await getDbChannelReadinessError();
     if (dbError) {

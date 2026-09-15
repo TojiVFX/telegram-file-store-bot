@@ -44,6 +44,25 @@ app.post('/webhook/telegram', asyncHandler(telegramHandler));
 app.post('/webhook', asyncHandler(telegramHandler));
 app.post('/', asyncHandler(telegramHandler));
 
+// Ghost Fleet: Route inbound webhook updates for worker delivery bots
+app.post('/webhook/worker/:workerId', asyncHandler(async (req, res) => {
+  const workerId = req.params.workerId;
+  const { verifyTelegramWebhook } = await import('./auth.js');
+  if (!verifyTelegramWebhook(req)) {
+    return res.status(401).send('Unauthorized');
+  }
+
+  const { getAllWorkerBots } = await import('./ghost-fleet.js');
+  const workers = await getAllWorkerBots();
+  const worker = workers.find(w => String(w.botId) === String(workerId));
+  if (!worker || !worker.token) {
+    return res.status(404).send('Worker bot not found');
+  }
+
+  req.workerToken = worker.token;
+  return telegramHandler(req, res);
+}));
+
 app.get('/getMe', asyncHandler(async (req, res) => {
   if (!checkAdminAuth(req)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });

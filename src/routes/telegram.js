@@ -33,7 +33,7 @@ export default async function handler(req, res) {
 
   res.status(200).send('OK');
 
-  return botContext.run({ token: getMainToken() }, () => {
+  return botContext.run({ token: req.workerToken || getMainToken() }, () => {
     handleUpdate(req).catch(err => {
       log('error', 'Unhandled error in handleUpdate', { errorMessage: err.message, stack: err.stack });
     });

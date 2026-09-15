@@ -156,6 +156,26 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
     return handleStartPayload(chatId, doc.targetCode, message, admin);
   }
 
+  // Handle Ghost Fleet One-Time Dispatch Tokens
+  if (payload && payload.startsWith('dispatch_')) {
+    const { consumeDispatchToken } = await import('../ghost-fleet.js');
+    const consumeRes = await consumeDispatchToken(payload, chatId);
+    if (!consumeRes.ok) {
+      if (consumeRes.reason === 'expired') {
+        await sendTelegramMessage(chatId, `❌ <b>Delivery Link Expired</b>\n\nThis secure delivery link has expired (valid for 10 minutes). Please request a new link from the main bot.`);
+      } else if (consumeRes.reason === 'already_used') {
+        await sendTelegramMessage(chatId, `⚠️ <b>Already Claimed</b>\n\nThis one-time delivery link has already been claimed.`);
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Invalid Delivery Link</b>\n\nThis delivery link was not found or has been revoked.`);
+      }
+      return;
+    }
+
+    const { doc } = consumeRes;
+    // Deliver file/batch/bundle using current worker bot context, skipping token re-verification
+    return handleStartPayload(chatId, doc.targetCode, message, admin, true);
+  }
+
   if (payload && (payload.startsWith('batch_') || payload.startsWith('file_') || payload.startsWith('bundle_'))) {
     // 1. Verify existence first before prompting for shortener verification
     let recordExists = true;
@@ -242,6 +262,38 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
         else if (tutorialFileId) await sendTelegramVideo(chatId, tutorialFileId, text, kb, protect);
         else await sendTelegramMessage(chatId, text, kb, protect);
         return;
+      }
+    }
+  }
+
+  // Ghost Fleet Decoupled Delivery Handoff:
+  // If Ghost Fleet is enabled, the Main Gateway Bot does NOT deliver media files directly.
+  // It hands off delivery to a disposable Worker Bot so the main bot remains unflagged.
+  if (!skipTokenCheck && (payload?.startsWith('batch_') || payload?.startsWith('file_') || payload?.startsWith('bundle_'))) {
+    const { isMainBot } = await import('../bot-common.js');
+    if (isMainBot()) {
+      const { isGhostFleetEnabled, getNextWorkerBot, createDispatchToken } = await import('../ghost-fleet.js');
+      const ghostActive = await isGhostFleetEnabled();
+      if (ghostActive) {
+        const worker = await getNextWorkerBot();
+        if (worker && worker.username) {
+          const dispatchToken = await createDispatchToken(payload, chatId, {
+            username: message?.from?.username,
+            firstName: message?.from?.first_name
+          });
+          const deliveryUrl = `https://t.me/${worker.username}?start=dispatch_${dispatchToken}`;
+
+          const deliveryCard = `🚀 <b>Content Ready for Delivery</b>\n\n` +
+            `Your requested media has been prepared! Tap the secure delivery button below to receive your files from our Delivery Node (<b>@${worker.username}</b>).\n\n` +
+            `<i>🛡️ Ghost Fleet active — this 1-time secure delivery link expires in 10 minutes.</i>`;
+
+          await sendTelegramMessage(chatId, deliveryCard, {
+            inline_keyboard: [
+              [{ text: toSmallCaps(`📥 Get Content from @${worker.username}`), url: deliveryUrl }]
+            ]
+          });
+          return;
+        }
       }
     }
   }

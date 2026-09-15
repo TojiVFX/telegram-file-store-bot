@@ -37,6 +37,15 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     } catch (err) {
       console.error('[Filestore Bot] Webhook registration error:', err.message);
     }
+
+    // Auto-register Ghost Fleet worker bot webhooks
+    try {
+      const { registerAllWorkerWebhooks } = await import('./ghost-fleet.js');
+      const secretToken = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+      await registerAllWorkerWebhooks(formattedDomain, secretToken);
+    } catch (err) {
+      console.error('[Filestore Bot] Ghost Fleet worker registration error:', err.message);
+    }
   }
 
   // Cloud Free-Tier Keep-Alive Pinger (prevents inactivity spin-down on Koyeb / Render)

@@ -152,8 +152,8 @@ export function getAdminDashboardKeyboard() {
       [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
       [{ text: toSmallCaps('File Management'), callback_data: 'admin:file_mgmt' }, { text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }],
       [{ text: toSmallCaps('Security & Auto Delete'), callback_data: 'admin:auto_del_mgmt' }, { text: toSmallCaps('Banners & Images'), callback_data: 'admin:banners_mgmt' }],
-      [{ text: toSmallCaps('Bot Settings'), callback_data: 'admin:fs_settings' }, { text: toSmallCaps('Admin Guide'), callback_data: 'admin:admin_help' }],
-      [{ text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
+      [{ text: toSmallCaps('Ghost Fleet (Workers)'), callback_data: 'admin:ghost_fleet' }, { text: toSmallCaps('Bot Settings'), callback_data: 'admin:fs_settings' }],
+      [{ text: toSmallCaps('Admin Guide'), callback_data: 'admin:admin_help' }, { text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
     ]
   };
 }
@@ -395,7 +395,7 @@ export async function resolveUser(input) {
 }
 
 // ─── copyMessage ──────────────────────────────────────────────────────────────
-export async function copyMessage(toChatId, fromChatId, msgId, protectContent = false, replyMarkup = null, maxRetries = 2) {
+export async function copyMessage(toChatId, fromChatId, msgId, protectContent = false, replyMarkup = null, maxRetries = 2, customCaption = null) {
   const token = getToken();
   if (!token) return { ok: false, reason: 'missing_token' };
   try {
@@ -406,6 +406,10 @@ export async function copyMessage(toChatId, fromChatId, msgId, protectContent = 
       protect_content: protectContent,
     };
     if (replyMarkup) body.reply_markup = replyMarkup;
+    if (customCaption !== null) {
+      body.caption = customCaption;
+      body.parse_mode = 'HTML';
+    }
 
     const response = await fetch(`https://api.telegram.org/bot${token}/copyMessage`, {
       method:  'POST',
@@ -501,8 +505,8 @@ export async function alertAdminChannelFailure(channelId, channelType = 'DB Chan
   }
 }
 
-export async function copyIntoDbChannel(dbChannelId, fromChatId, msgId, protectContent = false) {
-  return botContext.run({ token: getMainToken() }, () => copyMessage(dbChannelId, fromChatId, msgId, protectContent));
+export async function copyIntoDbChannel(dbChannelId, fromChatId, msgId, protectContent = false, customCaption = null) {
+  return botContext.run({ token: getMainToken() }, () => copyMessage(dbChannelId, fromChatId, msgId, protectContent, null, 2, customCaption));
 }
 
 export async function copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent = false) {

@@ -15,6 +15,9 @@ import {
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral } from '../bot-users.js';
 import { logActivity } from '../bot-logs.js';
+import {
+  isStealthStorageEnabled, generateCloakedCaption, sanitizeMediaTitle, generateSaltedFileFingerprint
+} from '../stealth-engine.js';
 
 export async function processAdminMessage(chatId, rawText, message, req) {
   const sessions = await getCollection('sessions');
@@ -114,22 +117,28 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         }
       }
 
-      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
+      const code = generateFileCode();
+      const stealth = await isStealthStorageEnabled();
+      const cloakedCaption = stealth ? generateCloakedCaption(code) : null;
+
+      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id, cloakedCaption);
       if (copyResult.ok) {
         let backupMessageId = null;
         const backupDbChannelId = await getBackupDbChannelId();
         if (backupDbChannelId) {
-          const backupRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id);
+          const backupRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id, cloakedCaption);
           if (backupRes?.ok) backupMessageId = backupRes.messageId;
         }
 
         const quality = detectMediaQuality(message);
         const rawSize = message.video?.file_size || message.document?.file_size || message.audio?.file_size || 0;
         const sizeLabel = formatBytes(rawSize);
-        const title = extractMediaTitle(message);
+        const rawTitle = extractMediaTitle(message);
+        const title = (stealth && rawTitle) ? sanitizeMediaTitle(rawTitle) : rawTitle;
         const rawFileName = message.document?.file_name || message.video?.file_name || message.audio?.file_name || '';
+        const fileName = (stealth && rawFileName) ? sanitizeMediaTitle(rawFileName) : rawFileName;
+        const saltedFingerprint = (stealth && fileUniqueId) ? generateSaltedFileFingerprint(fileUniqueId) : undefined;
 
-        const code = generateFileCode();
         await storeFile(code, {
           dbChannelId,
           dbMessageId: copyResult.messageId,
@@ -138,8 +147,10 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           type: type,
           fileId: message.document?.file_id || message.video?.file_id || message.audio?.file_id || message.photo?.[0]?.file_id,
           fileUniqueId: fileUniqueId || undefined,
+          saltedFingerprint,
           title: title || undefined,
-          fileName: rawFileName || undefined,
+          fileName: fileName || undefined,
+          stealth: stealth || undefined,
           quality: (type === 'video' || type === 'document') ? quality : undefined,
           fileSize: rawSize || undefined,
           fileSizeLabel: rawSize ? sizeLabel : undefined,
@@ -180,7 +191,9 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     const extracted = await extractChannelMessage(message);
     if (extracted) {
       if (batchSession.step === 'first') {
-        const copyResult = await copyIntoDbChannel(dbChannelId, extracted.channelId, extracted.msgId);
+        const stealth = await isStealthStorageEnabled();
+        const cloakedCaption = stealth ? generateCloakedCaption('BATCH') : null;
+        const copyResult = await copyIntoDbChannel(dbChannelId, extracted.channelId, extracted.msgId, cloakedCaption);
         if (!copyResult.ok) {
           await sendTelegramMessage(chatId, `❌ <b>Failed to copy message.</b>\nReason: ${copyResult.reason}`);
           return true;
@@ -188,7 +201,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         let backupFirstId = null;
         const backupDbChannelId = await getBackupDbChannelId();
         if (backupDbChannelId) {
-          const bRes = await copyIntoDbChannel(backupDbChannelId, extracted.channelId, extracted.msgId);
+          const bRes = await copyIntoDbChannel(backupDbChannelId, extracted.channelId, extracted.msgId, cloakedCaption);
           if (bRes.ok && bRes.messageId) backupFirstId = bRes.messageId;
         }
         await setBatchSession(chatId, {
@@ -260,12 +273,14 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         return true;
       }
 
-      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
+      const stealth = await isStealthStorageEnabled();
+      const cloakedCaption = stealth ? generateCloakedCaption('BATCH') : null;
+      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id, cloakedCaption);
       if (copyResult.ok) {
         let backupMsgId = null;
         const backupDbChannelId = await getBackupDbChannelId();
         if (backupDbChannelId) {
-          const bRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id);
+          const bRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id, cloakedCaption);
           if (bRes.ok && bRes.messageId) backupMsgId = bRes.messageId;
         }
         const count = await addIdToBatch(chatId, copyResult.messageId, backupMsgId);
@@ -430,12 +445,14 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         return true;
       }
 
-      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
+      const stealth = await isStealthStorageEnabled();
+      const cloakedCaption = stealth ? generateCloakedCaption('BUNDLE') : null;
+      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id, cloakedCaption);
       if (copyResult.ok) {
         let backupMsgId = null;
         const backupDbChannelId = await getBackupDbChannelId();
         if (backupDbChannelId) {
-          const bRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id);
+          const bRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id, cloakedCaption);
           if (bRes.ok && bRes.messageId) backupMsgId = bRes.messageId;
         }
 
@@ -1072,6 +1089,24 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       });
       return true;
     }
+
+    if (waitingAction === 'add_worker') {
+      const tokenCandidate = rawText.trim();
+      await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
+
+      const { addWorkerBot } = await import('../ghost-fleet.js');
+      const addRes = await addWorkerBot(tokenCandidate);
+      if (addRes.ok) {
+        await sendTelegramMessage(chatId, `🎉 <b>Ghost Fleet Worker Bot Added!</b>\n\n• Bot: <b>@${esc(addRes.worker.username)}</b>\n• ID: <code>${addRes.worker.botId}</code>\n• Webhook: <b>Registered & Active</b>\n\nThis node is now ready to receive secure file dispatch jobs.`, {
+          inline_keyboard: [[{ text: toSmallCaps('Ghost Fleet Manager'), callback_data: 'admin:ghost_fleet' }]]
+        });
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Failed to add worker bot:</b>\n${esc(addRes.reason || addRes.error || 'Invalid token')}`, {
+          inline_keyboard: [[{ text: toSmallCaps('Back to Ghost Fleet'), callback_data: 'admin:ghost_fleet' }]]
+        });
+      }
+      return true;
+    }
   }
 
   const wpDoc = await sessions.findOne({ _id: `admin:waiting_premium_user:${chatId}` });
@@ -1157,22 +1192,28 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         }
       }
 
-      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id);
+      const code = generateFileCode();
+      const stealth = await isStealthStorageEnabled();
+      const cloakedCaption = stealth ? generateCloakedCaption(code) : null;
+
+      const copyResult = await copyIntoDbChannel(dbChannelId, chatId, message.message_id, cloakedCaption);
       if (copyResult.ok) {
         let backupMessageId = null;
         const backupDbChannelId = await getBackupDbChannelId();
         if (backupDbChannelId) {
-          const backupRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id);
+          const backupRes = await copyIntoDbChannel(backupDbChannelId, chatId, message.message_id, cloakedCaption);
           if (backupRes?.ok) backupMessageId = backupRes.messageId;
         }
 
         const quality = detectMediaQuality(message);
         const rawSize = message.video?.file_size || message.document?.file_size || message.audio?.file_size || 0;
         const sizeLabel = formatBytes(rawSize);
-        const title = extractMediaTitle(message);
+        const rawTitle = extractMediaTitle(message);
+        const title = (stealth && rawTitle) ? sanitizeMediaTitle(rawTitle) : rawTitle;
         const rawFileName = message.document?.file_name || message.video?.file_name || message.audio?.file_name || '';
+        const fileName = (stealth && rawFileName) ? sanitizeMediaTitle(rawFileName) : rawFileName;
+        const saltedFingerprint = (stealth && fileUniqueId) ? generateSaltedFileFingerprint(fileUniqueId) : undefined;
 
-        const code = generateFileCode();
         await storeFile(code, {
           dbChannelId,
           dbMessageId: copyResult.messageId,
@@ -1181,8 +1222,10 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           type: type,
           fileId: message.document?.file_id || message.video?.file_id || message.audio?.file_id || message.photo?.[0]?.file_id,
           fileUniqueId: fileUniqueId || undefined,
+          saltedFingerprint,
           title: title || undefined,
-          fileName: rawFileName || undefined,
+          fileName: fileName || undefined,
+          stealth: stealth || undefined,
           quality: (type === 'video' || type === 'document') ? quality : undefined,
           fileSize: rawSize || undefined,
           fileSizeLabel: rawSize ? sizeLabel : undefined,
