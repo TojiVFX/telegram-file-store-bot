@@ -25,6 +25,38 @@ async function renderDashboard(chatId, messageId) {
   await editTelegramMessage(chatId, messageId, text, getAdminDashboardKeyboard());
 }
 
+export async function renderSecHub(chatId, messageId = null) {
+  const s = await getSettings();
+  const autoDel = s.autoDeleteEnabled === '1';
+  const protect = s.protectContent === '1';
+  const stealth = s.stealthStorage === '1';
+  const ghost = s.ghostFleetEnabled === '1';
+  const { getStandbyChannelId } = await import('../phoenix-protocol.js');
+  const standbyCid = await getStandbyChannelId();
+
+  const text = `🛡️ <b>Security, Stealth & Fleet Infrastructure</b>\n\n` +
+    `Manage anti-ban protections, cloaking, and multi-bot delivery mesh:\n\n` +
+    `• Auto-Delete: <b>${autoDel ? '🟢 Active' : '⚪ Disabled'}</b>\n` +
+    `• Content Protection: <b>${protect ? '🟢 Active' : '⚪ Disabled'}</b>\n` +
+    `• Stealth Storage (Cloaker): <b>${stealth ? '🟢 Active' : '⚪ Disabled'}</b>\n` +
+    `• Ghost Fleet (Workers): <b>${ghost ? '🟢 Active' : '⚪ Disabled'}</b>\n` +
+    `• Phoenix Protocol Standby: <b>${standbyCid ? '🔥 Armed' : '⚪ Disarmed'}</b>\n` +
+    `• Anti-Scraper Armor: <b>🟢 Active (Auto-Triggered)</b>`;
+
+  const buttons = [
+    [{ text: toSmallCaps('⏳ Auto-Delete & Protection'), callback_data: 'admin:auto_del_mgmt' }],
+    [{ text: toSmallCaps('👻 Ghost Fleet & Worker Mesh'), callback_data: 'admin:ghost_fleet' }],
+    [{ text: toSmallCaps('🔥 Phoenix Storage Failover'), callback_data: 'admin:storage_audit' }],
+    ...navButtons('admin:dashboard')
+  ];
+
+  if (messageId) {
+    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+  } else {
+    await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+  }
+}
+
 async function renderAutoDelMgmt(chatId, messageId) {
   const s = await getSettings();
   const autoDel = s.autoDeleteEnabled === '1';
@@ -59,7 +91,7 @@ async function renderAutoDelMgmt(chatId, messageId) {
 
   buttons.push([{ text: toSmallCaps(protect ? 'Disable Content Protection' : 'Enable Content Protection'), callback_data: `admin:toggle_protect:${protect ? 0 : 1}` }]);
   buttons.push([{ text: toSmallCaps(stealth ? 'Disable Stealth Storage' : 'Enable Stealth Storage'), callback_data: `admin:toggle_stealth:${stealth ? 0 : 1}` }]);
-  buttons.push(...navButtons('admin:dashboard'));
+  buttons.push(...navButtons('admin:sec_hub'));
 
   await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
 }
@@ -129,7 +161,7 @@ export async function renderGhostFleetMgmt(chatId, messageId = null) {
   if (workerButtons.length > 0) {
     buttons.push(...workerButtons);
   }
-  buttons.push(...navButtons('admin:dashboard'));
+  buttons.push(...navButtons('admin:sec_hub'));
 
   if (messageId) {
     await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
@@ -245,7 +277,7 @@ async function renderFsCfg(chatId, messageId, cfgType) {
       { text: toSmallCaps('Check Status'), callback_data: `admin:fs_fsub_status` },
       { text: toSmallCaps('Custom Message'), callback_data: `admin:fs_set_fsub_msg` }
     ]);
-    buttons.push([{ text: toSmallCaps('Back'), callback_data: `admin:fs_settings` }]);
+    buttons.push([{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]);
   } else if (cfgType === 'tkn') {
     const enabled = s.enabled === '1';
     const refDisabled = s.referralDisabled === '1';
@@ -284,7 +316,7 @@ async function renderFsCfg(chatId, messageId, cfgType) {
       ],
       [{ text: toSmallCaps('Validity'), callback_data: 'admin:fs_set_ttl' }, { text: toSmallCaps('Tutorial'), callback_data: 'admin:fs_set_tut' }],
       [{ text: toSmallCaps(enabled ? 'Disable Token' : 'Enable Token'), callback_data: `admin:fs_toggle:${enabled ? 0 : 1}` }, { text: toSmallCaps(refDisabled ? 'Enable Ref' : 'Disable Ref'), callback_data: `admin:fs_toggle_ref:${refDisabled ? 0 : 1}` }],
-      [{ text: toSmallCaps('Back'), callback_data: 'admin:fs_settings' }]
+      [{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]
     ];
   }
   await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
@@ -750,11 +782,22 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     });
     return;
   } else if (action === 'user_mgmt') {
-    const text = `<b>User Management</b>\n\nManage users and access control:`;
+    const s = await getSettings();
+    const tokenActive = s.enabled === '1';
+    const fsub = s.forceSubscribeChannels || '';
+    const globalMode = s.forceSubscribeMode || 'normal';
+    const channels = getForceSubChannelsList(fsub, globalMode);
+
+    const text = `👥 <b>Users & Access Control Hub</b>\n\n` +
+      `Manage user moderation, VIP privileges, token gating, and force-subscribe channels:\n\n` +
+      `• Access Token Shortener: <b>${tokenActive ? '🟢 Active' : '⚪ Disabled'}</b>\n` +
+      `• Force Sub Channels: <b>${channels.length} configured</b>`;
+
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [
-        [{ text: toSmallCaps('Ban User'), callback_data: 'admin:ban_prompt' }, { text: toSmallCaps('Unban User'), callback_data: 'admin:unban_prompt' }],
-        [{ text: toSmallCaps('Banned List'), callback_data: 'admin:ban_list' }, { text: toSmallCaps('Grant Premium'), callback_data: 'admin:fs_premium_prompt' }],
+        [{ text: toSmallCaps('🚫 Ban User'), callback_data: 'admin:ban_prompt' }, { text: toSmallCaps('✅ Unban User'), callback_data: 'admin:unban_prompt' }],
+        [{ text: toSmallCaps('📋 Banned List'), callback_data: 'admin:ban_list' }, { text: toSmallCaps('⭐ Grant Premium'), callback_data: 'admin:fs_premium_prompt' }],
+        [{ text: toSmallCaps('🔐 Shortener / Token'), callback_data: 'admin:fs_cfg:tkn' }, { text: toSmallCaps('📢 Force Subscribe'), callback_data: 'admin:fs_cfg:fsub' }],
         ...navButtons('admin:dashboard')
       ]
     });
@@ -844,15 +887,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     });
     return;
   } else if (action === 'file_mgmt') {
-    const text = `<b>File Management</b>\n\nCreate permanent or temporary sharing links, bulk store files, export link lists, or backup database:`;
+    const text = `📁 <b>Files & Storage Hub</b>\n\nCreate permanent or temporary sharing links, store files, analyze performance, or audit redundancy:`;
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: [
-        [{ text: toSmallCaps('Create Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps('Quality Bundle'), callback_data: 'admin:bundle_start' }],
-        [{ text: toSmallCaps('Store Single'), callback_data: 'admin:store_start' }, { text: toSmallCaps('Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }],
-        [{ text: toSmallCaps('Export Links Hub'), callback_data: 'admin:export_hub' }],
-        [{ text: toSmallCaps('Create Temp Token'), callback_data: 'admin:temp_token_start' }, { text: toSmallCaps('Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }],
-        [{ text: toSmallCaps('Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
-        [{ text: toSmallCaps('Database Backup'), callback_data: 'admin:backup_db' }, { text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }],
+        [{ text: toSmallCaps('📦 Create Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps('🎬 Quality Bundle'), callback_data: 'admin:bundle_start' }],
+        [{ text: toSmallCaps('📥 Store Single'), callback_data: 'admin:store_start' }, { text: toSmallCaps('⚡ Bulk Store Mode'), callback_data: 'admin:bulk_store_start' }],
+        [{ text: toSmallCaps('⏳ Temporary Tokens'), callback_data: 'admin:temp_token_start' }, { text: toSmallCaps('📋 Active Temp Tokens'), callback_data: 'admin:temp_tokens_list' }],
+        [{ text: toSmallCaps('📊 Top 10 Files'), callback_data: 'admin:top_files' }, { text: toSmallCaps("📈 Today's Links"), callback_data: 'admin:today_links' }],
+        [{ text: toSmallCaps('📤 Export Links Hub'), callback_data: 'admin:export_hub' }, { text: toSmallCaps('🛡️ Storage Audit'), callback_data: 'admin:storage_audit' }],
         [{ text: toSmallCaps('🧹 System Wipe / Cleanup'), callback_data: 'admin:wipe_sys_prompt' }],
         ...navButtons('admin:dashboard')
       ]
@@ -1452,6 +1494,9 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     await editTelegramMessage(chatId, messageId, `❌ <i>Record deletion cancelled. Stored files remain untouched.</i>`, {
       inline_keyboard: navButtons('admin:file_mgmt')
     });
+  } else if (action === 'sec_hub') {
+    await renderSecHub(chatId, messageId);
+    return;
   } else if (action === 'auto_del_mgmt') {
     await renderAutoDelMgmt(chatId, messageId);
   } else if (action === 'select_autodel_timer') {
@@ -1723,15 +1768,14 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const logChannel = envLog || s.logChannelId || 'Not set';
     const sponsorStatus = s.sponsorBtnEnabled === '1' ? 'ENABLED' : 'DISABLED';
 
-    const text = `<b>Bot Settings</b>\n\nConfigure your bot settings using the categories below.\n\n` +
+    const text = `⚙️ <b>Bot Configuration & Settings</b>\n\nConfigure bot branding, messages, telemetry, and data backups:\n\n` +
       `• <b>DB Channel:</b> <code>${esc(dbChannel)}</code> <i>(${envDb ? 'Environment' : 'Database'})</i>\n` +
       `• <b>Log Channel:</b> <code>${esc(logChannel)}</code> <i>(${envLog ? 'Environment' : 'Database'})</i>\n` +
       `• <b>Sponsor Button:</b> <b>${sponsorStatus}</b>`;
     const buttons = [
-      [{ text: toSmallCaps('Start Message'), callback_data: 'admin:fs_cfg:start' }, { text: toSmallCaps('Force Sub'), callback_data: 'admin:fs_cfg:fsub' }],
-      [{ text: toSmallCaps('Access Token'), callback_data: 'admin:fs_cfg:tkn' }, { text: toSmallCaps('Sponsor Button'), callback_data: 'admin:sponsor_mgmt' }],
-      [{ text: toSmallCaps('Banners & Images'), callback_data: 'admin:banners_mgmt' }, { text: toSmallCaps('Log Channel'), callback_data: 'admin:fs_set_log_channel' }],
-      [{ text: toSmallCaps('Download DB Backup (.json)'), callback_data: 'admin:manual_backup' }],
+      [{ text: toSmallCaps('💬 Start Message'), callback_data: 'admin:fs_cfg:start' }, { text: toSmallCaps('🖼️ Banners & Images'), callback_data: 'admin:banners_mgmt' }],
+      [{ text: toSmallCaps('📢 Sponsor Button'), callback_data: 'admin:sponsor_mgmt' }, { text: toSmallCaps('📜 Log Channel'), callback_data: 'admin:fs_set_log_channel' }],
+      [{ text: toSmallCaps('💾 Download DB Backup (.json)'), callback_data: 'admin:manual_backup' }],
       ...navButtons('admin:dashboard')
     ];
     await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });

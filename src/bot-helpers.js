@@ -149,11 +149,22 @@ export async function getMainBotUsername() {
 export function getAdminDashboardKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: toSmallCaps('Statistics'), callback_data: 'admin:stats' }, { text: toSmallCaps('Broadcast'), callback_data: 'admin:broadcast_prompt' }],
-      [{ text: toSmallCaps('File Management'), callback_data: 'admin:file_mgmt' }, { text: toSmallCaps('User Control'), callback_data: 'admin:user_mgmt' }],
-      [{ text: toSmallCaps('Security & Auto Delete'), callback_data: 'admin:auto_del_mgmt' }, { text: toSmallCaps('Banners & Images'), callback_data: 'admin:banners_mgmt' }],
-      [{ text: toSmallCaps('Ghost Fleet (Workers)'), callback_data: 'admin:ghost_fleet' }, { text: toSmallCaps('Bot Settings'), callback_data: 'admin:fs_settings' }],
-      [{ text: toSmallCaps('Admin Guide'), callback_data: 'admin:admin_help' }, { text: toSmallCaps('Back to Main Menu'), callback_data: 'user:back_start' }],
+      [
+        { text: toSmallCaps('📁 Files & Storage'), callback_data: 'admin:file_mgmt' },
+        { text: toSmallCaps('👥 Users & Access'), callback_data: 'admin:user_mgmt' }
+      ],
+      [
+        { text: toSmallCaps('🛡️ Security & Fleet'), callback_data: 'admin:sec_hub' },
+        { text: toSmallCaps('⚙️ Bot Settings'), callback_data: 'admin:fs_settings' }
+      ],
+      [
+        { text: toSmallCaps('📊 Statistics'), callback_data: 'admin:stats' },
+        { text: toSmallCaps('📢 Broadcast'), callback_data: 'admin:broadcast_prompt' }
+      ],
+      [
+        { text: toSmallCaps('📖 Admin Guide'), callback_data: 'admin:admin_help' },
+        { text: toSmallCaps('🏠 Main Menu'), callback_data: 'user:back_start' }
+      ]
     ]
   };
 }
