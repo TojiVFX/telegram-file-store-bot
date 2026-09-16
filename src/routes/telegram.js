@@ -3,7 +3,7 @@ import {
   botContext, deleteTelegramMessage
 } from '../bot-common.js';
 import {
-  getBotUsername, isBotAdmin, registerWebhook, setMyCommands, checkSubscription
+  getBotUsername, isBotAdmin, registerWebhook, setMyCommands, checkSubscription, invalidateFsubCache
 } from '../bot-helpers.js';
 import { verifyTelegramWebhook } from '../auth.js';
 import { validateEnv } from '../env-validator.js';
@@ -190,7 +190,7 @@ async function handleUpdate(req) {
 
     if (data.startsWith('sub_check:')) {
       const payload = data.slice('sub_check:'.length);
-
+      invalidateFsubCache(chatId);
       const sub = await checkSubscription(chatId, chatId);
       if (!sub.ok) {
         await answerCallbackQuery(cbId, "❌ You still haven't joined all the required channels.", true);

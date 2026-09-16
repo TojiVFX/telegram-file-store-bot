@@ -48,6 +48,24 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     return;
   }
 
+  if (action === 'refresh_ping') {
+    await answerCallbackQuery(cq.id, '🏓 Refreshing ping...').catch(() => {});
+    const { renderPingReport } = await import('../bot-helpers.js');
+    await renderPingReport(chatId, messageId);
+    return;
+  }
+
+  if (action === 'refresh_status') {
+    if (!admin) {
+      await answerCallbackQuery(cq.id, '⛔ Admin only.', true).catch(() => {});
+      return;
+    }
+    await answerCallbackQuery(cq.id, '🩺 Refreshing status...').catch(() => {});
+    const { renderSystemStatus } = await import('../bot-helpers.js');
+    await renderSystemStatus(chatId, messageId);
+    return;
+  }
+
   // Answer instantly to dismiss the button loading spinner immediately
   answerCallbackQuery(cq.id).catch(() => {});
 
@@ -295,7 +313,8 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     if (sentMsgId) {
-      await scheduleAutoDelete(chatId, [sentMsgId], bundleCode);
+      const deleteIds = messageId ? [sentMsgId, messageId] : [sentMsgId];
+      await scheduleAutoDelete(chatId, deleteIds, bundleCode);
     } else {
       await sendTelegramMessage(chatId, `❌ <b>Failed to deliver file</b> (Storage message missing or unreadable).`);
     }

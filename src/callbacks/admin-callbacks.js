@@ -105,10 +105,11 @@ export async function renderGhostFleetMgmt(chatId, messageId = null) {
     { text: toSmallCaps('➕ Add Worker Bot'), callback_data: 'admin:add_worker_prompt' }
   ]);
   const relayRow = [
-    { text: toSmallCaps(s.relayChatId ? '📡 Change Relay Tunnel' : '📡 Set Relay Tunnel'), callback_data: 'admin:set_relay_prompt' }
+    { text: toSmallCaps(s.relayChatId ? '📡 Change Relay' : '📡 Set Relay Tunnel'), callback_data: 'admin:set_relay_prompt' }
   ];
   if (s.relayChatId) {
-    relayRow.push({ text: toSmallCaps('❌ Clear Relay'), callback_data: 'admin:clear_relay' });
+    relayRow.push({ text: toSmallCaps('🧪 Test Tunnel'), callback_data: 'admin:test_relay' });
+    relayRow.push({ text: toSmallCaps('❌ Clear'), callback_data: 'admin:clear_relay' });
   }
   buttons.push(relayRow);
   if (workerButtons.length > 0) {
@@ -1492,6 +1493,39 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     await updateSettings({ relayChatId: '' });
     await safeAnswer(cq.id, 'Air-Gap Relay Tunnel removed.');
     await renderGhostFleetMgmt(chatId, messageId);
+  } else if (action === 'test_relay') {
+    await safeAnswer(cq.id, '🧪 Running Relay Tunnel Benchmark...');
+    const { benchmarkRelayTunnel } = await import('../ghost-fleet.js');
+    const res = await benchmarkRelayTunnel();
+    if (res.ok) {
+      const report = `🧪 <b>Relay Tunnel Benchmark Result</b>\n\n` +
+        `• <b>Tunnel Status:</b> 🟢 <b>Operational</b>\n` +
+        `• <b>Total Transit Latency:</b> <b>${res.totalLatencyMs}ms</b> ⚡\n` +
+        `• <b>Main Bot Post:</b> <b>${res.mainPostLatencyMs}ms</b>\n` +
+        `• <b>Worker Bot Transit:</b> <b>${res.workerTransitLatencyMs}ms</b>\n` +
+        `• <b>Tested Worker:</b> @${esc(res.workerUsername)}\n` +
+        `• <b>Relay Chat ID:</b> <code>${res.relayChatId}</code>\n\n` +
+        `✅ <i>Permissions verified: Main Bot posted probe, Worker Bot accessed it, and test message was cleanly purged!</i>`;
+      const buttons = [
+        [{ text: toSmallCaps('🔄 Run Again'), callback_data: 'admin:test_relay' }],
+        [{ text: toSmallCaps('« Back to Ghost Fleet'), callback_data: 'admin:ghost_fleet' }]
+      ];
+      await editTelegramMessage(chatId, messageId, report, { inline_keyboard: buttons });
+    } else {
+      const report = `❌ <b>Relay Tunnel Test Failed</b>\n\n` +
+        `• <b>Failed Step:</b> <code>${res.step || 'Configuration'}</code>\n` +
+        `• <b>Error:</b> <code>${esc(res.error || 'Unknown error')}</code>\n\n` +
+        `<b>Troubleshooting:</b>\n` +
+        `1. Ensure both Main Bot and Worker Bot(s) are in the Relay chat.\n` +
+        `2. Ensure Main Bot has <b>Post Messages</b> and <b>Delete Messages</b> permissions.\n` +
+        `3. Ensure Worker Bot has <b>Post Messages</b> permission.`;
+      const buttons = [
+        [{ text: toSmallCaps('🔄 Retry Test'), callback_data: 'admin:test_relay' }],
+        [{ text: toSmallCaps('« Back to Ghost Fleet'), callback_data: 'admin:ghost_fleet' }]
+      ];
+      await editTelegramMessage(chatId, messageId, report, { inline_keyboard: buttons });
+    }
+    return;
   } else if (action === 'batch_start') {
     const dbError = await getDbChannelReadinessError();
     if (dbError) {

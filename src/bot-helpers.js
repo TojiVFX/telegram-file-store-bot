@@ -773,6 +773,33 @@ export async function buildForceSubscribeGate(chatId, payload = '') {
   return { text, replyMarkup: { inline_keyboard: buttons }, photo: s?.bannerFsub || null };
 }
 
+// ─── Force-Sub In-Memory Speed Cache (TTL: 60 seconds) ────────────────────────
+const fsubMemberCache = new Map();
+const FSUB_CACHE_TTL_MS = 60 * 1000;
+
+export function invalidateFsubCache(userId = null) {
+  if (!userId) {
+    fsubMemberCache.clear();
+    return;
+  }
+  const uStr = String(userId);
+  for (const key of fsubMemberCache.keys()) {
+    if (key.endsWith(`:${uStr}`)) {
+      fsubMemberCache.delete(key);
+    }
+  }
+}
+
+export function pruneFsubCache() {
+  const now = Date.now();
+  for (const [key, val] of fsubMemberCache.entries()) {
+    if (val.expiresAt <= now) {
+      fsubMemberCache.delete(key);
+    }
+  }
+}
+setInterval(pruneFsubCache, 2 * 60 * 1000).unref?.();
+
 export async function checkSubscription(chatId, userId) {
   return botContext.run({ token: getMainToken() }, async () => {
     let s = await getSettings();
@@ -782,9 +809,18 @@ export async function checkSubscription(chatId, userId) {
     const channels = getForceSubChannelsList(s?.forceSubscribeChannels, globalMode);
     if (!channels.length) return { ok: true };
 
+    const now = Date.now();
     const results = await Promise.all(channels.map(async (chan) => {
       const cid = chan.id;
       const mode = chan.mode || globalMode || 'normal';
+      const cacheKey = `${cid}:${userId}`;
+
+      // Check 60-second in-memory positive cache
+      const cached = fsubMemberCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) {
+        return null;
+      }
+
       try {
         const res = await getChatMember(cid, userId);
 
@@ -794,6 +830,11 @@ export async function checkSubscription(chatId, userId) {
         const status = res.ok ? res.result?.status : null;
         const isMember = ['creator', 'administrator', 'member'].includes(status) ||
           (status === 'restricted' && Boolean(res.result?.is_member));
+
+        if (isMember) {
+          fsubMemberCache.set(cacheKey, { isMember: true, expiresAt: now + FSUB_CACHE_TTL_MS });
+          return null;
+        }
 
         if (!isMember) {
           if (mode === 'join_request') {
@@ -1548,5 +1589,123 @@ export async function setMyCommands() {
     }
   } catch (err) {
     log('error', 'setMyCommands failed', { errorMessage: err.message });
+  }
+}
+
+// ─── Interactive Diagnostic Renderers ─────────────────────────────────────────
+
+export async function renderPingReport(chatId, messageId = null, initialMsgLatency = null) {
+  const token = getToken() || getMainToken();
+  const apiStart = Date.now();
+  let apiLatency = 0;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    apiLatency = Date.now() - apiStart;
+  } catch {}
+
+  const dbPing = await pingDatabase();
+  const uptime = formatUptime(process.uptime());
+  const mem = process.memoryUsage();
+  const memUsedMB = (mem.heapUsed / 1024 / 1024).toFixed(1);
+  const memTotalMB = (mem.heapTotal / 1024 / 1024).toFixed(1);
+  const rssMB = (mem.rss / 1024 / 1024).toFixed(1);
+
+  const dbIcon = dbPing.ok ? '✅' : '❌';
+  const dbLabel = dbPing.mock ? 'In-Memory (Mock)' : (dbPing.ok ? `Connected (${dbPing.latency}ms)` : 'Disconnected');
+
+  let text = `🏓 <b>Pong!</b>\n\n` +
+    `• <b>API Ping (getMe):</b> <b>${apiLatency}ms</b> ⚡\n`;
+
+  if (initialMsgLatency !== null) {
+    text += `• <b>Chat Dispatch:</b> <b>${initialMsgLatency}ms</b> 📨\n`;
+  }
+
+  text += `• <b>DB Latency:</b> ${dbIcon} <b>${dbLabel}</b>\n` +
+    `• <b>Server Uptime:</b> <b>${uptime}</b>\n` +
+    `• <b>Memory:</b> <b>${memUsedMB} / ${memTotalMB} MB</b> (RSS: ${rssMB} MB)\n` +
+    `• <b>Node:</b> <b>${process.version}</b>\n` +
+    `• <b>Platform:</b> <b>${process.platform} ${process.arch}</b>\n` +
+    `• <b>Bot API:</b> <b>v8.0+ (Telegram 10.3+)</b>\n\n` +
+    `<i>Updated: ${new Date().toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</i>`;
+
+  const kb = {
+    inline_keyboard: [
+      [{ text: toSmallCaps('🔄 Refresh Ping'), callback_data: 'user:refresh_ping' }]
+    ]
+  };
+
+  if (messageId) {
+    return editTelegramMessage(chatId, messageId, text, kb);
+  } else {
+    return sendTelegramMessage(chatId, text, kb);
+  }
+}
+
+export async function renderSystemStatus(chatId, messageId = null) {
+  const [webhook, dbPing, settings] = await Promise.all([
+    getWebhookInfo(),
+    pingDatabase(),
+    getSettings(),
+  ]);
+
+  const whActive = webhook.url ? '✅ Active' : '❌ Not Set';
+  const whPending = webhook.pending_update_count ?? 0;
+  const whLastError = webhook.last_error_message ? `\n   ⚠️ Last Error: <i>${esc(webhook.last_error_message)}</i>` : '';
+
+  const dbIcon = dbPing.ok ? '✅' : '❌';
+  const dbLabel = dbPing.mock ? 'In-Memory (Mock)' : (dbPing.ok ? `Connected (${dbPing.latency}ms)` : `Disconnected — ${dbPing.error || 'Unknown'}`);
+
+  const [primaryHealth, backupHealth] = await Promise.all([
+    checkShortenerHealth(settings?.shortenerUrl, settings?.shortenerKey),
+    checkShortenerHealth(settings?.backupShortenerUrl, settings?.backupShortenerKey),
+  ]);
+
+  function shortenerLabel(h) {
+    if (h.status === 'not_configured') return '⚪ Not Configured';
+    if (h.status === 'online') return `✅ Online (${h.latency}ms)`;
+    if (h.status === 'error') return `⚠️ Error (HTTP ${h.httpStatus})`;
+    return `❌ Offline`;
+  }
+
+  const uptime = formatUptime(process.uptime());
+  const mem = process.memoryUsage();
+  const memUsedMB = (mem.heapUsed / 1024 / 1024).toFixed(1);
+  const rssMB = (mem.rss / 1024 / 1024).toFixed(1);
+
+  const filesColl = await getCollection('files');
+  const totalFiles = await filesColl.countDocuments();
+  const recentlyAccessed = await filesColl.countDocuments({
+    lastAccessedAt: { $exists: true, $gte: new Date(Date.now() - 24 * 3600 * 1000).toISOString() }
+  });
+
+  const text = `🩺 <b>System Health Monitor</b>\n\n` +
+    `<b>Webhook</b>\n` +
+    `• Status: ${whActive}\n` +
+    `• Pending Updates: <b>${whPending}</b>${whLastError}\n\n` +
+    `<b>Database</b>\n` +
+    `• Connection: ${dbIcon} <b>${dbLabel}</b>\n` +
+    `• Total Stored Files: <b>${totalFiles}</b>\n` +
+    `• Accessed (24h): <b>${recentlyAccessed}</b>\n\n` +
+    `<b>Shortener Services</b>\n` +
+    `• Primary: ${shortenerLabel(primaryHealth)}\n` +
+    `• Backup: ${shortenerLabel(backupHealth)}\n\n` +
+    `<b>Server</b>\n` +
+    `• Uptime: <b>${uptime}</b>\n` +
+    `• Memory: <b>${memUsedMB} MB</b> (RSS: ${rssMB} MB)\n` +
+    `• Node: <b>${process.version}</b>\n` +
+    `• Platform: <b>${process.platform} ${process.arch}</b>\n` +
+    `• Bot API: <b>v8.0+ (Telegram 10.3+)</b>\n\n` +
+    `<i>Updated: ${new Date().toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</i>`;
+
+  const kb = {
+    inline_keyboard: [
+      [{ text: toSmallCaps('🔄 Refresh Status'), callback_data: 'user:refresh_status' }]
+    ]
+  };
+
+  if (messageId) {
+    return editTelegramMessage(chatId, messageId, text, kb);
+  } else {
+    return sendTelegramMessage(chatId, text, kb);
   }
 }

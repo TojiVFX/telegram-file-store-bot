@@ -1,5 +1,5 @@
 import {
-  getCollection, getSettings, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, isMainBot, getCurrentBotId
+  getCollection, getSettings, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getToken, getMainToken, esc, isMainBot, getCurrentBotId
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser, checkChannelsHealth
@@ -1056,72 +1056,8 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
   }
   if (/^\/status/i.test(rawText) && admin) {
     const statusMsg = await sendTelegramMessage(chatId, `🔍 <b>Checking system health...</b>`);
-
-    const { getWebhookInfo, pingDatabase, checkShortenerHealth, formatUptime } = await import('../bot-helpers.js');
-
-    const [webhook, dbPing, settings] = await Promise.all([
-      getWebhookInfo(),
-      pingDatabase(),
-      getSettings(),
-    ]);
-
-    // Webhook status
-    const whUrl = webhook.url || 'Not set';
-    const whActive = webhook.url ? '✅ Active' : '❌ Not Set';
-    const whPending = webhook.pending_update_count ?? 0;
-    const whLastError = webhook.last_error_message ? `\n   ⚠️ Last Error: <i>${esc(webhook.last_error_message)}</i>` : '';
-
-    // DB Status
-    const dbIcon = dbPing.ok ? '✅' : '❌';
-    const dbLabel = dbPing.mock ? 'In-Memory (Mock)' : (dbPing.ok ? `Connected (${dbPing.latency}ms)` : `Disconnected — ${dbPing.error || 'Unknown'}`);
-
-    // Shorteners (check in parallel)
-    const [primaryHealth, backupHealth] = await Promise.all([
-      checkShortenerHealth(settings?.shortenerUrl, settings?.shortenerKey),
-      checkShortenerHealth(settings?.backupShortenerUrl, settings?.backupShortenerKey),
-    ]);
-
-    function shortenerLabel(h) {
-      if (h.status === 'not_configured') return '⚪ Not Configured';
-      if (h.status === 'online') return `✅ Online (${h.latency}ms)`;
-      if (h.status === 'error') return `⚠️ Error (HTTP ${h.httpStatus})`;
-      return `❌ Offline`;
-    }
-
-    // Uptime + Memory
-    const uptime = formatUptime(process.uptime());
-    const mem = process.memoryUsage();
-    const memUsedMB = (mem.heapUsed / 1024 / 1024).toFixed(1);
-    const rssMB = (mem.rss / 1024 / 1024).toFixed(1);
-
-    // File stats
-    const filesColl = await getCollection('files');
-    const totalFiles = await filesColl.countDocuments();
-    const recentlyAccessed = await filesColl.countDocuments({
-      lastAccessedAt: { $exists: true, $gte: new Date(Date.now() - 24 * 3600 * 1000).toISOString() }
-    });
-
-    const text = `🩺 <b>System Health Monitor</b>\n\n` +
-      `<b>Webhook</b>\n` +
-      `• Status: ${whActive}\n` +
-      `• Pending Updates: <b>${whPending}</b>${whLastError}\n\n` +
-      `<b>Database</b>\n` +
-      `• Connection: ${dbIcon} <b>${dbLabel}</b>\n` +
-      `• Total Stored Files: <b>${totalFiles}</b>\n` +
-      `• Accessed (24h): <b>${recentlyAccessed}</b>\n\n` +
-      `<b>Shortener Services</b>\n` +
-      `• Primary: ${shortenerLabel(primaryHealth)}\n` +
-      `• Backup: ${shortenerLabel(backupHealth)}\n\n` +
-      `<b>Server</b>\n` +
-      `• Uptime: <b>${uptime}</b>\n` +
-      `• Memory: <b>${memUsedMB} MB</b> (RSS: ${rssMB} MB)\n` +
-      `• Node: <b>${process.version}</b>\n` +
-      `• Platform: <b>${process.platform} ${process.arch}</b>\n` +
-      `• Bot API: <b>v8.0+ (Telegram 10.3+)</b>`;
-
-    if (statusMsg.ok) {
-      await editTelegramMessage(chatId, statusMsg.messageId, text);
-    }
+    const { renderSystemStatus } = await import('../bot-helpers.js');
+    await renderSystemStatus(chatId, statusMsg.ok ? statusMsg.messageId : null);
     return;
   }
 
@@ -1178,33 +1114,12 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
   }
 
   if (/^\/ping/i.test(rawText)) {
-    const start = Date.now();
+    const sendStart = Date.now();
     const msg = await sendTelegramMessage(chatId, `Pinging...`);
-    if (msg.ok) {
-      const latency = Date.now() - start;
-      const { pingDatabase, formatUptime } = await import('../bot-helpers.js');
-      const dbPing = await pingDatabase();
-
-      const uptime = formatUptime(process.uptime());
-      const mem = process.memoryUsage();
-      const memUsedMB = (mem.heapUsed / 1024 / 1024).toFixed(1);
-      const memTotalMB = (mem.heapTotal / 1024 / 1024).toFixed(1);
-      const rssMB = (mem.rss / 1024 / 1024).toFixed(1);
-
-      const dbIcon = dbPing.ok ? '✅' : '❌';
-      const dbLabel = dbPing.mock ? 'In-Memory (Mock)' : (dbPing.ok ? `Connected (${dbPing.latency}ms)` : 'Disconnected');
-
-      const text = `🏓 <b>Pong!</b>\n\n` +
-        `• API Latency: <b>${latency}ms</b>\n` +
-        `• Server Uptime: <b>${uptime}</b>\n` +
-        `• Memory: <b>${memUsedMB} / ${memTotalMB} MB</b> (RSS: ${rssMB} MB)\n` +
-        `• DB Status: ${dbIcon} <b>${dbLabel}</b>\n` +
-        `• Node: <b>${process.version}</b>\n` +
-        `• Platform: <b>${process.platform} ${process.arch}</b>\n` +
-        `• Bot API: <b>v8.0+ (Telegram 10.3+)</b>`;
-
-      await editTelegramMessage(chatId, msg.messageId, text);
-    }
+    const msgLatency = Date.now() - sendStart;
+    const { renderPingReport } = await import('../bot-helpers.js');
+    await renderPingReport(chatId, msg.ok ? msg.messageId : null, msgLatency);
+    return;
   }
 
   if (/^\/(temptoken|sharetemp)/i.test(rawText)) {

@@ -312,6 +312,63 @@ export async function getRelayChatId() {
   return s?.relayChatId || process.env.RELAY_CHAT_ID || null;
 }
 
+// ─── Relay Transit Tracking & Auto-Cleaner ──────────────────────────────────
+const inFlightTransits = new Map();
+
+export async function trackRelayTransit(relayChatId, messageId) {
+  const key = `${relayChatId}:${messageId}`;
+  inFlightTransits.set(key, {
+    relayChatId: String(relayChatId),
+    messageId: Number(messageId),
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 2 * 60 * 1000 // 2 minutes maximum transit lifetime
+  });
+
+  try {
+    const coll = await getCollection('relay_transits');
+    await coll.insertOne({
+      _id: key,
+      relayChatId: String(relayChatId),
+      messageId: Number(messageId),
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 2 * 60 * 1000)
+    }).catch(() => {});
+  } catch {}
+}
+
+export async function untrackRelayTransit(relayChatId, messageId) {
+  const key = `${relayChatId}:${messageId}`;
+  inFlightTransits.delete(key);
+  try {
+    const coll = await getCollection('relay_transits');
+    await coll.deleteOne({ _id: key }).catch(() => {});
+  } catch {}
+}
+
+export async function sweepRelayOrphans() {
+  const now = Date.now();
+  const { deleteTelegramMessage } = await import('./bot-common.js');
+
+  // 1. In-memory map sweep
+  for (const [key, item] of inFlightTransits.entries()) {
+    if (item.expiresAt <= now) {
+      inFlightTransits.delete(key);
+      await deleteTelegramMessage(item.relayChatId, item.messageId).catch(() => {});
+    }
+  }
+
+  // 2. Database collection sweep (catches orphans across restarts)
+  try {
+    const coll = await getCollection('relay_transits');
+    const expiredDocs = await coll.find({ expiresAt: { $lte: new Date(now) } }).toArray();
+    for (const doc of expiredDocs) {
+      await coll.deleteOne({ _id: doc._id }).catch(() => {});
+      await deleteTelegramMessage(doc.relayChatId, doc.messageId).catch(() => {});
+    }
+  } catch {}
+}
+setInterval(sweepRelayOrphans, 2 * 60 * 1000).unref?.();
+
 /**
  * Executes an Air-Gapped media delivery through the Relay Tunnel:
  * 1. Main Bot (with DB channel permissions) copies media into Relay Tunnel.
@@ -339,17 +396,20 @@ export async function deliverViaRelayTunnel(toChatId, dbChannelId, dbMessageId, 
   }
 
   const transitMsgId = transitRes.messageId;
+  await trackRelayTransit(relayChatId, transitMsgId);
 
   try {
     // Step 2: Worker Bot copies media from Relay Tunnel directly to User
     const workerRes = await copyMessage(toChatId, relayChatId, transitMsgId, protectContent);
 
     // Step 3: Delete the intermediate transit message from the Relay Tunnel immediately
+    await untrackRelayTransit(relayChatId, transitMsgId);
     deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
 
     return workerRes;
   } catch (err) {
     // Ensure cleanup even on error
+    await untrackRelayTransit(relayChatId, transitMsgId);
     deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
     return { ok: false, reason: err.message };
   }
@@ -386,8 +446,10 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
 
     if (transitRes?.ok && transitRes?.messageId) {
       const transitMsgId = transitRes.messageId;
+      await trackRelayTransit(relayChatId, transitMsgId);
       try {
         const workerRes = await copyMessage(toChatId, relayChatId, transitMsgId, protectContent);
+        await untrackRelayTransit(relayChatId, transitMsgId);
         deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
         if (workerRes?.ok && workerRes?.messageId) {
           sentMessageIds.push(workerRes.messageId);
@@ -395,6 +457,7 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
           failedCount++;
         }
       } catch {
+        await untrackRelayTransit(relayChatId, transitMsgId);
         deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
         failedCount++;
       }
@@ -413,3 +476,92 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
 
   return { ok: sentMessageIds.length > 0, sentMessageIds, failedCount };
 }
+
+/**
+ * Live diagnostic benchmark tool:
+ * Probes the Air-Gapped Relay Tunnel end-to-end:
+ * 1. Main Bot sends a probe message to Relay Tunnel.
+ * 2. Worker Bot reads/copies the probe message.
+ * 3. Cleans up all probe messages immediately.
+ * Returns exact transit latency (ms) and permissions verification.
+ */
+export async function benchmarkRelayTunnel() {
+  const relayChatId = await getRelayChatId();
+  if (!relayChatId) {
+    return { ok: false, error: 'Relay Tunnel is not configured. Please set a Relay Chat ID first.' };
+  }
+
+  const { sendTelegramMessage, deleteTelegramMessage } = await import('./bot-common.js');
+  const { copyMessage } = await import('./bot-helpers.js');
+
+  const workers = await getAllWorkerBots();
+  const activeWorker = workers.find(w => w.enabled && w.isAlive !== false);
+  if (!activeWorker) {
+    return { ok: false, error: 'No active worker bots found to test relay transit.' };
+  }
+
+  const startTotal = Date.now();
+  let probeMsgId = null;
+
+  try {
+    // Step 1: Main Bot sends probe message to Relay Tunnel
+    const t0 = Date.now();
+    const probeRes = await botContext.run({ token: getMainToken() }, () =>
+      sendTelegramMessage(relayChatId, `🧪 <b>Relay Tunnel Probe</b>\n<code>${Date.now()}</code>`, null, false, 1, true, false)
+    );
+    const step1Time = Date.now() - t0;
+
+    if (!probeRes?.ok || !probeRes?.messageId) {
+      const desc = probeRes?.detail?.description || probeRes?.reason || 'Failed to post to relay chat';
+      return {
+        ok: false,
+        step: 'Main Bot Post',
+        error: `Main Bot could not send message to Relay chat: ${desc}. Make sure Main Bot is admin with Post Messages permission.`
+      };
+    }
+    probeMsgId = probeRes.messageId;
+
+    // Step 2: Test Worker Bot accessing the probe in the Relay chat
+    const t1 = Date.now();
+    let workerCopyRes = null;
+    await botContext.run({ token: activeWorker.token }, async () => {
+      workerCopyRes = await copyMessage(relayChatId, relayChatId, probeMsgId, false, null, 1);
+    });
+    const step2Time = Date.now() - t1;
+
+    if (workerCopyRes?.ok && workerCopyRes?.messageId) {
+      await deleteTelegramMessage(relayChatId, workerCopyRes.messageId).catch(() => {});
+    }
+
+    // Step 3: Delete initial probe message
+    await deleteTelegramMessage(relayChatId, probeMsgId).catch(() => {});
+    probeMsgId = null;
+
+    const totalTime = Date.now() - startTotal;
+
+    if (!workerCopyRes?.ok) {
+      const desc = workerCopyRes?.reason || 'Worker Bot cannot read or copy from relay';
+      return {
+        ok: false,
+        step: 'Worker Bot Access',
+        error: `Worker Bot (@${activeWorker.username || activeWorker.botId}) could not read from Relay chat: ${desc}. Make sure Worker Bot is a member/admin in the Relay chat.`
+      };
+    }
+
+    return {
+      ok: true,
+      relayChatId,
+      workerUsername: activeWorker.username || activeWorker.botId,
+      totalLatencyMs: totalTime,
+      mainPostLatencyMs: step1Time,
+      workerTransitLatencyMs: step2Time
+    };
+  } catch (err) {
+    if (probeMsgId) {
+      const { deleteTelegramMessage } = await import('./bot-common.js');
+      await deleteTelegramMessage(relayChatId, probeMsgId).catch(() => {});
+    }
+    return { ok: false, error: err.message };
+  }
+}
+
