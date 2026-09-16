@@ -1266,7 +1266,8 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
 
       if (fileOrBatchCode) {
         try {
-          const botUsername = await getBotUsername();
+          const mainBot = await getMainBotUsername();
+          const botUsername = mainBot || await getBotUsername();
           const reGetUrl = `https://t.me/${botUsername}?start=${fileOrBatchCode}`;
           const kb = {
             inline_keyboard: [
@@ -1314,7 +1315,8 @@ export async function processDueAutoDeletes() {
 
         if (doc.fileOrBatchCode) {
           try {
-            const botUsername = await getBotUsername();
+            const mainBot = await getMainBotUsername();
+            const botUsername = mainBot || await getBotUsername();
             const reGetUrl = `https://t.me/${botUsername}?start=${doc.fileOrBatchCode}`;
             const sponsorBtn = await getSponsorButton();
             const kb = {

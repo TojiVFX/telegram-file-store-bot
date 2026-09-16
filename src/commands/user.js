@@ -53,6 +53,7 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
 
     // 2. /start without dispatch token
     if (/^\/start/i.test(rawText)) {
+      const payload = rawText.split(/\s+/)[1] || '';
       if (admin) {
         const workerUsername = await getBotUsername();
         const text = `👻 <b>Ghost Fleet Worker Node</b>\n\n` +
@@ -61,18 +62,23 @@ export async function processMessageUpdate(chatId, rawText, message, admin, req)
           `• <b>Role:</b> Isolated Media Delivery Node\n` +
           `• <b>Gateway:</b> @${esc(mainBotUsername || 'MainBot')}\n\n` +
           `<i>This bot functions strictly as an isolated media delivery node. All file uploads, channel configs, broadcasts, settings, and commands are controlled centrally on your Main Bot.</i>`;
+        const adminUrl = payload
+          ? `https://t.me/${mainBotUsername}?start=${payload}`
+          : `https://t.me/${mainBotUsername}?start=clone_view_${currentBotId}`;
         const buttons = [
-          [{ text: toSmallCaps('⚙️ Manage in Main Bot'), url: `https://t.me/${mainBotUsername}?start=clone_view_${currentBotId}` }],
+          [{ text: toSmallCaps(payload ? '🚀 View on Main Bot' : '⚙️ Manage in Main Bot'), url: adminUrl }],
           [{ text: toSmallCaps('🔄 Check Node Health'), callback_data: 'user:clone_health' }]
         ];
         await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
         return;
       } else {
+        const targetUrl = payload ? `https://t.me/${mainBotUsername}?start=${payload}` : `https://t.me/${mainBotUsername}`;
+        const buttonLabel = payload ? '🚀 Claim on Main Bot' : '🚀 Open Main Bot';
         const text = `⚡ <b>Filestore Delivery Node</b>\n\n` +
           `👋 Welcome! This bot is an automated delivery node for <b>@${esc(mainBotUsername || 'MainBot')}</b>.\n\n` +
-          `To browse files, search content, or access your media links, please visit our main bot.`;
+          (payload ? `To unlock and access this content, please tap below to verify and claim it on our Main Gateway Bot:` : `To browse files, search content, or access your media links, please visit our main bot.`);
         const buttons = [
-          [{ text: toSmallCaps('🚀 Open Main Bot'), url: `https://t.me/${mainBotUsername}` }]
+          [{ text: toSmallCaps(buttonLabel), url: targetUrl }]
         ];
         await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
         return;
