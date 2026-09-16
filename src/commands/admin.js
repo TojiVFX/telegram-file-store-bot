@@ -604,6 +604,39 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       return true;
     }
 
+    if (waitingFor === 'standby_channel_id') {
+      const forwardChat   = message.forward_from_chat;
+      const forwardOrigin = message.forward_origin;
+      const typedId        = rawText.trim();
+
+      let targetCid;
+      if (forwardChat?.type === 'channel') {
+        targetCid = forwardChat.id;
+      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
+        targetCid = forwardOrigin.chat.id;
+      } else if (/^-100\d+$/.test(typedId)) {
+        targetCid = typedId;
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the standby channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).`);
+        return true;
+      }
+
+      if (!(await isBotAdmin(targetCid))) {
+        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this standby channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
+        return true;
+      }
+
+      const { setStandbyChannelId } = await import('../phoenix-protocol.js');
+      await setStandbyChannelId(targetCid);
+      await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
+
+      await sendTelegramMessage(chatId, `🔥 <b>The Phoenix Protocol Armed!</b>\n\nStandby Channel ID: <code>${targetCid}</code>\n\nIf your primary database channel ever suffers a fatal ban or strike, the bot will autonomously failover to this channel and rebuild your files with 0 downtime.`);
+
+      const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
+      await renderStorageAudit(chatId);
+      return true;
+    }
+
     if (waitingFor === 'relay_chat_id') {
       const forwardChat   = message.forward_from_chat;
       const forwardOrigin = message.forward_origin;
@@ -1134,6 +1167,24 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         });
       } else {
         await sendTelegramMessage(chatId, `❌ <b>Failed to add worker bot:</b>\n${esc(addRes.reason || addRes.error || 'Invalid token')}`, {
+          inline_keyboard: [[{ text: toSmallCaps('Back to Ghost Fleet'), callback_data: 'admin:ghost_fleet' }]]
+        });
+      }
+      return true;
+    }
+
+    if (waitingAction === 'add_standby_worker') {
+      const tokenCandidate = rawText.trim();
+      await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
+
+      const { addStandbyWorkerBot } = await import('../ghost-fleet.js');
+      const addRes = await addStandbyWorkerBot(tokenCandidate);
+      if (addRes.ok) {
+        await sendTelegramMessage(chatId, `🛡️ <b>Standby Reserve Worker Added!</b>\n\n• Bot: <b>@${esc(addRes.worker.username)}</b>\n• ID: <code>${addRes.worker.botId}</code>\n• Status: <b>Standby Reserve</b>\n\nThis node is safely held in reserve and will automatically hot-swap into active rotation if an active worker bot is banned or rate-limited.`, {
+          inline_keyboard: [[{ text: toSmallCaps('Ghost Fleet Manager'), callback_data: 'admin:ghost_fleet' }]]
+        });
+      } else {
+        await sendTelegramMessage(chatId, `❌ <b>Failed to add standby worker:</b>\n${esc(addRes.reason || addRes.error || 'Invalid token')}`, {
           inline_keyboard: [[{ text: toSmallCaps('Back to Ghost Fleet'), callback_data: 'admin:ghost_fleet' }]]
         });
       }

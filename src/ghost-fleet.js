@@ -17,16 +17,26 @@ export function getEnvWorkerTokens() {
 }
 
 /**
+ * Parses standby reserve worker tokens from environment variable (STANDBY_WORKER_TOKENS=token1,token2).
+ */
+export function getEnvStandbyTokens() {
+  const raw = (process.env.STANDBY_WORKER_TOKENS || '').trim();
+  if (!raw) return [];
+  return raw.split(/[\s,;]+/).map(t => t.trim().replace(/^bot/i, '')).filter(Boolean);
+}
+
+/**
  * Retrieves all configured worker bots from both .env and MongoDB collection `worker_bots`.
  */
 export async function getAllWorkerBots() {
   const envTokens = getEnvWorkerTokens();
+  const envStandbyTokens = getEnvStandbyTokens();
   const coll = await getCollection('worker_bots');
   const dbBots = await coll.find({}).toArray();
 
   const botsMap = new Map();
 
-  // Add env-configured tokens
+  // Add env-configured active tokens
   for (const token of envTokens) {
     const botId = token.split(':')[0];
     if (botId) {
@@ -34,6 +44,24 @@ export async function getAllWorkerBots() {
         botId,
         token,
         source: 'env',
+        role: 'active',
+        circuitState: 'HEALTHY',
+        enabled: true,
+        createdAt: new Date()
+      });
+    }
+  }
+
+  // Add env-configured standby tokens
+  for (const token of envStandbyTokens) {
+    const botId = token.split(':')[0];
+    if (botId) {
+      botsMap.set(botId, {
+        botId,
+        token,
+        source: 'env',
+        role: 'standby',
+        circuitState: 'HEALTHY',
         enabled: true,
         createdAt: new Date()
       });
@@ -49,7 +77,12 @@ export async function getAllWorkerBots() {
         username: b.username || null,
         firstName: b.firstName || null,
         source: b.source || 'db',
+        role: b.role || 'active',
+        circuitState: b.circuitState || 'HEALTHY',
+        cooldownUntil: b.cooldownUntil || null,
+        failureCount: b.failureCount || 0,
         enabled: b.enabled !== false,
+        isAlive: b.isAlive !== false,
         createdAt: b.createdAt || new Date()
       });
     }
@@ -90,12 +123,17 @@ export async function refreshWorkerBots() {
   for (const w of all) {
     if (!w.enabled) continue;
     const v = await verifyWorkerBot(w.token);
+    const existing = workerBotsCache.get(w.botId);
     if (v.ok) {
       workerBotsCache.set(w.botId, {
         botId: w.botId,
         token: w.token,
         username: v.username,
         firstName: v.firstName,
+        role: existing?.role || w.role || 'active',
+        circuitState: existing?.circuitState || w.circuitState || 'HEALTHY',
+        cooldownUntil: existing?.cooldownUntil || w.cooldownUntil || null,
+        failureCount: existing?.failureCount || w.failureCount || 0,
         isAlive: true,
         lastChecked: Date.now()
       });
@@ -107,29 +145,183 @@ export async function refreshWorkerBots() {
         { upsert: true }
       );
     } else {
+      const isBanned = String(v.reason || '').toLowerCase().includes('deactivated') ||
+                       String(v.reason || '').toLowerCase().includes('terminated') ||
+                       String(v.reason || '').toLowerCase().includes('revoked') ||
+                       String(v.reason || '').toLowerCase().includes('unauthorized');
       workerBotsCache.set(w.botId, {
         botId: w.botId,
         token: w.token,
         username: w.username || 'Unknown',
         firstName: w.firstName || 'Worker',
+        role: existing?.role || w.role || 'active',
+        circuitState: isBanned ? 'BANNED' : (existing?.circuitState || w.circuitState || 'HEALTHY'),
         isAlive: false,
         lastChecked: Date.now(),
         error: v.reason
       });
-      log('warn', `Worker bot ${w.botId} failed health check`, { reason: v.reason });
+      log('warn', `Worker bot ${w.botId} failed health check`, { reason: v.reason, isBanned });
     }
   }
 }
 
 /**
- * Selects the next healthy worker bot from the pool using Round-Robin.
+ * Reports a failure on a worker bot to trigger Circuit Breaker protection.
+ */
+export function reportWorkerFailure(botId, statusCode, reason = '', retryAfterSec = 60) {
+  const id = String(botId);
+  const w = workerBotsCache.get(id);
+  const isBan = (statusCode === 403 || statusCode === 401) &&
+    (String(reason).toLowerCase().includes('deactivated') ||
+     String(reason).toLowerCase().includes('terminated') ||
+     String(reason).toLowerCase().includes('revoked') ||
+     String(reason).toLowerCase().includes('unauthorized'));
+
+  if (w) {
+    w.failureCount = (w.failureCount || 0) + 1;
+    if (isBan) {
+      w.circuitState = 'BANNED';
+      w.isAlive = false;
+      w.bannedReason = reason;
+      log('warn', `Worker bot ${id} marked BANNED by circuit breaker: ${reason}`);
+      getCollection('worker_bots').then(coll =>
+        coll.updateOne({ botId: id }, { $set: { circuitState: 'BANNED', isAlive: false, bannedReason: reason, bannedAt: new Date() } })
+      ).catch(() => {});
+      // Autonomous hot-swap standby worker
+      hotSwapStandbyWorker().catch(() => {});
+    } else if (statusCode === 429) {
+      const waitTime = Number(retryAfterSec) || 60;
+      w.circuitState = 'COOLDOWN';
+      w.cooldownUntil = Date.now() + waitTime * 1000;
+      log('warn', `Worker bot ${id} entered COOLDOWN for ${waitTime}s`);
+      if (w.failureCount >= 3) {
+        hotSwapStandbyWorker().catch(() => {});
+      }
+    }
+  }
+}
+
+/**
+ * Reports a successful operation to reset failure counts.
+ */
+export function reportWorkerSuccess(botId) {
+  const id = String(botId);
+  const w = workerBotsCache.get(id);
+  if (w) {
+    w.failureCount = 0;
+    if (w.circuitState === 'COOLDOWN' && (!w.cooldownUntil || w.cooldownUntil <= Date.now())) {
+      w.circuitState = 'HEALTHY';
+    }
+  }
+}
+
+/**
+ * Hot-swaps an idle Standby Worker into active delivery rotation.
+ */
+export async function hotSwapStandbyWorker() {
+  const all = await getAllWorkerBots();
+  const standby = all.find(w => w.role === 'standby' && w.enabled && w.circuitState !== 'BANNED');
+  if (!standby) {
+    log('warn', 'hotSwapStandbyWorker: No standby worker bots available in reserve pool.');
+    return { ok: false, reason: 'no_standby_available' };
+  }
+
+  const verify = await verifyWorkerBot(standby.token);
+  if (!verify.ok) {
+    log('error', `Standby worker ${standby.botId} failed verification: ${verify.reason}`);
+    return { ok: false, reason: verify.reason };
+  }
+
+  const coll = await getCollection('worker_bots');
+  await coll.updateOne(
+    { botId: standby.botId },
+    {
+      $set: {
+        role: 'active',
+        circuitState: 'HEALTHY',
+        isAlive: true,
+        promotedAt: new Date(),
+        username: verify.username,
+        firstName: verify.firstName
+      }
+    },
+    { upsert: true }
+  );
+
+  workerBotsCache.set(standby.botId, {
+    botId: standby.botId,
+    token: standby.token,
+    username: verify.username,
+    firstName: verify.firstName,
+    role: 'active',
+    circuitState: 'HEALTHY',
+    isAlive: true,
+    lastChecked: Date.now()
+  });
+
+  // Register webhook for newly promoted worker if webhook domain configured
+  const s = await getSettings();
+  if (s?.webhookDomain) {
+    const formattedDomain = s.webhookDomain.startsWith('http') ? s.webhookDomain : `https://${s.webhookDomain}`;
+    const webhookUrl = `${formattedDomain}/webhook/worker/${standby.botId}`;
+    try {
+      await fetch(`https://api.telegram.org/bot${standby.token}/setWebhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: webhookUrl, allowed_updates: ['message', 'callback_query'] })
+      });
+    } catch {}
+  }
+
+  // Notify admin
+  try {
+    const { getAdminIds } = await import('./bot-users.js');
+    const { sendTelegramMessage } = await import('./bot-common.js');
+    const adminIds = getAdminIds();
+    const alertText = `🔄 <b>Ghost Fleet Worker Hot-Swap Activated!</b>\n\n` +
+      `Standby Worker <b>@${esc(verify.username || standby.botId)}</b> has been automatically promoted to active delivery rotation!\n\n` +
+      `• Worker ID: <code>${standby.botId}</code>\n` +
+      `• Circuit Status: <b>HEALTHY</b>\n` +
+      `• Delivery capability: <b>Online</b>`;
+    for (const aid of adminIds) {
+      await sendTelegramMessage(aid, alertText).catch(() => {});
+    }
+  } catch {}
+
+  log('info', `Standby worker ${standby.botId} hot-swapped into active rotation`);
+  return { ok: true, worker: { ...standby, username: verify.username } };
+}
+
+/**
+ * Selects the next healthy worker bot from the active pool using Round-Robin.
  */
 export async function getNextWorkerBot() {
   if (workerBotsCache.size === 0) {
     await refreshWorkerBots();
   }
 
-  const healthyWorkers = Array.from(workerBotsCache.values()).filter(w => w.isAlive && w.token);
+  const now = Date.now();
+  let healthyWorkers = Array.from(workerBotsCache.values()).filter(w =>
+    w.isAlive &&
+    w.token &&
+    w.role !== 'standby' &&
+    w.circuitState !== 'BANNED' &&
+    (!w.cooldownUntil || w.cooldownUntil <= now)
+  );
+
+  if (healthyWorkers.length === 0) {
+    const swapRes = await hotSwapStandbyWorker();
+    if (swapRes.ok) {
+      healthyWorkers = Array.from(workerBotsCache.values()).filter(w =>
+        w.isAlive &&
+        w.token &&
+        w.role !== 'standby' &&
+        w.circuitState !== 'BANNED' &&
+        (!w.cooldownUntil || w.cooldownUntil <= now)
+      );
+    }
+  }
+
   if (healthyWorkers.length === 0) {
     return null;
   }
@@ -251,6 +443,52 @@ export async function addWorkerBot(token) {
     token: token.trim().replace(/^bot/i, ''),
     username: verifyRes.username,
     firstName: verifyRes.firstName,
+    role: 'active',
+    circuitState: 'HEALTHY',
+    isAlive: true,
+    lastChecked: Date.now()
+  });
+
+  return { ok: true, worker: verifyRes };
+}
+
+/**
+ * Adds a new standby reserve worker bot into MongoDB.
+ */
+export async function addStandbyWorkerBot(token) {
+  const verifyRes = await verifyWorkerBot(token);
+  if (!verifyRes.ok) {
+    return { ok: false, reason: verifyRes.reason };
+  }
+
+  const coll = await getCollection('worker_bots');
+  await coll.updateOne(
+    { botId: verifyRes.botId },
+    {
+      $set: {
+        botId: verifyRes.botId,
+        token: token.trim().replace(/^bot/i, ''),
+        username: verifyRes.username,
+        firstName: verifyRes.firstName,
+        source: 'db',
+        role: 'standby',
+        circuitState: 'HEALTHY',
+        enabled: true,
+        isAlive: true,
+        updatedAt: new Date()
+      },
+      $setOnInsert: { createdAt: new Date() }
+    },
+    { upsert: true }
+  );
+
+  workerBotsCache.set(verifyRes.botId, {
+    botId: verifyRes.botId,
+    token: token.trim().replace(/^bot/i, ''),
+    username: verifyRes.username,
+    firstName: verifyRes.firstName,
+    role: 'standby',
+    circuitState: 'HEALTHY',
     isAlive: true,
     lastChecked: Date.now()
   });
@@ -405,6 +643,18 @@ export async function deliverViaRelayTunnel(toChatId, dbChannelId, dbMessageId, 
     // Step 3: Delete the intermediate transit message from the Relay Tunnel immediately
     await untrackRelayTransit(relayChatId, transitMsgId);
     deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
+
+    const { getCurrentBotId } = await import('./bot-common.js');
+    const curBotId = getCurrentBotId();
+    if (workerRes?.ok) {
+      if (curBotId) reportWorkerSuccess(curBotId);
+    } else {
+      if (curBotId) {
+        const desc = workerRes?.reason || '';
+        const status = workerRes?.telegramError?.error_code || 400;
+        reportWorkerFailure(curBotId, status, desc, workerRes?.telegramError?.parameters?.retry_after);
+      }
+    }
 
     return workerRes;
   } catch (err) {

@@ -272,10 +272,43 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
   }
 
+  if (action.startsWith('captcha:')) {
+    const parts = action.split(':');
+    const token = parts[1];
+    const chosenIndex = parseInt(parts[2], 10);
+    const { verifyCaptchaAnswer, sendCaptchaChallenge } = await import('../anti-scraper.js');
+    const verifyRes = await verifyCaptchaAnswer(chatId, token, chosenIndex);
+    if (!verifyRes.ok) {
+      await answerCallbackQuery(cq.id, '❌ Incorrect! Please solve the new challenge.', true);
+      const { deleteTelegramMessage } = await import('../bot-common.js');
+      await deleteTelegramMessage(chatId, messageId).catch(() => {});
+      if (verifyRes.originalPayload) {
+        await sendCaptchaChallenge(chatId, verifyRes.originalPayload);
+      }
+      return;
+    }
+    await answerCallbackQuery(cq.id, '✅ Verified! Delivering files...', false);
+    const { deleteTelegramMessage } = await import('../bot-common.js');
+    await deleteTelegramMessage(chatId, messageId).catch(() => {});
+    const { handleStartPayload } = await import('../commands/start.js');
+    await handleStartPayload(chatId, verifyRes.originalPayload, { from: cq.from }, admin, true);
+    return;
+  }
+
   if (action.startsWith('dl_q:')) {
     const parts = action.split(':');
     const bundleCode = parts[1];
     const qIndex = parseInt(parts[2], 10);
+
+    if (!admin) {
+      const { checkRequestCooldown, updateRequestCooldown } = await import('../commands/start.js');
+      const cd = checkRequestCooldown(chatId);
+      if (cd.limited) {
+        await answerCallbackQuery(cq.id, `⏳ Please wait ${cd.remainingSec}s before downloading another file!`, true);
+        return;
+      }
+      updateRequestCooldown(chatId);
+    }
 
     const { getBundle, incrementAccessCount } = await import('../filestore.js');
     const bundle = await getBundle(bundleCode);
@@ -286,6 +319,9 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
 
     const q = bundle.qualities[qIndex];
     await answerCallbackQuery(cq.id, `Sending ${q.quality}...`);
+
+    const { sendChatAction } = await import('../bot-common.js');
+    sendChatAction(chatId, 'upload_document').catch(() => {});
 
     const s = await getSettings();
     const protect = s?.protectContent === '1';
@@ -325,6 +361,17 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
 
   if (action.startsWith('dl_q_all:')) {
     const bundleCode = action.split(':').slice(1).join(':');
+
+    if (!admin) {
+      const { checkRequestCooldown, updateRequestCooldown } = await import('../commands/start.js');
+      const cd = checkRequestCooldown(chatId);
+      if (cd.limited) {
+        await answerCallbackQuery(cq.id, `⏳ Please wait ${cd.remainingSec}s before downloading another file!`, true);
+        return;
+      }
+      updateRequestCooldown(chatId);
+    }
+
     const { getBundle, incrementAccessCount } = await import('../filestore.js');
     const bundle = await getBundle(bundleCode);
     if (!bundle || !bundle.qualities?.length) {
@@ -333,6 +380,9 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
 
     await answerCallbackQuery(cq.id, 'Delivering all resolutions...');
+
+    const { sendChatAction } = await import('../bot-common.js');
+    sendChatAction(chatId, 'upload_document').catch(() => {});
 
     const s = await getSettings();
     const protect = s?.protectContent === '1';

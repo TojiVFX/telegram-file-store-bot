@@ -506,6 +506,12 @@ export async function alertAdminChannelFailure(channelId, channelType = 'DB Chan
       targetType: 'channel',
       details: `Channel ${channelId} (${channelType}) fatal error: ${errorReason}`,
     }).catch(() => {});
+
+    // Autonomous self-healing: Trigger The Phoenix Protocol if primary DB storage channel is struck
+    if (channelType === 'DB Channel' && isChannelFatalError(errorReason)) {
+      const { activatePhoenixProtocol } = await import('./phoenix-protocol.js');
+      activatePhoenixProtocol(errorReason).catch(() => {});
+    }
   } catch (err) {
     log('error', 'alertAdminChannelFailure error', { channelId, errorMessage: err.message });
   }

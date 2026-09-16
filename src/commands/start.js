@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours
+  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours, sendChatAction
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard, buildStartMenuButtons, formatStartMessage
@@ -8,6 +8,7 @@ import {
 import { getBatch, getFile, getBundle, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount, recordVerificationMinted } from '../filestore.js';
 import { hasPremium, getReferralStats, addReferral, getAdminId } from '../bot-users.js';
 import { logActivity } from '../bot-logs.js';
+import { isScraperSuspected, sendCaptchaChallenge } from '../anti-scraper.js';
 
 // Pending verify-link TTL — how long the user has to actually click through
 // the shortener and land back on /start?start=verify_<tkn> before the link
@@ -23,7 +24,7 @@ const VERIFY_LINK_TTL_LABEL = '1 hour';
 const SHORTENER_ALERT_DEDUPE_SECONDS = 900; // 15 minutes
 
 const requestCooldownMap = new Map();
-const COOLDOWN_MS = 10000; // 10 seconds
+const COOLDOWN_MS = 5000; // 5 seconds post-delivery cooldown
 const MAX_COOLDOWN_ENTRIES = 10000;
 
 function cleanupExpiredCooldowns() {
@@ -38,7 +39,7 @@ function cleanupExpiredCooldowns() {
 // Periodically prune expired cooldown entries to prevent in-memory accumulation
 setInterval(cleanupExpiredCooldowns, 60000).unref?.();
 
-function checkRequestCooldown(userId) {
+export function checkRequestCooldown(userId) {
   const lastTime = requestCooldownMap.get(String(userId));
   const now = Date.now();
   if (lastTime && (now - lastTime) < COOLDOWN_MS) {
@@ -48,7 +49,7 @@ function checkRequestCooldown(userId) {
   return { limited: false, remainingSec: 0 };
 }
 
-function updateRequestCooldown(userId) {
+export function updateRequestCooldown(userId) {
   if (requestCooldownMap.size >= MAX_COOLDOWN_ENTRIES) {
     cleanupExpiredCooldowns();
   }
@@ -195,6 +196,22 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       return;
     }
 
+    // Check Anti-Scraper Armor & 5-Second Request Cooldown
+    if (!admin && !skipTokenCheck) {
+      if (isScraperSuspected(chatId)) {
+        await sendCaptchaChallenge(chatId, payload);
+        return;
+      }
+      const cd = checkRequestCooldown(chatId);
+      if (cd.limited) {
+        await sendTelegramMessage(
+          chatId,
+          `⏳ <b>Please wait ${cd.remainingSec} second${cd.remainingSec > 1 ? 's' : ''}!</b>\n\nTo prevent server overload, please wait before requesting another file or bundle.`
+        );
+        return;
+      }
+    }
+
     // Check if user has premium
     const premium = await hasPremium(chatId);
 
@@ -277,6 +294,8 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       if (ghostActive) {
         const worker = await getNextWorkerBot();
         if (worker && worker.username) {
+          sendChatAction(chatId, 'upload_document').catch(() => {});
+          if (!admin) updateRequestCooldown(chatId);
           const dispatchToken = await createDispatchToken(payload, chatId, {
             username: message?.from?.username,
             firstName: message?.from?.first_name
@@ -306,6 +325,7 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       return;
     }
 
+    sendChatAction(chatId, 'upload_document').catch(() => {});
     if (!admin) updateRequestCooldown(chatId);
     const s = await getSettings();
     if (parseValidityHours(s?.validityHours) === 0) {
@@ -380,6 +400,7 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       return;
     }
 
+    sendChatAction(chatId, 'upload_document').catch(() => {});
     if (!admin) updateRequestCooldown(chatId);
     const s = await getSettings();
     if (parseValidityHours(s?.validityHours) === 0) {
@@ -457,6 +478,7 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
     const s = await getSettings();
     const protect = s?.protectContent === '1';
     if (f) {
+      sendChatAction(chatId, 'upload_document').catch(() => {});
       if (!admin) updateRequestCooldown(chatId);
       if (parseValidityHours(s?.validityHours) === 0) {
         sessions.deleteOne({ _id: `user:token:main:${chatId}` }).catch(() => {});

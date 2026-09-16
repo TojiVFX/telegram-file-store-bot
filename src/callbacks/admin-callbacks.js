@@ -74,19 +74,32 @@ export async function renderGhostFleetMgmt(chatId, messageId = null) {
   let text = `👻 <b>The Ghost Fleet (Decoupled Worker Bots)</b>\n\n` +
     `• Mode: <b>${enabled ? '🟢 Active (Decoupled Delivery)' : '⚪ Inactive (Direct Delivery)'}</b>\n` +
     `• Air-Gap Relay Tunnel: ${relayId}\n` +
-    `• Connected Nodes: <b>${workers.filter(w => w.enabled).length}/${workers.length}</b>\n\n` +
+    `• Active Delivery Nodes: <b>${workers.filter(w => w.enabled && w.role !== 'standby').length}</b>\n` +
+    `• Standby Reserve Nodes: <b>${workers.filter(w => w.enabled && w.role === 'standby').length}</b>\n\n` +
     `<i>When active, the main bot never delivers media directly. With the Air-Gap Relay Tunnel configured, worker bots deliver media without ever being added to your DB Channel!</i>\n\n`;
 
   const workerButtons = [];
   if (workers.length === 0) {
-    text += `⚠️ <i>No worker bots connected yet. Tap 'Add Worker Bot' below or configure <code>WORKER_BOT_TOKENS=token1,token2</code> in your .env.</i>\n`;
+    text += `⚠️ <i>No worker bots connected yet. Tap 'Add Worker' below or configure <code>WORKER_BOT_TOKENS=token1,token2</code> in your .env.</i>\n`;
   } else {
-    text += `<b>Worker Delivery Nodes:</b>\n`;
+    text += `<b>Delivery Nodes & Circuit Breaker:</b>\n`;
     for (const w of workers) {
-      const statusIcon = w.isAlive !== false ? '🟢' : '🔴';
-      const statusText = w.isAlive !== false ? 'Online' : (w.error || 'Offline');
+      let statusIcon = '🟢';
+      let statusText = 'Online';
+      if (w.circuitState === 'BANNED' || w.isAlive === false) {
+        statusIcon = '🔴';
+        statusText = w.bannedReason || w.error || 'Banned / Inactive';
+      } else if (w.circuitState === 'COOLDOWN' && w.cooldownUntil && w.cooldownUntil > Date.now()) {
+        statusIcon = '⏱️';
+        statusText = `Cooldown (${Math.ceil((w.cooldownUntil - Date.now()) / 1000)}s)`;
+      } else if (w.role === 'standby') {
+        statusIcon = '🟡';
+        statusText = 'Standby Reserve';
+      }
+
+      const roleBadge = w.role === 'standby' ? ' [STANDBY]' : '';
       const name = w.username ? `@${esc(w.username)}` : `ID: ${w.botId}`;
-      text += `• ${statusIcon} <b>${name}</b> [${(w.source || 'db').toUpperCase()}] — <i>${statusText}</i>\n`;
+      text += `• ${statusIcon} <b>${name}</b>${roleBadge} [${(w.source || 'db').toUpperCase()}] — <i>${statusText}</i>\n`;
       if (w.source === 'db') {
         workerButtons.push([{
           text: toSmallCaps(`🗑 Remove ${w.username ? '@' + w.username : w.botId}`),
@@ -102,7 +115,8 @@ export async function renderGhostFleetMgmt(chatId, messageId = null) {
     { text: toSmallCaps('🔄 Check Health'), callback_data: 'admin:refresh_workers' }
   ]);
   buttons.push([
-    { text: toSmallCaps('➕ Add Worker Bot'), callback_data: 'admin:add_worker_prompt' }
+    { text: toSmallCaps('➕ Add Active Worker'), callback_data: 'admin:add_worker_prompt' },
+    { text: toSmallCaps('🛡️ Add Standby Worker'), callback_data: 'admin:add_standby_prompt' }
   ]);
   const relayRow = [
     { text: toSmallCaps(s.relayChatId ? '📡 Change Relay' : '📡 Set Relay Tunnel'), callback_data: 'admin:set_relay_prompt' }
@@ -279,12 +293,15 @@ async function renderFsCfg(chatId, messageId, cfgType) {
 export async function renderStorageAudit(chatId, messageId = null) {
   const { getDbChannelId, getBackupDbChannelId, getChannelDisplayDetails } = await import('../bot-helpers.js');
   const { getStorageAuditStats } = await import('../filestore.js');
+  const { getStandbyChannelId } = await import('../phoenix-protocol.js');
 
   const primaryCid = await getDbChannelId();
   const backupCid = await getBackupDbChannelId();
+  const standbyCid = await getStandbyChannelId();
 
   const primaryInfo = primaryCid ? await getChannelDisplayDetails(primaryCid) : null;
   const backupInfo = backupCid ? await getChannelDisplayDetails(backupCid) : null;
+  const standbyInfo = standbyCid ? await getChannelDisplayDetails(standbyCid) : null;
 
   const stats = await getStorageAuditStats();
   const redundancyPct = stats.total > 0 ? Math.round((stats.mirrored / stats.total) * 100) : 100;
@@ -314,9 +331,22 @@ export async function renderStorageAudit(chatId, messageId = null) {
       `  Status: <b>⚠️ Inactive</b>\n\n`;
   }
 
+  let standbyBlock = '';
+  if (standbyInfo) {
+    const sTitle = esc(standbyInfo.title);
+    const sTitleDisplay = standbyInfo.link ? `<a href="${standbyInfo.link}">${sTitle}</a>` : `<b>${sTitle}</b>`;
+    standbyBlock = `• <b>Standby Channel (Phoenix Protocol):</b> ${sTitleDisplay}\n` +
+      `  ID: <code>${standbyInfo.id}</code>\n` +
+      `  Status: <b>${standbyInfo.isAdmin ? '🔥 Armed (Autonomous Self-Healing Active)' : '❌ Bot Not Admin / Inaccessible'}</b>\n\n`;
+  } else {
+    standbyBlock = `• <b>Standby Channel (Phoenix Protocol):</b> <code>Not Configured</code>\n` +
+      `  Status: <b>⚪ Disarmed (Set Standby for Auto Self-Healing)</b>\n\n`;
+  }
+
   let text = `🛡 <b>Storage & Redundancy Audit</b>\n\n` +
     primaryBlock +
     backupBlock +
+    standbyBlock +
     `📊 <b>Redundancy Health:</b>\n` +
     `• Total Stored Records: <b>${stats.total}</b>\n` +
     `• Mirrored in Backup: <b>${stats.mirrored}</b>\n` +
@@ -340,9 +370,16 @@ export async function renderStorageAudit(chatId, messageId = null) {
   if (backupInfo?.link) {
     quickLinks.push({ text: toSmallCaps('Backup Channel'), url: backupInfo.link });
   }
+  if (standbyInfo?.link) {
+    quickLinks.push({ text: toSmallCaps('Standby Channel'), url: standbyInfo.link });
+  }
   if (quickLinks.length > 0) {
     buttons.push(quickLinks);
   }
+
+  buttons.push([
+    { text: toSmallCaps(standbyCid ? '🔥 Change Phoenix Standby' : '🔥 Set Phoenix Standby'), callback_data: 'admin:set_standby_prompt' }
+  ]);
 
   if (!backupCid) {
     buttons.push([{ text: toSmallCaps('Set Backup Channel'), callback_data: 'admin:set_backup_channel_prompt' }]);
@@ -832,6 +869,21 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
     const promptText = `🛡 <b>Configure Backup DB Channel</b>\n\n` +
       `Forward any post from your secondary/backup database channel, or type the channel ID directly (e.g. <code>-100123456789</code>).\n\n` +
       `⚠️ <i>Make sure this bot is already added as an Admin in that channel with 'Post Messages' permissions.</i>\n\n` +
+      `Send /cancel to abort.`;
+    await editTelegramMessage(chatId, messageId, promptText, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:storage_audit' }]]
+    });
+    return;
+  } else if (action === 'set_standby_prompt') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_setting:${chatId}` },
+      { $set: { val: 'standby_channel_id', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    const promptText = `🔥 <b>Configure Standby Channel (The Phoenix Protocol)</b>\n\n` +
+      `Forward any post from your standby/reserve storage channel, or type the channel ID directly (e.g. <code>-100123456789</code>).\n\n` +
+      `🛡️ <i>If your primary database channel ever suffers a copyright strike or ban, the Phoenix Protocol will autonomously promote this standby channel and rebuild all files without downtime!</i>\n\n` +
+      `⚠️ <i>Ensure this bot is added as an Admin in that channel with 'Post Messages' permission.</i>\n\n` +
       `Send /cancel to abort.`;
     await editTelegramMessage(chatId, messageId, promptText, {
       inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:storage_audit' }]]
@@ -1457,6 +1509,21 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       `Create a new bot with @BotFather and paste its API token here.\n\n` +
       `<b>Format:</b>\n<code>123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ</code>\n\n` +
       `<i>Worker bots will automatically connect to your webhook mesh and handle media deliveries.</i>\n\n` +
+      `Send /cancel to abort.`;
+    await editTelegramMessage(chatId, messageId, promptText, {
+      inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:ghost_fleet' }]]
+    });
+    return;
+  } else if (action === 'add_standby_prompt') {
+    await sessions.updateOne(
+      { _id: `admin:waiting_action:${chatId}` },
+      { $set: { val: 'add_standby_worker', expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { upsert: true }
+    );
+    const promptText = `🛡️ <b>Add Standby Reserve Worker Bot</b>\n\n` +
+      `Create a reserve worker bot with @BotFather and paste its API token here.\n\n` +
+      `<b>Format:</b>\n<code>123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ</code>\n\n` +
+      `<i>This bot will remain in reserve. If an active worker bot is banned or rate-limited, this standby bot will be automatically hot-swapped into rotation!</i>\n\n` +
       `Send /cancel to abort.`;
     await editTelegramMessage(chatId, messageId, promptText, {
       inline_keyboard: [[{ text: toSmallCaps('Cancel'), callback_data: 'admin:ghost_fleet' }]]
