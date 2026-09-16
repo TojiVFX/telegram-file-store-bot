@@ -1082,6 +1082,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
   const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId, backupDbChannelId, backupDbMessageIds } = batch;
   const sentMessageIds = [];
   let failedCount = 0;
+  const healedIndices = [];
 
   const totalCount = Array.isArray(dbMessageIds)
     ? dbMessageIds.length
@@ -1117,6 +1118,22 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
       }
     }
 
+    if (!batchCopied && hasRelay) {
+      const { deliverBatchViaRelayTunnel } = await import('./ghost-fleet.js');
+      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, dbMessageIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress);
+      if (relayRes?.ok) {
+        sentMessageIds.push(...relayRes.sentMessageIds);
+        failedCount += relayRes.failedCount || 0;
+        batchCopied = true;
+        if (relayRes.healedIndices && relayRes.healedIndices.length > 0) {
+          for (const h of relayRes.healedIndices) {
+            dbMessageIds[h.index] = h.backupMsgId;
+          }
+          healedIndices.push(...relayRes.healedIndices);
+        }
+      }
+    }
+
     if (!batchCopied) {
       for (let i = 0; i < dbMessageIds.length; i++) {
         const msgId = dbMessageIds[i];
@@ -1124,7 +1141,12 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
 
         // Seamless failover to backup DB channel if primary message fails
         if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds[i]) {
-          res = await copyFromDbChannel(toChatId, backupDbChannelId, backupMsgIds[i], protectContent);
+          const backupRes = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[i], protectContent);
+          if (backupRes?.ok && backupRes?.messageId) {
+            res = backupRes;
+            dbMessageIds[i] = backupDbMessageIds[i];
+            healedIndices.push({ index: i, backupMsgId: backupDbMessageIds[i], backupChannelId: backupDbChannelId });
+          }
         }
 
         if (res?.ok && res?.messageId) {
@@ -1182,6 +1204,26 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     await sendTelegramMessage(toChatId, `❌ <b>Batch Unavailable</b>\n\nThe files in this batch are no longer available in storage (they may have been removed from the database channel).`, null, protectContent);
   } else if (failedCount > 0) {
     await sendTelegramMessage(toChatId, `⚠️ <b>Note:</b> ${failedCount} file(s) in this batch could not be retrieved because they were deleted from storage.`, null, protectContent);
+  }
+
+  // Proactive Link Healer: persist any healed batch item message pointers to MongoDB
+  if (healedIndices.length > 0 && batchCode) {
+    try {
+      const files = await getCollection('files');
+      await files.updateOne(
+        { _id: batchCode },
+        {
+          $set: {
+            dbMessageIds,
+            autoHealedAt: new Date(),
+            healedCount: healedIndices.length
+          }
+        }
+      );
+      log('info', 'Proactive Link Healer: Auto-healed batch message IDs in DB', { batchCode, healedCount: healedIndices.length });
+    } catch (err) {
+      log('warn', 'Failed to save auto-healed batch record', { batchCode, error: err.message });
+    }
   }
 
   if (sentMessageIds.length > 0) {
@@ -1244,10 +1286,12 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
   const warnKb = { inline_keyboard };
 
   const warnMsg = await sendTelegramMessage(chatId, warnText, warnKb, s?.protectContent === '1');
-  if (warnMsg?.ok && warnMsg?.messageId) ids.push(warnMsg.messageId);
+  const warnMsgId = (warnMsg?.ok && warnMsg?.messageId) ? warnMsg.messageId : null;
+  if (warnMsgId) ids.push(warnMsgId);
 
   // Generate unique atomic job ID
   const jobId = `auto_del_${chatId}_${Date.now()}_${randomBytes(4).toString('hex')}`;
+  const t30Delay = (timerSeconds >= 60) ? (timerSeconds - 30) * 1000 : null;
 
   // Persist to MongoDB so deletions survive Render restarts / redeployments
   let dbPersisted = false;
@@ -1258,12 +1302,30 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
       chatId,
       messageIds: ids,
       fileOrBatchCode: fileOrBatchCode || null,
+      warnMsgId,
+      warnAt: t30Delay ? new Date(Date.now() + t30Delay) : null,
+      warned: false,
       deleteAt: new Date(Date.now() + ms),
       createdAt: new Date(),
     });
     dbPersisted = true;
   } catch (err) {
     log('error', 'Failed to persist auto-delete job to database', { errorMessage: err.message });
+  }
+
+  // T-Minus 30s Warning timer (for timers >= 60s)
+  if (warnMsgId && t30Delay) {
+    const t30Timer = setTimeout(async () => {
+      try {
+        const t30Text = `⏳ <b>T-Minus 30s Warning!</b>\n\nThese file(s) will be automatically deleted in <b>30 seconds</b>!\n\n💡 <i>Forward them to your <b>Saved Messages</b> NOW to keep them permanently.</i>`;
+        await editTelegramMessage(chatId, warnMsgId, t30Text, warnKb).catch(() => {});
+        if (dbPersisted) {
+          const autoDeletes = await getCollection('auto_deletes');
+          await autoDeletes.updateOne({ _id: jobId }, { $set: { warned: true } }).catch(() => {});
+        }
+      } catch {}
+    }, t30Delay);
+    t30Timer.unref?.();
   }
 
   // Set in-memory timeout with atomic findOneAndDelete to prevent race condition / double messages
@@ -1316,6 +1378,30 @@ export async function processDueAutoDeletes() {
   try {
     const autoDeletes = await getCollection('auto_deletes');
     const now = new Date();
+
+    // 1. Process due T-Minus 30s warnings for active viewers
+    try {
+      const dueWarns = await autoDeletes.find({
+        warned: { $ne: true },
+        warnAt: { $lte: now },
+        deleteAt: { $gt: now }
+      }).limit(20).toArray();
+
+      for (const wJob of dueWarns) {
+        if (wJob.chatId && wJob.warnMsgId) {
+          const t30Text = `⏳ <b>T-Minus 30s Warning!</b>\n\nThese file(s) will be automatically deleted in <b>30 seconds</b>!\n\n💡 <i>Forward them to your <b>Saved Messages</b> NOW to keep them permanently.</i>`;
+          const kb = {
+            inline_keyboard: [
+              [{ text: toSmallCaps('How to Save'), callback_data: 'user:save_tip' }]
+            ]
+          };
+          await editTelegramMessage(wJob.chatId, wJob.warnMsgId, t30Text, kb).catch(() => {});
+          await autoDeletes.updateOne({ _id: wJob._id }, { $set: { warned: true } }).catch(() => {});
+        }
+      }
+    } catch {}
+
+    // 2. Process due deletions
     const dueJobs = await autoDeletes.find({ deleteAt: { $lte: now } }).limit(50).toArray();
 
     for (const job of dueJobs) {

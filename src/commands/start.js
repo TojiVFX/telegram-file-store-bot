@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours, sendChatAction
+  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours, sendChatAction, log
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard, buildStartMenuButtons, formatStartMessage
@@ -503,7 +503,24 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
         const { copyFromDbChannel } = await import('../bot-helpers.js');
         let resCopy = await copyFromDbChannel(chatId, f.dbChannelId, f.dbMessageId, protect);
         if ((!resCopy?.ok || !resCopy?.messageId) && f.backupDbChannelId && f.backupDbMessageId) {
-          resCopy = await copyFromDbChannel(chatId, f.backupDbChannelId, f.backupDbMessageId, protect);
+          const backupRes = await copyFromDbChannel(chatId, f.backupDbChannelId, f.backupDbMessageId, protect);
+          if (backupRes?.ok && backupRes?.messageId) {
+            resCopy = backupRes;
+            // Proactive Link Healer: Auto-heal database record pointer to backup storage
+            const files = await getCollection('files');
+            files.updateOne(
+              { _id: payload },
+              {
+                $set: {
+                  dbChannelId: f.backupDbChannelId,
+                  dbMessageId: f.backupDbMessageId,
+                  autoHealedAt: new Date(),
+                  healedFrom: f.dbChannelId
+                }
+              }
+            ).catch(err => log('warn', 'Auto-heal file record failed', { payload, error: err.message }));
+            log('info', 'Proactive Link Healer: Auto-healed file pointer to backup storage', { payload, newDbChannelId: f.backupDbChannelId });
+          }
         }
         if (resCopy?.ok && resCopy?.messageId) sentMsgId = resCopy.messageId;
       }

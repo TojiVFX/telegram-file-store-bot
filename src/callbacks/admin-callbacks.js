@@ -638,23 +638,28 @@ export async function handleAdminCallback(chatId, messageId, action, cq) {
       { $group: { _id: null, total: { $sum: '$referralCount' } } }
     ]).toArray();
     const totalRefs = referralAggregation.length ? referralAggregation[0].total : 0;
+    const activeUsers = Math.max(0, (s.totalUsers || 0) - (s.blockedCount || 0) - (s.bannedCount || 0));
 
     const text = `<b>Bot Statistics</b>\n\n` +
-                 `Total Users: <b>${s.totalUsers}</b>\n` +
-                 `Total Links: <b>${s.filestoreLinks}</b>\n` +
-                 `Total Referrals: <b>${totalRefs}</b>`;
+                 `• Total Users: <b>${s.totalUsers}</b>\n` +
+                 `• Active Audience: <b>${activeUsers}</b>\n` +
+                 `• Blocked / Dead: <b>${s.blockedCount || 0}</b>\n` +
+                 `• Banned Users: <b>${s.bannedCount || 0}</b>\n` +
+                 `• Total Links: <b>${s.filestoreLinks}</b>\n` +
+                 `• Total Referrals: <b>${totalRefs}</b>`;
     await editTelegramMessage(chatId, messageId, text, {
       inline_keyboard: navButtons('admin:dashboard')
     });
   } else if (action === 'broadcast_prompt') {
     const { getUserStats } = await import('../bot-users.js');
     const s = await getUserStats();
+    const activeUsers = Math.max(0, (s.totalUsers || 0) - (s.blockedCount || 0) - (s.bannedCount || 0));
     await sessions.updateOne(
       { _id: `admin:waiting_action:${chatId}` },
       { $set: { val: 'broadcast', expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
-    await editTelegramMessage(chatId, messageId, `<b>Broadcast Message</b>\n\nTotal Registered Users: <b>${s.totalUsers}</b>\n\nPlease send or forward any message you want to broadcast to all users.\n\nSupports: text, photos, videos, documents, audio, animations, stickers, forwarded channel posts, inline buttons, and web link previews.\n\nSend /cancel to abort.`, {
+    await editTelegramMessage(chatId, messageId, `<b>Broadcast Message</b>\n\nTotal Registered Users: <b>${s.totalUsers}</b> (Active Audience: <b>${activeUsers}</b>)\n\nPlease send or forward any message you want to broadcast to all users.\n\nSupports: text, photos, videos, documents, audio, animations, stickers, forwarded channel posts, inline buttons, and web link previews.\n\nSend /cancel to abort.`, {
       inline_keyboard: [
         [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:broadcast_cancel_prompt' }]
       ]

@@ -332,7 +332,22 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     let resCopy = await copyFromDbChannel(chatId, bundle.dbChannelId, q.dbMessageId, protect);
     if ((!resCopy?.ok || !resCopy?.messageId) && (bundle.backupDbChannelId || q.backupDbChannelId) && q.backupDbMessageId) {
       const backupCid = q.backupDbChannelId || bundle.backupDbChannelId;
-      resCopy = await copyFromDbChannel(chatId, backupCid, q.backupDbMessageId, protect);
+      const backupRes = await copyFromDbChannel(chatId, backupCid, q.backupDbMessageId, protect);
+      if (backupRes?.ok && backupRes?.messageId) {
+        resCopy = backupRes;
+        // Proactive Link Healer: Auto-heal bundle quality pointer in MongoDB
+        const files = await getCollection('files');
+        files.updateOne(
+          { _id: bundleCode },
+          {
+            $set: {
+              [`qualities.${qIndex}.dbMessageId`]: q.backupDbMessageId,
+              [`qualities.${qIndex}.dbChannelId`]: backupCid,
+              [`qualities.${qIndex}.autoHealedAt`]: new Date(),
+            }
+          }
+        ).catch(() => {});
+      }
     }
     if (resCopy?.ok && resCopy?.messageId) {
       sentMsgId = resCopy.messageId;
@@ -389,11 +404,19 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const { copyFromDbChannel, scheduleAutoDelete } = await import('../bot-helpers.js');
 
     const sentIds = [];
-    for (const q of bundle.qualities) {
+    let anyHealed = false;
+    for (let i = 0; i < bundle.qualities.length; i++) {
+      const q = bundle.qualities[i];
       let resCopy = await copyFromDbChannel(chatId, bundle.dbChannelId, q.dbMessageId, protect);
       if ((!resCopy?.ok || !resCopy?.messageId) && (bundle.backupDbChannelId || q.backupDbChannelId) && q.backupDbMessageId) {
         const backupCid = q.backupDbChannelId || bundle.backupDbChannelId;
-        resCopy = await copyFromDbChannel(chatId, backupCid, q.backupDbMessageId, protect);
+        const backupRes = await copyFromDbChannel(chatId, backupCid, q.backupDbMessageId, protect);
+        if (backupRes?.ok && backupRes?.messageId) {
+          resCopy = backupRes;
+          bundle.qualities[i].dbMessageId = q.backupDbMessageId;
+          bundle.qualities[i].dbChannelId = backupCid;
+          anyHealed = true;
+        }
       }
       if (resCopy?.ok && resCopy?.messageId) {
         sentIds.push(resCopy.messageId);
@@ -408,6 +431,14 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
         }
       }
       await new Promise(r => setTimeout(r, 100));
+    }
+
+    if (anyHealed) {
+      const files = await getCollection('files');
+      files.updateOne(
+        { _id: bundleCode },
+        { $set: { qualities: bundle.qualities, autoHealedAt: new Date() } }
+      ).catch(() => {});
     }
 
     if (sentIds.length > 0) {

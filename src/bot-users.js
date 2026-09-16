@@ -32,6 +32,7 @@ export async function upsertUser(message) {
       firstName: from.first_name || null,
       lastName:  from.last_name || null,
       lastSeen:  new Date(now).toISOString(),
+      isBlocked: false,
     };
 
     await users.updateOne(
@@ -289,7 +290,7 @@ export async function broadcastWithProgress({
   broadcastCancelled = false;
   try {
     const users = await getCollection('users');
-    const list = await users.find({ banned: { $ne: true } }, { projection: { _id: 1 } }).toArray();
+    const list = await users.find({ banned: { $ne: true }, isBlocked: { $ne: true } }, { projection: { _id: 1 } }).toArray();
     const ids = list.map(u => u._id);
     const total = ids.length;
 
@@ -420,10 +421,11 @@ export async function getUserStats() {
     const files = await getCollection('files');
     const channels = await getCollection('channels');
 
-    const [totalUsers, bannedCount, todayActive, filestoreLinks, filestoreChannels] =
+    const [totalUsers, bannedCount, blockedCount, todayActive, filestoreLinks, filestoreChannels] =
       await Promise.all([
         users.countDocuments(),
         users.countDocuments({ banned: true }),
+        users.countDocuments({ isBlocked: true }),
         users.countDocuments({ lastSeen: { $regex: '^' + today } }),
         files.countDocuments(),
         channels.countDocuments(),
@@ -432,6 +434,7 @@ export async function getUserStats() {
     return {
       totalUsers:         totalUsers        || 0,
       bannedCount:        bannedCount       || 0,
+      blockedCount:       blockedCount      || 0,
       todayActive:        todayActive       || 0,
       filestoreLinks:     filestoreLinks    || 0,
       filestoreChannels:  filestoreChannels || 0,
