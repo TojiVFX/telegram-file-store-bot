@@ -76,26 +76,58 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
   }
 
   if (Array.isArray(dbMessageIds)) {
-    // Attempt fast batch copy via Telegram copyMessages first if no backup channel is needed and not in relay mode
-    const hasBackup = Boolean(backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds.length);
     let batchCopied = false;
 
     // Telegram copyMessages requires IDs to be strictly increasing
     const isIncreasing = dbMessageIds.every((id, idx) => idx === 0 || id > dbMessageIds[idx - 1]);
-    if (isIncreasing && !hasBackup && !hasRelay && dbMessageIds.length > 1) {
-      let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, dbMessageIds, protectContent);
-      if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
-        copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
-          copyTelegramMessages(toChatId, dbChannelId, dbMessageIds, protectContent)
-        );
-      }
-      if (copyBatchRes?.ok && copyBatchRes.messageIds.length === dbMessageIds.length) {
-        sentMessageIds.push(...copyBatchRes.messageIds);
-        batchCopied = true;
-        if (typeof onProgress === 'function') {
-          await onProgress(sentMessageIds.length, totalCount).catch(() => {});
+    if (isIncreasing && !hasRelay && dbMessageIds.length > 0) {
+      const CHUNK_SIZE = 100;
+      for (let i = 0; i < dbMessageIds.length; i += CHUNK_SIZE) {
+        const chunk = dbMessageIds.slice(i, i + CHUNK_SIZE);
+        let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent);
+        if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
+          copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
+            copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent)
+          );
+        }
+        if (copyBatchRes?.ok && copyBatchRes.messageIds.length === chunk.length) {
+          sentMessageIds.push(...copyBatchRes.messageIds);
+          if (typeof onProgress === 'function') {
+            await onProgress(sentMessageIds.length, totalCount).catch(() => {});
+          }
+          if (i + CHUNK_SIZE < dbMessageIds.length) {
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        } else {
+          // Chunk failed (e.g. some message in this chunk was deleted from primary channel)
+          // Fallback to item-by-item delivery with backup channel failover for this chunk
+          for (let j = 0; j < chunk.length; j++) {
+            const globalIdx = i + j;
+            const msgId = chunk[j];
+            let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+
+            if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds[globalIdx]) {
+              const backupRes = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[globalIdx], protectContent);
+              if (backupRes?.ok && backupRes?.messageId) {
+                res = backupRes;
+                dbMessageIds[globalIdx] = backupDbMessageIds[globalIdx];
+                healedIndices.push({ index: globalIdx, backupMsgId: backupDbMessageIds[globalIdx], backupChannelId: backupDbChannelId });
+              }
+            }
+
+            if (res?.ok && res?.messageId) {
+              sentMessageIds.push(res.messageId);
+            } else {
+              failedCount++;
+            }
+            if (typeof onProgress === 'function') {
+              await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+            }
+            if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
+          }
         }
       }
+      batchCopied = true;
     }
 
     if (!batchCopied && hasRelay) {
@@ -136,7 +168,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
         if (typeof onProgress === 'function') {
           await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
         }
-        if (totalCount > 3) await new Promise((r) => setTimeout(r, 60));
+        if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
       }
     }
   }
@@ -147,20 +179,42 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     }
 
     let batchCopied = false;
-    if (rangeIds.length > 1 && !hasRelay) {
-      let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, rangeIds, protectContent);
-      if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
-        copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
-          copyTelegramMessages(toChatId, dbChannelId, rangeIds, protectContent)
-        );
-      }
-      if (copyBatchRes?.ok && copyBatchRes.messageIds.length === rangeIds.length) {
-        sentMessageIds.push(...copyBatchRes.messageIds);
-        batchCopied = true;
-        if (typeof onProgress === 'function') {
-          await onProgress(sentMessageIds.length, totalCount).catch(() => {});
+    if (rangeIds.length > 0 && !hasRelay) {
+      const CHUNK_SIZE = 100;
+      for (let i = 0; i < rangeIds.length; i += CHUNK_SIZE) {
+        const chunk = rangeIds.slice(i, i + CHUNK_SIZE);
+        let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent);
+        if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
+          copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
+            copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent)
+          );
+        }
+        if (copyBatchRes?.ok && copyBatchRes.messageIds.length === chunk.length) {
+          sentMessageIds.push(...copyBatchRes.messageIds);
+          if (typeof onProgress === 'function') {
+            await onProgress(sentMessageIds.length, totalCount).catch(() => {});
+          }
+          if (i + CHUNK_SIZE < rangeIds.length) {
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        } else {
+          // Fallback for this chunk
+          for (let j = 0; j < chunk.length; j++) {
+            const msgId = chunk[j];
+            let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+            if (res?.ok && res?.messageId) {
+              sentMessageIds.push(res.messageId);
+            } else {
+              failedCount++;
+            }
+            if (typeof onProgress === 'function') {
+              await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+            }
+            if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
+          }
         }
       }
+      batchCopied = true;
     }
 
     if (!batchCopied) {
@@ -174,7 +228,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
         if (typeof onProgress === 'function') {
           await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
         }
-        if (totalCount > 3) await new Promise((r) => setTimeout(r, 60));
+        if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
       }
     }
   }

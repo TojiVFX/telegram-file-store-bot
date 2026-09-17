@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import {
   getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage,
   deleteTelegramMessage, toSmallCaps, getMainToken, esc, logHistory, getChat,
-  sendTelegramFileBuffer, isSafePublicUrl
+  sendTelegramFileBuffer, isSafePublicUrl, sendChatAction
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, getBackupDbChannelId, checkSubscription, isBotAdmin,
@@ -236,7 +236,19 @@ export async function processAdminMessage(chatId, rawText, message, req) {
              await sendTelegramMessage(chatId, `⚠️ <b>Range too large!</b>\n\nYou can only add up to 500 files at once. This range is <b>${totalFiles}</b> files.`);
              return true;
           }
+
+          sendChatAction(chatId, 'upload_document').catch(() => {});
+          const initSummary = `⏳ <b>Creating Batch...</b>\n\n` +
+            `• Range: <code>#${batchSession.srcFirstMsgId}</code> to <code>#${extracted.msgId}</code>\n` +
+            `• Total Files: <b>${totalFiles}</b>\n` +
+            `────────────────────────\n` +
+            `<i>Delivering to storage... [▒▒▒▒▒▒▒▒▒▒] 0% (1/${totalFiles} saved)</i>`;
+          const progressMsg = await sendTelegramMessage(chatId, initSummary);
+
+          let lastProgressEdit = Date.now();
+          let processedCount = 1; // first file was already saved at step === 'first'
           const backupDbChannelId = await getBackupDbChannelId();
+
           for (let srcId = batchSession.srcFirstMsgId + 1; srcId <= extracted.msgId; srcId++) {
             const r = await copyIntoDbChannel(dbChannelId, batchSession.srcChannelId, srcId);
             let backupId = null;
@@ -245,8 +257,28 @@ export async function processAdminMessage(chatId, rawText, message, req) {
               if (bRes.ok && bRes.messageId) backupId = bRes.messageId;
             }
             if (r.ok && r.messageId) await addIdToBatch(chatId, r.messageId, backupId);
+            processedCount++;
+
+            const now = Date.now();
+            if (now - lastProgressEdit >= 1500 || processedCount === totalFiles) {
+              lastProgressEdit = now;
+              sendChatAction(chatId, 'upload_document').catch(() => {});
+              const pct = Math.min(100, Math.round((processedCount / totalFiles) * 100));
+              const filled = Math.round((pct / 100) * 10);
+              const bar = '█'.repeat(filled) + '▒'.repeat(10 - filled);
+              if (progressMsg?.messageId) {
+                const updatedStatus = `⏳ <b>Creating Batch...</b>\n\n` +
+                  `• Range: <code>#${batchSession.srcFirstMsgId}</code> to <code>#${extracted.msgId}</code>\n` +
+                  `• Total Files: <b>${totalFiles}</b>\n` +
+                  `────────────────────────\n` +
+                  `<i>Delivering to storage... ${bar} ${pct}% (${processedCount}/${totalFiles} saved)</i>`;
+                await editTelegramMessage(chatId, progressMsg.messageId, updatedStatus).catch(() => {});
+              }
+            }
+
             if (totalFiles > 5) await new Promise((r) => setTimeout(r, 50));
           }
+
           const updatedSession = await getBatchSession(chatId);
           const collectedIds = updatedSession?.collectedIds || [];
           const backupCollectedIds = updatedSession?.backupCollectedIds || [];
@@ -254,13 +286,23 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           await storeBatch(batchCode, dbChannelId, collectedIds, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name }, { backupDbChannelId, backupDbMessageIds: backupCollectedIds });
           await clearBatchSession(chatId);
           const botUsername = await getBotUsername();
-          await sendTelegramMessage(chatId, `✅ <b>Batch Created!</b>\n\nFiles: <b>${collectedIds.length}</b>\nLink: <code>https://t.me/${botUsername}?start=${batchCode}</code>\n<i>(Tap link to copy)</i>`, {
+          const finalSuccessText = `✅ <b>Batch Created!</b>\n\nFiles: <b>${collectedIds.length}</b>\nLink: <code>https://t.me/${botUsername}?start=${batchCode}</code>\n<i>(Tap link to copy)</i>`;
+          const finalKeyboard = {
             inline_keyboard: [
               [{ text: toSmallCaps('Generate Temp Link'), callback_data: `admin:temp_token_for:${batchCode}` }],
               [{ text: toSmallCaps('Create Another Batch'), callback_data: 'admin:batch_start' }, { text: toSmallCaps("Today's Links"), callback_data: 'admin:today_links' }],
               [{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]
             ]
-          });
+          };
+
+          if (progressMsg?.messageId) {
+            const editRes = await editTelegramMessage(chatId, progressMsg.messageId, finalSuccessText, finalKeyboard);
+            if (!editRes?.ok) {
+              await sendTelegramMessage(chatId, finalSuccessText, finalKeyboard);
+            }
+          } else {
+            await sendTelegramMessage(chatId, finalSuccessText, finalKeyboard);
+          }
           return true;
         } else {
           await sendTelegramMessage(chatId, `❌ <b>Invalid message for range!</b>\n\nThe last message must be from the same channel as the first message and must have a larger message ID.\n\nPlease try forwarding a valid last message from the channel, or send /cancel to abort.`);
@@ -1300,7 +1342,11 @@ export async function processBundleRange(chatId, range, sessionMsgId = null, exp
   const qualities = [];
   let detectedTitle = explicitTitle || '';
 
+  let lastProgressEdit = Date.now();
+  let processedCount = 0;
+
   for (let srcId = firstMsgId; srcId <= lastMsgId; srcId++) {
+    processedCount++;
     // 1. Try forwardMessage to preserve complete message metadata (video, document, caption)
     let fwdRes = await forwardMessage(dbChannelId, channelId, srcId);
     let dbMsgId = null;
@@ -1341,6 +1387,21 @@ export async function processBundleRange(chatId, range, sessionMsgId = null, exp
         backupDbMessageId: backupMsgId,
         fileName
       });
+    }
+
+    const now = Date.now();
+    if (activeMsgId && (now - lastProgressEdit >= 1500 || processedCount === totalCount)) {
+      lastProgressEdit = now;
+      sendChatAction(chatId, 'upload_document').catch(() => {});
+      const pct = Math.min(100, Math.round((processedCount / totalCount) * 100));
+      const filled = Math.round((pct / 100) * 10);
+      const bar = '█'.repeat(filled) + '▒'.repeat(10 - filled);
+      const updatedStatus = `⏳ <b>Processing Bundle...</b>\n\n` +
+        `• Range: <code>#${firstMsgId}</code> to <code>#${lastMsgId}</code>\n` +
+        `• Qualities Found: <b>${qualities.length}</b>\n` +
+        `────────────────────────\n` +
+        `<i>Fetching resolutions... ${bar} ${pct}% (${processedCount}/${totalCount})</i>`;
+      await editTelegramMessage(chatId, activeMsgId, updatedStatus).catch(() => {});
     }
 
     if (totalCount > 4) {

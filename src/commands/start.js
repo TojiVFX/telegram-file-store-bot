@@ -450,10 +450,14 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       : await sendTelegramMessage(chatId, summaryText, null, protect);
 
     let lastProgressPct = 0;
+    let lastProgressTime = 0;
     await deliverBatch(chatId, b, s?.protectContent === '1', payload, async (current, total) => {
+      const now = Date.now();
       const pct = Math.min(100, Math.round((current / total) * 100));
-      if (pct >= lastProgressPct + 25 || pct === 100) {
+      if (pct >= lastProgressPct + 10 || pct === 100 || (now - lastProgressTime >= 1500)) {
         lastProgressPct = pct;
+        lastProgressTime = now;
+        sendChatAction(chatId, 'upload_document').catch(() => {});
         const filled = Math.round((pct / 100) * 10);
         const bar = '█'.repeat(filled) + '▒'.repeat(10 - filled);
         if (progressMsg?.messageId) {

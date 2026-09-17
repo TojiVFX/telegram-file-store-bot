@@ -270,11 +270,12 @@ export const sessionActions = {
       return;
     }
     await safeAnswer(cq.id);
+    const totalCollected = batchSession.collectedIds.length;
+    await editTelegramMessage(chatId, messageId, `⏳ <b>Finalizing Batch...</b>\n\nSaving <b>${totalCollected}</b> file(s) to storage...`).catch(() => {});
 
     const dbChannelId = await getDbChannelId();
     const batchCode   = generateBatchCode();
 
-    const totalCollected = batchSession.collectedIds.length;
     const finalIds = batchSession.collectedIds.slice(0, 500);
     const backupDbChannelId = await getBackupDbChannelId();
     const finalBackupIds = Array.isArray(batchSession.backupCollectedIds) ? batchSession.backupCollectedIds.slice(0, 500) : [];

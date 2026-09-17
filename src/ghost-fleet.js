@@ -759,8 +759,8 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
         await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
       }
 
-      if (totalCount > 3) {
-        await new Promise(r => setTimeout(r, 40));
+      if (totalCount > 1) {
+        await new Promise(r => setTimeout(r, 850));
       }
     }
   } finally {
