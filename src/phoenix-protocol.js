@@ -1,7 +1,13 @@
-import { getSettings, updateSettings, log, esc } from './bot-common.js';
+import { getSettings, updateSettings, log, esc, sendTelegramMessage } from './bot-common.js';
+import { getAdminIds } from './auth.js';
+import { logActivity } from './bot-logs.js';
 import { rebuildChannelStorage } from './filestore.js';
+import { registerChannelFailoverHandler } from './channel-helpers.js';
 
 let isPhoenixRunning = false;
+
+// Register failover handler with channel-helpers
+registerChannelFailoverHandler(activatePhoenixProtocol);
 
 /**
  * Retrieves the configured standby database channel ID.
@@ -41,8 +47,6 @@ export async function activatePhoenixProtocol(triggerReason = 'Storage Channel I
   const primaryCid = s?.dbChannelId || process.env.DB_CHANNEL_ID || null;
   const standbyCid = await getStandbyChannelId();
 
-  const { getAdminIds } = await import('./bot-users.js');
-  const { sendTelegramMessage } = await import('./bot-common.js');
   const adminIds = getAdminIds();
 
   if (!standbyCid || String(standbyCid) === String(primaryCid)) {
@@ -101,7 +105,6 @@ export async function activatePhoenixProtocol(triggerReason = 'Storage Channel I
         await sendTelegramMessage(aid, finishNotice).catch(() => {});
       }
 
-      const { logActivity } = await import('./bot-logs.js');
       logActivity({
         eventType: 'phoenix_protocol_complete',
         targetCode: String(standbyCid),

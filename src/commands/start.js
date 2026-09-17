@@ -1,14 +1,25 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto, sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, parseValidityHours, sendChatAction, log
+  getCollection, getSettings, sendTelegramMessage, sendTelegramVideo, sendTelegramPhoto,
+  sendTelegramDocument, sendTelegramAudio, editTelegramMessage, deleteTelegramMessage,
+  toSmallCaps, getMainToken, esc, parseValidityHours, sendChatAction, log, isMainBot
 } from '../bot-common.js';
 import {
-  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername, getAdminDashboardKeyboard, buildStartMenuButtons, formatStartMessage
+  getBotUsername, getDbChannelId, checkSubscription, deliverBatch, getMainBotUsername,
+  getAdminDashboardKeyboard, buildStartMenuButtons, formatStartMessage, getSponsorButton,
+  scheduleAutoDelete, copyFromDbChannel
 } from '../bot-helpers.js';
-import { getBatch, getFile, getBundle, getShortenedLink, getTempToken, consumeTempToken, formatDuration, incrementAccessCount, recordVerificationMinted } from '../filestore.js';
-import { hasPremium, getReferralStats, addReferral, getAdminId } from '../bot-users.js';
+import {
+  getBatch, getFile, getBundle, getShortenedLink, getTempToken, consumeTempToken,
+  formatDuration, incrementAccessCount, recordVerificationMinted
+} from '../filestore.js';
+import { hasPremium, getReferralStats, addReferral, getAdminId, completePendingReferral } from '../bot-users.js';
 import { logActivity } from '../bot-logs.js';
 import { isScraperSuspected, sendCaptchaChallenge } from '../anti-scraper.js';
+import {
+  consumeDispatchToken, isGhostFleetEnabled, getNextWorkerBot, createDispatchToken
+} from '../ghost-fleet.js';
+import { renderGhostFleetMgmt } from '../callbacks/admin/ghost-fleet.js';
 
 // Pending verify-link TTL — how long the user has to actually click through
 // the shortener and land back on /start?start=verify_<tkn> before the link
@@ -23,6 +34,12 @@ const VERIFY_LINK_TTL_LABEL = '1 hour';
 // the admin with one message per attempt.
 const SHORTENER_ALERT_DEDUPE_SECONDS = 900; // 15 minutes
 
+// ─── Multi-Instance State Decision: requestCooldownMap ───────────────────────
+// Decision: Acceptable as local-only per-instance ephemeral Map.
+// Purpose: 5-second post-delivery UX cooldown on /start file requests to prevent
+// double-clicks and rapid accidental re-requests.
+// Rationale: A transient 5-second UX debounce does not require distributed locking
+// or MongoDB write overhead across horizontally-scaled instances.
 const requestCooldownMap = new Map();
 const COOLDOWN_MS = 5000; // 5 seconds post-delivery cooldown
 const MAX_COOLDOWN_ENTRIES = 10000;
@@ -118,7 +135,6 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
     }
 
     // User is fully subscribed! Complete pending referral if this user arrived via referral link
-    const { completePendingReferral } = await import('../bot-users.js');
     await completePendingReferral(chatId);
   }
 
@@ -159,7 +175,6 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
 
   // Handle Ghost Fleet One-Time Dispatch Tokens
   if (payload && payload.startsWith('dispatch_')) {
-    const { consumeDispatchToken } = await import('../ghost-fleet.js');
     const consumeRes = await consumeDispatchToken(payload, chatId);
     if (!consumeRes.ok) {
       if (consumeRes.reason === 'expired') {
@@ -287,9 +302,7 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
   // If Ghost Fleet is enabled, the Main Gateway Bot does NOT deliver media files directly.
   // It hands off delivery to a disposable Worker Bot so the main bot remains unflagged.
   if (!skipTokenCheck && (payload?.startsWith('batch_') || payload?.startsWith('file_') || payload?.startsWith('bundle_'))) {
-    const { isMainBot } = await import('../bot-common.js');
     if (isMainBot()) {
-      const { isGhostFleetEnabled, getNextWorkerBot, createDispatchToken } = await import('../ghost-fleet.js');
       const ghostActive = await isGhostFleetEnabled();
       if (ghostActive) {
         const worker = await getNextWorkerBot();
@@ -377,7 +390,6 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       ]);
     }
 
-    const { getSponsorButton } = await import('../bot-helpers.js');
     const sponsorBtn = await getSponsorButton();
     if (sponsorBtn) {
       buttons.push([sponsorBtn]);
@@ -468,7 +480,6 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
   }
 
   if ((payload?.startsWith('clone_view_') || payload === 'ghost_fleet') && admin) {
-    const { renderGhostFleetMgmt } = await import('../callbacks/admin-callbacks.js');
     await renderGhostFleetMgmt(chatId, null);
     return;
   }
@@ -496,11 +507,9 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       }).catch(() => {});
       incrementAccessCount(payload);
 
-      const { scheduleAutoDelete } = await import('../bot-helpers.js');
       let sentMsgId = null;
 
       if (f.dbChannelId && f.dbMessageId) {
-        const { copyFromDbChannel } = await import('../bot-helpers.js');
         let resCopy = await copyFromDbChannel(chatId, f.dbChannelId, f.dbMessageId, protect);
         if ((!resCopy?.ok || !resCopy?.messageId) && f.backupDbChannelId && f.backupDbMessageId) {
           const backupRes = await copyFromDbChannel(chatId, f.backupDbChannelId, f.backupDbMessageId, protect);
@@ -537,7 +546,7 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
         else if (f.type === 'photo') resSend = await sendTelegramPhoto(chatId, f.fileId, caption, null, protect);
         else resSend = await sendTelegramDocument(chatId, f.fileId, caption, null, protect);
 
-        if (resSend?.result?.message_id) sentMsgId = resSend.result.message_id;
+        if (resSend?.messageId) sentMsgId = resSend.messageId;
       }
 
       if (sentMsgId) {

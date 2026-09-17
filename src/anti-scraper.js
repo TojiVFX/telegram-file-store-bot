@@ -1,7 +1,13 @@
 import crypto from 'crypto';
 import { getCollection, sendTelegramMessage, deleteTelegramMessage, toSmallCaps } from './bot-common.js';
 
-// Sliding window request tracking: Map<userId, number[]>
+// ─── Multi-Instance State Decision: velocityMap & Captcha Verification ───────
+// Decision: velocityMap is acceptable as local-only per-instance sliding window.
+// Purpose: Ephemeral velocity tracking (max 4 requests per 30 seconds) to detect
+// burst scrapers and issue interactive captcha challenges.
+// Correctness: The captcha challenge itself (sendCaptchaChallenge / verifyCaptchaAnswer)
+// is stored in MongoDB `sessions` (`captcha:${chatId}:${token}`) with a 3-minute TTL,
+// ensuring verification is 100% correct across horizontally-scaled instances.
 const velocityMap = new Map();
 const VELOCITY_WINDOW_MS = 30 * 1000; // 30 seconds
 const VELOCITY_THRESHOLD = 4; // Max 4 requests in 30 seconds

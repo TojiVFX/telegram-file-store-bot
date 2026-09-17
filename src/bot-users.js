@@ -1,6 +1,31 @@
+/**
+ * src/bot-users.js — User management, authentication facade, and mass broadcasts.
+ *
+ * ─── Multi-Instance State Strategy ───────────────────────────────────────────
+ * 1. userLastSeenCache: Local-only per-instance Map.
+ *    - Purpose: 15-minute write throttle to reduce Mongo write load per incoming message.
+ *    - Decision: Ephemeral local cache is safe; multiple instances writing lastSeen independently
+ *      is harmless.
+ * 2. bannedMap / bannedMapExpiry: MongoDB-backed with short 10s local TTL.
+ *    - Purpose: Fast user ban lookups.
+ *    - Decision: Source of truth is MongoDB `users` collection (`banned: true`). Local cache TTL
+ *      is 10s so bans enforced on one instance propagate across all instances rapidly.
+ * 3. Broadcast Cancellation: MongoDB-backed via `broadcast_jobs` collection.
+ *    - Purpose: Distributed cancellation across horizontally-scaled bot instances.
+ *    - Decision: Each broadcast job has a document in MongoDB with `cancelled: boolean` and
+ *      `status: string`. Chunk loops check MongoDB for cancellation, allowing any admin on
+ *      any instance to halt an ongoing broadcast reliably.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
 import {
-  getCollection, getSettings, log, sendTelegramMessage
+  getCollection, getSettings, log, sendTelegramMessage, formatISTDateTime, getISTDateString,
+  editTelegramMessage, toSmallCaps, pinTelegramMessage, copyMessage
 } from './bot-common.js';
+import { logActivity } from './bot-logs.js';
+import { getAdminIds, getAdminId, isAdmin, resetAdminCache } from './auth.js';
+
+export { getAdminIds, getAdminId, isAdmin, resetAdminCache };
 
 const userLastSeenCache = new Map();
 const LAST_SEEN_THROTTLE_MS = 15 * 60 * 1000; // 15 minutes
@@ -54,10 +79,10 @@ export async function upsertUser(message) {
   }
 }
 
-// ─── In-Memory Banned User Cache ──────────────────────────────────────────────
+// ─── In-Memory Banned User Cache (MongoDB source of truth, 10s local TTL) ─────
 let bannedMap = null; // Map<string, number | null>
 let bannedMapExpiry = 0;
-const BANNED_CACHE_TTL_MS = 60_000;
+const BANNED_CACHE_TTL_MS = 10_000;
 
 export async function banUser(targetId, durationSeconds = null, reason = null, adminId = null) {
   try {
@@ -245,8 +270,8 @@ export async function getUserProfile(identifier) {
     userId: user._id || user.userId,
     username: user.username ? `@${user.username}` : 'None',
     fullName: [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Anonymous',
-    joinedAt: user.joinedAt || 'Unknown',
-    lastSeen: user.lastSeen || 'Unknown',
+    joinedAt: user.joinedAt ? formatISTDateTime(user.joinedAt) : 'Unknown',
+    lastSeen: user.lastSeen ? formatISTDateTime(user.lastSeen) : 'Unknown',
     banStatus,
     isBanned: !!user.banned,
     banReason: user.banReason || null,
@@ -273,9 +298,26 @@ export async function getTopReferrers(limit = 10) {
 }
 
 let broadcastCancelled = false;
+let activeBroadcastId = null;
 
-export function cancelBroadcast() {
+export async function cancelBroadcast(broadcastId = null) {
   broadcastCancelled = true;
+  try {
+    const jobs = await getCollection('broadcast_jobs');
+    if (broadcastId) {
+      await jobs.updateOne(
+        { _id: String(broadcastId) },
+        { $set: { cancelled: true, status: 'cancelled', updatedAt: new Date() } }
+      );
+    } else {
+      await jobs.updateMany(
+        { status: 'running' },
+        { $set: { cancelled: true, status: 'cancelled', updatedAt: new Date() } }
+      );
+    }
+  } catch (err) {
+    log('error', 'cancelBroadcast failed to update broadcast_jobs in MongoDB', { errorMessage: err.message });
+  }
 }
 
 export async function broadcastWithProgress({
@@ -285,9 +327,34 @@ export async function broadcastWithProgress({
   replyMarkup = null,
   adminChatId,
   statusMsgId = null,
-  pin = false
+  pin = false,
+  broadcastId = null
 }) {
+  const jobId = broadcastId || `bcast_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  activeBroadcastId = jobId;
   broadcastCancelled = false;
+
+  let broadcastJobs = null;
+  try {
+    broadcastJobs = await getCollection('broadcast_jobs');
+    await broadcastJobs.updateOne(
+      { _id: jobId },
+      {
+        $set: {
+          jobId,
+          adminChatId: String(adminChatId || ''),
+          status: 'running',
+          cancelled: false,
+          startedAt: new Date(),
+          updatedAt: new Date()
+        }
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    log('warn', 'Failed to initialize broadcast_job in MongoDB', { errorMessage: err.message });
+  }
+
   try {
     const users = await getCollection('users');
     const list = await users.find({ banned: { $ne: true }, isBlocked: { $ne: true } }, { projection: { _id: 1 } }).toArray();
@@ -295,28 +362,43 @@ export async function broadcastWithProgress({
     const total = ids.length;
 
     if (!total) {
+      if (broadcastJobs) {
+        await broadcastJobs.updateOne(
+          { _id: jobId },
+          { $set: { status: 'completed', total: 0, sent: 0, failed: 0, finishedAt: new Date() } }
+        ).catch(() => {});
+      }
       if (adminChatId && statusMsgId) {
-        const { editTelegramMessage, toSmallCaps } = await import('./bot-common.js');
         await editTelegramMessage(adminChatId, statusMsgId, `<b>Broadcast</b>\n\nNo active users found to broadcast to.`, {
           inline_keyboard: [[{ text: toSmallCaps('Back to Dashboard'), callback_data: 'admin:dashboard' }]]
         });
       }
-      return { sent: 0, failed: 0, total: 0 };
+      return { sent: 0, failed: 0, total: 0, cancelled: false, broadcastId: jobId };
     }
 
     let sent = 0;
     let failed = 0;
     let blockedCount = 0;
     let lastStatusEdit = 0;
+    let isCancelled = false;
     const MIN_STATUS_EDIT_INTERVAL_MS = 3500;
     const CHUNK = 20;
 
-    const { editTelegramMessage, toSmallCaps, pinTelegramMessage } = await import('./bot-common.js');
-    const { copyMessage } = await import('./bot-helpers.js');
-
     for (let i = 0; i < ids.length; i += CHUNK) {
       if (broadcastCancelled) {
-        log('info', 'Broadcast cancelled by admin', { sent, failed, total });
+        isCancelled = true;
+      } else if (broadcastJobs) {
+        try {
+          const jobDoc = await broadcastJobs.findOne({ _id: jobId });
+          if (jobDoc?.cancelled) {
+            isCancelled = true;
+            broadcastCancelled = true;
+          }
+        } catch {}
+      }
+
+      if (isCancelled) {
+        log('info', 'Broadcast cancelled by admin', { jobId, sent, failed, total });
         break;
       }
 
@@ -372,16 +454,34 @@ export async function broadcastWithProgress({
           `<i>Paced at 20 msgs/sec...</i>`;
 
         await editTelegramMessage(adminChatId, statusMsgId, statusText, {
-          inline_keyboard: [[{ text: toSmallCaps('Cancel Broadcast'), callback_data: 'admin:broadcast_cancel' }]]
+          inline_keyboard: [[{ text: toSmallCaps('Cancel Broadcast'), callback_data: `admin:broadcast_cancel:${jobId}` }]]
         }).catch(() => {});
       }
 
-      if (i + CHUNK < ids.length && !broadcastCancelled) {
+      if (i + CHUNK < ids.length && !isCancelled) {
         await new Promise(r => setTimeout(r, 1000));
       }
     }
 
-    const finalStatus = broadcastCancelled ? 'Cancelled by Admin' : 'Complete';
+    const finalStatus = isCancelled ? 'Cancelled by Admin' : 'Complete';
+
+    if (broadcastJobs) {
+      await broadcastJobs.updateOne(
+        { _id: jobId },
+        {
+          $set: {
+            status: isCancelled ? 'cancelled' : 'completed',
+            cancelled: isCancelled,
+            sent,
+            failed,
+            total,
+            finishedAt: new Date(),
+            updatedAt: new Date()
+          }
+        }
+      ).catch(() => {});
+    }
+
     if (adminChatId && statusMsgId) {
       const completionText = `<b>Broadcast ${finalStatus}</b>\n\n` +
         `• Total Users: <b>${total}</b>\n` +
@@ -393,17 +493,16 @@ export async function broadcastWithProgress({
       }).catch(() => {});
     }
 
-    log('info', `Broadcast ${finalStatus}`, { sent, failed, blockedCount, total });
+    log('info', `Broadcast ${finalStatus}`, { jobId, sent, failed, blockedCount, total });
 
-    const { logActivity } = await import('./bot-logs.js');
     logActivity({
       eventType: 'broadcast',
       userId: adminChatId,
       details: `Broadcast ${finalStatus}: ${sent}/${total} delivered, ${failed} failed (${blockedCount} blocked)`,
-      metadata: { sent, failed, total, blockedCount, cancelled: broadcastCancelled }
+      metadata: { jobId, sent, failed, total, blockedCount, cancelled: isCancelled }
     }).catch(() => {});
 
-    return { sent, failed, total, cancelled: broadcastCancelled };
+    return { sent, failed, total, cancelled: isCancelled, broadcastId: jobId };
   } catch (err) {
     log('error', 'broadcastWithProgress failed', { errorMessage: err.message });
     return { sent: 0, failed: 0, total: 0 };
@@ -416,7 +515,7 @@ export async function broadcastToAll(text) {
 
 export async function getUserStats() {
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getISTDateString();
     const users = await getCollection('users');
     const files = await getCollection('files');
     const channels = await getCollection('channels');
@@ -446,43 +545,6 @@ export async function getUserStats() {
       filestoreLinks: 0, filestoreChannels: 0,
     };
   }
-}
-
-let cachedAdminIds = null;
-let cachedAdminSet = null;
-let cachedPrimaryAdminId = undefined;
-
-export function getAdminIds() {
-  if (cachedAdminIds !== null) return cachedAdminIds;
-  const raw = (process.env.ADMIN_CHAT_ID || '').trim();
-  if (!raw) {
-    cachedAdminIds = [];
-    return cachedAdminIds;
-  }
-  cachedAdminIds = raw
-    .split(',')
-    .map(id => id.trim())
-    .filter(Boolean);
-  return cachedAdminIds;
-}
-
-function getAdminSet() {
-  if (!cachedAdminSet) {
-    cachedAdminSet = new Set(getAdminIds());
-  }
-  return cachedAdminSet;
-}
-
-export function getAdminId() {
-  if (cachedPrimaryAdminId !== undefined) return cachedPrimaryAdminId;
-  const ids = getAdminIds();
-  cachedPrimaryAdminId = ids.length > 0 ? Number(ids[0]) : null;
-  return cachedPrimaryAdminId;
-}
-
-export async function isAdmin(chatId) {
-  if (chatId === null || chatId === undefined) return false;
-  return getAdminSet().has(String(chatId).trim());
 }
 
 export async function savePendingReferral(referrerId, newUserId) {

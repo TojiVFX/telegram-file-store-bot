@@ -1,6 +1,8 @@
 import express from 'express';
 import { timingSafeEqual } from 'crypto';
 import telegramHandler from './routes/telegram.js';
+import { verifyTelegramWebhook } from './auth.js';
+import { getAllWorkerBots } from './ghost-fleet.js';
 
 const app = express();
 
@@ -47,12 +49,10 @@ app.post('/', asyncHandler(telegramHandler));
 // Ghost Fleet: Route inbound webhook updates for worker delivery bots
 app.post('/webhook/worker/:workerId', asyncHandler(async (req, res) => {
   const workerId = req.params.workerId;
-  const { verifyTelegramWebhook } = await import('./auth.js');
   if (!verifyTelegramWebhook(req)) {
     return res.status(401).send('Unauthorized');
   }
 
-  const { getAllWorkerBots } = await import('./ghost-fleet.js');
   const workers = await getAllWorkerBots();
   const worker = workers.find(w => String(w.botId) === String(workerId));
   if (!worker || !worker.token) {

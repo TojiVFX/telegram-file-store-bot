@@ -1,16 +1,24 @@
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage, deleteTelegramMessage, toSmallCaps, getMainToken, esc, logHistory, getChat
+  getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage,
+  deleteTelegramMessage, toSmallCaps, getMainToken, esc, logHistory, getChat,
+  sendTelegramFileBuffer, isSafePublicUrl
 } from '../bot-common.js';
 import {
-  getBotUsername, getDbChannelId, getBackupDbChannelId, checkSubscription, isBotAdmin, extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser,
-  forwardMessage, extractChannelMessageRange, getForceSubChannelsList
+  getBotUsername, getDbChannelId, getBackupDbChannelId, checkSubscription, isBotAdmin,
+  extractChannelMessage, copyIntoDbChannel, copyFromDbChannel, getMainBotUsername, resolveUser,
+  forwardMessage, extractChannelMessageRange, getForceSubChannelsList,
+  resolveChannelIdFromMessageOrText
 } from '../bot-helpers.js';
 import {
-  getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta, checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
-  isBulkStoreActive, setBulkStoreActive, addToStoreSession, getStoreSession, clearStoreSession, generateLinksExportText, generateRawLinksText,
-  generateBundleCode, storeBundle, getBundleSession, setBundleSession, addQualityToBundle, clearBundleSession, detectMediaQuality, formatBytes,
-  cleanMediaFileName, extractMediaTitle, sortQualities, extractMediaUniqueId, findFileByUniqueId
+  getBatchSession, setBatchSession, addIdToBatch, clearBatchSession, updateBatchSessionMeta,
+  checkAndClearAdminWaiting, setAdminWaitingForFile, storeFile, generateFileCode,
+  isBulkStoreActive, setBulkStoreActive, addToStoreSession, getStoreSession, clearStoreSession,
+  generateLinksExportText, generateRawLinksText, generateBundleCode, storeBundle, getBundleSession,
+  setBundleSession, addQualityToBundle, clearBundleSession, detectMediaQuality, formatBytes,
+  cleanMediaFileName, extractMediaTitle, sortQualities, extractMediaUniqueId, findFileByUniqueId,
+  storeBatch, generateBatchCode, rebuildChannelStorage, getFile, getBatch, parseDurationString,
+  getFilesWithinDuration, formatDurationLabel, formatDuration
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
 import { banUser, unbanUser, getBannedList, broadcastToAll, getUserStats, addReferral } from '../bot-users.js';
@@ -18,6 +26,9 @@ import { logActivity } from '../bot-logs.js';
 import {
   isStealthStorageEnabled, generateCloakedCaption, sanitizeMediaTitle, generateSaltedFileFingerprint
 } from '../stealth-engine.js';
+import { renderStorageAudit } from '../callbacks/admin/storage-audit.js';
+import { setStandbyChannelId } from '../phoenix-protocol.js';
+import { addWorkerBot, addStandbyWorkerBot } from '../ghost-fleet.js';
 
 export async function processAdminMessage(chatId, rawText, message, req) {
   const sessions = await getCollection('sessions');
@@ -60,7 +71,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         ]
       });
 
-      const { sendTelegramFileBuffer } = await import('../bot-common.js');
       await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>Exported ${codes.length} Links (.txt)</b>`);
       return true;
     }
@@ -240,7 +250,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           const updatedSession = await getBatchSession(chatId);
           const collectedIds = updatedSession?.collectedIds || [];
           const backupCollectedIds = updatedSession?.backupCollectedIds || [];
-          const { storeBatch, generateBatchCode } = await import('../filestore.js');
           const batchCode = generateBatchCode();
           await storeBatch(batchCode, dbChannelId, collectedIds, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name }, { backupDbChannelId, backupDbMessageIds: backupCollectedIds });
           await clearBatchSession(chatId);
@@ -388,14 +397,14 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           const eRes = await editTelegramMessage(chatId, bundleSession.sessionMsgId, text, kb);
           if (!eRes?.ok) {
             const nMsg = await sendTelegramMessage(chatId, text, kb);
-            if (nMsg?.result?.message_id) {
-              await setBundleSession(chatId, { ...bundleSession, step: 'last', srcChannelId: extracted.channelId, srcFirstMsgId: extracted.msgId, sessionMsgId: nMsg.result.message_id });
+            if (nMsg?.messageId) {
+              await setBundleSession(chatId, { ...bundleSession, step: 'last', srcChannelId: extracted.channelId, srcFirstMsgId: extracted.msgId, sessionMsgId: nMsg.messageId });
             }
           }
         } else {
           const nMsg = await sendTelegramMessage(chatId, text, kb);
-          if (nMsg?.result?.message_id) {
-            await setBundleSession(chatId, { ...bundleSession, step: 'last', srcChannelId: extracted.channelId, srcFirstMsgId: extracted.msgId, sessionMsgId: nMsg.result.message_id });
+          if (nMsg?.messageId) {
+            await setBundleSession(chatId, { ...bundleSession, step: 'last', srcChannelId: extracted.channelId, srcFirstMsgId: extracted.msgId, sessionMsgId: nMsg.messageId });
           }
         }
         return true;
@@ -501,14 +510,14 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           const eRes = await editTelegramMessage(chatId, bundleSession.sessionMsgId, text, kb);
           if (!eRes?.ok) {
             const nMsg = await sendTelegramMessage(chatId, text, kb);
-            if (nMsg?.result?.message_id) {
-              await setBundleSession(chatId, { ...bundleSession, title: currentTitle, sessionMsgId: nMsg.result.message_id });
+            if (nMsg?.messageId) {
+              await setBundleSession(chatId, { ...bundleSession, title: currentTitle, sessionMsgId: nMsg.messageId });
             }
           }
         } else {
           const nMsg = await sendTelegramMessage(chatId, text, kb);
-          if (nMsg?.result?.message_id) {
-            await setBundleSession(chatId, { ...bundleSession, title: currentTitle, sessionMsgId: nMsg.result.message_id });
+          if (nMsg?.messageId) {
+            await setBundleSession(chatId, { ...bundleSession, title: currentTitle, sessionMsgId: nMsg.messageId });
           }
         }
         return true;
@@ -529,31 +538,14 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     }
 
     if (waitingFor === 'fs_fsub_msg_forward') {
-      const forwardChat   = message.forward_from_chat;
-      const forwardOrigin = message.forward_origin;
-      const typedId        = rawText.trim();
-
-      let targetCid;
-      let targetTitle;
-
-      if (forwardChat?.type === 'channel') {
-        targetCid   = forwardChat.id;
-        targetTitle = forwardChat.title;
-      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
-        targetCid   = forwardOrigin.chat.id;
-        targetTitle = forwardOrigin.chat.title;
-      } else if (/^-100\d+$/.test(typedId)) {
-        targetCid   = typedId;
-        targetTitle = typedId;
-      } else {
-        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).`);
+      const res = await resolveChannelIdFromMessageOrText(message, rawText, {
+        errorContext: 'channel'
+      });
+      if (!res.ok) {
+        await sendTelegramMessage(chatId, res.error);
         return true;
       }
-
-      if (!(await isBotAdmin(targetCid))) {
-        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
-        return true;
-      }
+      const { targetCid, targetTitle } = res;
 
       await sessions.updateOne(
         { _id: `admin:fsub_pending_add:${chatId}` },
@@ -573,91 +565,54 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     }
 
     if (waitingFor === 'backup_db_channel') {
-      const forwardChat   = message.forward_from_chat;
-      const forwardOrigin = message.forward_origin;
-      const typedId        = rawText.trim();
-
-      let targetCid;
-      if (forwardChat?.type === 'channel') {
-        targetCid = forwardChat.id;
-      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
-        targetCid = forwardOrigin.chat.id;
-      } else if (/^-100\d+$/.test(typedId)) {
-        targetCid = typedId;
-      } else {
-        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the backup channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).`);
+      const res = await resolveChannelIdFromMessageOrText(message, rawText, {
+        errorContext: 'backup channel'
+      });
+      if (!res.ok) {
+        await sendTelegramMessage(chatId, res.error);
         return true;
       }
-
-      if (!(await isBotAdmin(targetCid))) {
-        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this backup channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
-        return true;
-      }
+      const { targetCid } = res;
 
       await updateSettings({ backupDbChannelId: String(targetCid) });
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
 
       await sendTelegramMessage(chatId, `✅ <b>Backup DB Channel Configured!</b>\n\nChannel ID: <code>${targetCid}</code>\n\nAll newly stored files and batches will now automatically be mirrored to this channel.`);
 
-      const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
       await renderStorageAudit(chatId);
       return true;
     }
 
     if (waitingFor === 'standby_channel_id') {
-      const forwardChat   = message.forward_from_chat;
-      const forwardOrigin = message.forward_origin;
-      const typedId        = rawText.trim();
-
-      let targetCid;
-      if (forwardChat?.type === 'channel') {
-        targetCid = forwardChat.id;
-      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
-        targetCid = forwardOrigin.chat.id;
-      } else if (/^-100\d+$/.test(typedId)) {
-        targetCid = typedId;
-      } else {
-        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the standby channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).`);
+      const res = await resolveChannelIdFromMessageOrText(message, rawText, {
+        errorContext: 'standby channel'
+      });
+      if (!res.ok) {
+        await sendTelegramMessage(chatId, res.error);
         return true;
       }
+      const { targetCid } = res;
 
-      if (!(await isBotAdmin(targetCid))) {
-        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this standby channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
-        return true;
-      }
-
-      const { setStandbyChannelId } = await import('../phoenix-protocol.js');
       await setStandbyChannelId(targetCid);
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
 
       await sendTelegramMessage(chatId, `🔥 <b>The Phoenix Protocol Armed!</b>\n\nStandby Channel ID: <code>${targetCid}</code>\n\nIf your primary database channel ever suffers a fatal ban or strike, the bot will autonomously failover to this channel and rebuild your files with 0 downtime.`);
 
-      const { renderStorageAudit } = await import('../callbacks/admin-callbacks.js');
       await renderStorageAudit(chatId);
       return true;
     }
 
     if (waitingFor === 'relay_chat_id') {
-      const forwardChat   = message.forward_from_chat;
-      const forwardOrigin = message.forward_origin;
-      const typedId        = rawText.trim();
-
-      let targetCid;
-      if (forwardChat?.id) {
-        targetCid = forwardChat.id;
-      } else if (forwardOrigin?.chat?.id) {
-        targetCid = forwardOrigin.chat.id;
-      } else if (/^-100\d+$/.test(typedId)) {
-        targetCid = typedId;
-      } else {
-        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the relay group/channel, or send the chat ID directly</b> (e.g. <code>-100123456789</code>).`);
+      const res = await resolveChannelIdFromMessageOrText(message, rawText, {
+        allowGroup: true,
+        errorContext: 'relay group/channel',
+        notAdminError: `❌ <b>Main Bot is not an admin in this Relay chat!</b>\n\nPlease add the Main Bot as an administrator in the relay group/channel with Post & Delete Messages permissions and try again.`
+      });
+      if (!res.ok) {
+        await sendTelegramMessage(chatId, res.error);
         return true;
       }
-
-      if (!(await isBotAdmin(targetCid))) {
-        await sendTelegramMessage(chatId, `❌ <b>Main Bot is not an admin in this Relay chat!</b>\n\nPlease add the Main Bot as an administrator in the relay group/channel with Post & Delete Messages permissions and try again.`);
-        return true;
-      }
+      const { targetCid } = res;
 
       await updateSettings({ relayChatId: String(targetCid) });
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
@@ -670,32 +625,21 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     }
 
     if (waitingFor === 'rebuild_channel_id') {
-      const forwardChat   = message.forward_from_chat;
-      const forwardOrigin = message.forward_origin;
-      const typedId        = rawText.trim();
-
-      let targetCid;
-      if (forwardChat?.type === 'channel') {
-        targetCid = forwardChat.id;
-      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
-        targetCid = forwardOrigin.chat.id;
-      } else if (/^-100\d+$/.test(typedId)) {
-        targetCid = typedId;
-      } else {
-        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the target channel, or send the channel ID directly</b> (e.g. <code>-1001234567890</code>).`);
+      const res = await resolveChannelIdFromMessageOrText(message, rawText, {
+        errorContext: 'target channel',
+        formatError: `❌ <b>Please forward a message directly from the target channel, or send the channel ID directly</b> (e.g. <code>-1001234567890</code>).`,
+        notAdminError: `❌ <b>Bot is not an admin in this channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`
+      });
+      if (!res.ok) {
+        await sendTelegramMessage(chatId, res.error);
         return true;
       }
-
-      const isBotAdminInTarget = await isBotAdmin(targetCid);
-      if (!isBotAdminInTarget) {
-        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
-        return true;
-      }
+      const { targetCid } = res;
 
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
 
       const statusMsg = await sendTelegramMessage(chatId, `🔄 <b>Rebuilding Channel Storage...</b>\n\nTarget Channel: <code>${targetCid}</code>\n<i>Scanning database files...</i>`);
-      const statusMsgId = statusMsg?.result?.message_id || statusMsg?.messageId;
+      const statusMsgId = statusMsg?.messageId;
 
       let lastProgressEdit = 0;
       const onProgress = async ({ processed, total, restored, failed, skipped }) => {
@@ -721,7 +665,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         }
       };
 
-      const { rebuildChannelStorage } = await import('../filestore.js');
       const result = await rebuildChannelStorage(targetCid, onProgress);
 
       if (!result?.ok) {
@@ -729,7 +672,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         return true;
       }
 
-      const { updateSettings } = await import('../bot-common.js');
       await updateSettings({ dbChannelId: String(targetCid) });
 
       const summaryText = `🎉 <b>Channel Rebuild Complete!</b>\n\n` +
@@ -759,26 +701,15 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     }
 
     if (waitingFor === 'dbChannelId') {
-      const forwardChat   = message.forward_from_chat;
-      const forwardOrigin = message.forward_origin;
-      const typedId        = rawText.trim();
-
-      let targetCid;
-      if (forwardChat?.type === 'channel') {
-        targetCid = forwardChat.id;
-      } else if (forwardOrigin?.type === 'channel' && forwardOrigin.chat) {
-        targetCid = forwardOrigin.chat.id;
-      } else if (/^-100\d+$/.test(typedId)) {
-        targetCid = typedId;
-      } else {
-        await sendTelegramMessage(chatId, `❌ <b>Please forward a message directly from the DB channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).\n\nSend /cancel to abort.`);
+      const res = await resolveChannelIdFromMessageOrText(message, rawText, {
+        errorContext: 'DB channel',
+        formatError: `❌ <b>Please forward a message directly from the DB channel, or send the channel ID directly</b> (e.g. <code>-100123456789</code>).\n\nSend /cancel to abort.`
+      });
+      if (!res.ok) {
+        await sendTelegramMessage(chatId, res.error);
         return true;
       }
-
-      if (!(await isBotAdmin(targetCid))) {
-        await sendTelegramMessage(chatId, `❌ <b>Bot is not an admin in this DB channel!</b>\n\nPlease add the bot as an administrator in the channel with Post Messages permissions and try again.`);
-        return true;
-      }
+      const { targetCid } = res;
 
       await updateSettings({ dbChannelId: String(targetCid) });
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
@@ -886,7 +817,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         return true;
       }
     } else if (waitingFor === 'sponsorBtnUrl') {
-      const { isSafePublicUrl } = await import('../bot-common.js');
       const trimmed = rawText.trim();
       if (!isSafePublicUrl(trimmed) && !trimmed.startsWith('tg://') && !trimmed.startsWith('https://t.me/')) {
         await sendTelegramMessage(chatId, `❌ <b>Invalid button URL!</b> Must be a valid public HTTP/HTTPS or Telegram URL (e.g. <code>https://t.me/...</code>). Please try again or send /cancel.`);
@@ -949,7 +879,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
 
     if (waitingAction === 'temp_token_input') {
       const targetCode = rawText.trim();
-      const { getFile, getBatch } = await import('../filestore.js');
       const fileDoc = await getFile(targetCode);
       const batchDoc = !fileDoc ? await getBatch(targetCode) : null;
 
@@ -983,7 +912,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
 
     if (waitingAction.startsWith('export_custom_duration')) {
       const presetType = waitingAction.split(':')[1] || 'all';
-      const { parseDurationString, getFilesWithinDuration, generateLinksExportText, generateRawLinksText, formatDurationLabel } = await import('../filestore.js');
       const lower = rawText.trim().toLowerCase();
       const isBatchOnly = lower.includes('batch') || presetType === 'batch';
       const isFileOnly = (!isBatchOnly && lower.includes('file')) || presetType === 'media';
@@ -1027,7 +955,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         await sendTelegramMessage(chatId, `📋 <b>${title} (${records.length})</b>\n\nTap box to expand and copy all links:\n<blockquote expandable><pre>${rawBlock}</pre></blockquote>`);
       }
 
-      const { sendTelegramFileBuffer } = await import('../bot-common.js');
       await sendTelegramFileBuffer(chatId, buffer, filename, `📄 <b>${title}</b> (${records.length} records)`, {
         inline_keyboard: [[{ text: toSmallCaps('Back to Export Hub'), callback_data: 'admin:export_hub' }]]
       });
@@ -1037,7 +964,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     if (waitingAction === 'broadcast') {
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
 
-      const { getUserStats } = await import('../bot-users.js');
       const stats = await getUserStats();
 
       // Inspect message to detect media, forward origin, and attached inline buttons
@@ -1103,7 +1029,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
         return true;
       }
 
-      const { parseDurationString, formatDuration } = await import('../filestore.js');
       let durationSeconds = null;
       let reason = null;
 
@@ -1159,7 +1084,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       const tokenCandidate = rawText.trim();
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
 
-      const { addWorkerBot } = await import('../ghost-fleet.js');
       const addRes = await addWorkerBot(tokenCandidate);
       if (addRes.ok) {
         await sendTelegramMessage(chatId, `🎉 <b>Ghost Fleet Worker Bot Added!</b>\n\n• Bot: <b>@${esc(addRes.worker.username)}</b>\n• ID: <code>${addRes.worker.botId}</code>\n• Webhook: <b>Registered & Active</b>\n\nThis node is now ready to receive secure file dispatch jobs.`, {
@@ -1177,7 +1101,6 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       const tokenCandidate = rawText.trim();
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
 
-      const { addStandbyWorkerBot } = await import('../ghost-fleet.js');
       const addRes = await addStandbyWorkerBot(tokenCandidate);
       if (addRes.ok) {
         await sendTelegramMessage(chatId, `🛡️ <b>Standby Reserve Worker Added!</b>\n\n• Bot: <b>@${esc(addRes.worker.username)}</b>\n• ID: <code>${addRes.worker.botId}</code>\n• Status: <b>Standby Reserve</b>\n\nThis node is safely held in reserve and will automatically hot-swap into active rotation if an active worker bot is banned or rate-limited.`, {
@@ -1371,7 +1294,7 @@ export async function processBundleRange(chatId, range, sessionMsgId = null, exp
     await editTelegramMessage(chatId, activeMsgId, statusText);
   } else {
     const sMsg = await sendTelegramMessage(chatId, statusText);
-    activeMsgId = sMsg?.result?.message_id;
+    activeMsgId = sMsg?.messageId;
   }
 
   const qualities = [];

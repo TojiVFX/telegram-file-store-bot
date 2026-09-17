@@ -2,9 +2,12 @@ import { randomInt } from 'crypto';
 import {
   getCollection, getSettings, log, isSafePublicUrl,
   sendTelegramDocument, sendTelegramVideo, sendTelegramAudio, sendTelegramPhoto,
-  esc, botContext, getMainToken
+  esc, botContext, getMainToken, formatISTDateTime, getISTDateString,
+  deleteTelegramMessages, deleteTelegramMessage
 } from './bot-common.js';
 import { logActivity, clearOldLogs } from './bot-logs.js';
+import { checkChannelMessageExists } from './channel-helpers.js';
+import { copyIntoDbChannel } from './delivery.js';
 
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
@@ -472,7 +475,7 @@ export async function setBulkStoreActive(chatId, active = true) {
 }
 
 export function generateLinksExportText(files, botUsername, title = 'STORED LINKS') {
-  const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  const nowStr = formatISTDateTime(new Date(), true);
   let out = `======================================================\n`;
   out += `TELEGRAM FILE STORE BOT - ${title.toUpperCase()}\n`;
   out += `Generated: ${nowStr}\n`;
@@ -551,7 +554,6 @@ export async function getStorageAuditStats() {
 }
 
 export async function runRetroactiveMirror(primaryChannelId, backupChannelId, limit = 50) {
-  const { copyIntoDbChannel } = await import('./bot-helpers.js');
   const files = await getCollection('files');
 
   const unmirrored = await files.find({
@@ -629,7 +631,6 @@ export async function runRetroactiveMirror(primaryChannelId, backupChannelId, li
 }
 
 export async function scanAndRepairBrokenLinks(primaryChannelId, backupChannelId, limit = 50, onProgress = null) {
-  const { checkChannelMessageExists, copyIntoDbChannel } = await import('./bot-helpers.js');
   const files = await getCollection('files');
 
   const records = await files.find({}).limit(limit).toArray();
@@ -874,7 +875,7 @@ export async function getDailyFileStats() {
   try {
     const files = await getCollection('files');
     const logs = await getCollection('activity_logs');
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getISTDateString();
 
     const [createdToday, totalLinks, downloadsToday, allTimeAgg] = await Promise.all([
       files.countDocuments({ createdAt: { $gte: today } }),
@@ -906,7 +907,7 @@ export async function getDailyFileStats() {
 export async function getTodayFiles() {
   try {
     const files = await getCollection('files');
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getISTDateString();
     return await files.find({
       createdAt: { $exists: true, $gte: today }
     }).sort({ createdAt: -1 }).toArray();
@@ -1342,7 +1343,6 @@ export async function deleteStoredRecord(code) {
   if (!record) return { ok: false, reason: 'not_found' };
 
   // Attempt to delete message(s) from DB channels
-  const { deleteTelegramMessages, deleteTelegramMessage } = await import('./bot-common.js');
   try {
     if (record.type === 'batch') {
       if (record.dbChannelId && Array.isArray(record.dbMessageIds) && record.dbMessageIds.length) {
@@ -1471,8 +1471,8 @@ export async function rebuildChannelStorage(targetChannelId, onProgress = null) 
                 qRes = await sendTelegramVideo(targetCid, q.fileId, cap);
               }
 
-              if (qRes?.ok && qRes.result?.message_id) {
-                updatedQualities.push({ ...q, dbMessageId: qRes.result.message_id });
+              if (qRes?.ok && qRes.messageId) {
+                updatedQualities.push({ ...q, dbMessageId: qRes.messageId });
                 bundleUpdated = true;
               } else {
                 updatedQualities.push(q);
@@ -1493,7 +1493,6 @@ export async function rebuildChannelStorage(targetChannelId, onProgress = null) 
             failed++;
           }
         } else if (doc.type === 'batch') {
-          const { copyIntoDbChannel } = await import('./bot-helpers.js');
           const hasBackup = doc.backupDbChannelId && Array.isArray(doc.backupDbMessageIds) && doc.backupDbMessageIds.length > 0;
           const srcCid = hasBackup ? doc.backupDbChannelId : doc.dbChannelId;
           const srcMsgIds = hasBackup ? doc.backupDbMessageIds : doc.dbMessageIds;
@@ -1535,8 +1534,8 @@ export async function rebuildChannelStorage(targetChannelId, onProgress = null) 
             res = await sendTelegramDocument(targetCid, doc.fileId, caption);
           }
 
-          if (res?.ok && res.result?.message_id) {
-            const newMsgId = res.result.message_id;
+          if (res?.ok && res.messageId) {
+            const newMsgId = res.messageId;
             await files.updateOne(
               { _id: doc._id },
               { $set: { dbChannelId: targetCid, dbMessageId: newMsgId, rebuiltAt: new Date().toISOString() } }

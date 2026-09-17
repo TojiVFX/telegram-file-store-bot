@@ -1,7 +1,10 @@
 import app from './app.js';
 import { validateEnv } from './env-validator.js';
+import { closeDb } from './bot-common.js';
 import { registerWebhook, startAutoDeleteWorker, startDailyBackupWorker } from './bot-helpers.js';
+import { registerAllWorkerWebhooks } from './ghost-fleet.js';
 import { startMemoryRecycler } from './memory-cleaner.js';
+import './phoenix-protocol.js';
 
 const envCheck = validateEnv();
 if (!envCheck.ok) {
@@ -40,7 +43,6 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
 
     // Auto-register Ghost Fleet worker bot webhooks
     try {
-      const { registerAllWorkerWebhooks } = await import('./ghost-fleet.js');
       const secretToken = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
       await registerAllWorkerWebhooks(formattedDomain, secretToken);
     } catch (err) {
@@ -69,7 +71,6 @@ const shutdown = (signal) => {
   server.close(async () => {
     console.log('[Filestore Bot] HTTP server closed.');
     try {
-      const { closeDb } = await import('./bot-common.js');
       await closeDb();
     } catch {}
     process.exit(0);

@@ -1,3 +1,20 @@
+/**
+ * src/bot-common.js — Core primitives, Telegram API wrappers, MongoDB abstractions, and settings.
+ *
+ * ─── Multi-Instance State Strategy ───────────────────────────────────────────
+ * 1. cachedSettings / cachedSettingsTime:
+ *    - Source of truth: MongoDB `settings` collection document `{ _id: 'global' }`.
+ *    - Multi-instance behavior: Local cache TTL is 5 seconds (5000ms). When any instance
+ *      writes updateSettings(), it invalidates its local cache immediately and updates Mongo.
+ *      Other horizontally-scaled instances pick up changes within 5 seconds at most, preventing
+ *      configuration drift while eliminating Mongo round-trips for rapid consecutive calls.
+ * 2. rateLimitMap:
+ *    - Multi-instance behavior: Local-only sliding window rate limiter (5 requests / 10 seconds).
+ *    - Decision: In-memory sliding window provides fast node-level defense-in-depth against
+ *      rapid burst floods without incurring database round-trip or distributed lock overhead.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
 import { MongoClient } from 'mongodb';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -331,13 +348,48 @@ let client = null;
 let db = null;
 let dbPromise = null;
 let isUsingMockDb = false;
+let mockDbWarningInterval = null;
+
+export function emitMockDbWarning() {
+  console.warn(
+    '\n' +
+    '*******************************************************************************\n' +
+    '* [CRITICAL] RUNNING WITH IN-MEMORY MOCK DATABASE (MONGODB_URI NOT CONFIGURED) *\n' +
+    '* • ALL DATA (files, batches, users, tokens) WILL BE LOST ON RESTART!          *\n' +
+    '* • In-memory mock does NOT support multi-instance replication or full Mongo. *\n' +
+    '* • NEVER use this mode in production. Set MONGODB_URI in your environment.   *\n' +
+    '*******************************************************************************\n'
+  );
+}
+
+export function startMockDbWarningWorker(intervalMs = 10 * 60 * 1000) {
+  if (mockDbWarningInterval) return;
+  emitMockDbWarning();
+  mockDbWarningInterval = setInterval(() => {
+    emitMockDbWarning();
+  }, intervalMs);
+  if (mockDbWarningInterval.unref) {
+    mockDbWarningInterval.unref();
+  }
+}
+
+export function stopMockDbWarningWorker() {
+  if (mockDbWarningInterval) {
+    clearInterval(mockDbWarningInterval);
+    mockDbWarningInterval = null;
+  }
+}
+
+export function isMockDatabaseActive() {
+  return isUsingMockDb || !MONGODB_URI;
+}
 
 export async function getDb() {
   if (db) return db;
   if (dbPromise) return dbPromise;
 
   if (!MONGODB_URI) {
-    console.warn('[Filestore Bot] MONGODB_URI not set — using in-memory mock database store (data resets on container restart)');
+    startMockDbWarningWorker();
     db = inMemoryDb;
     isUsingMockDb = true;
     return db;
@@ -437,7 +489,7 @@ export async function getCollection(name) {
 // ─── Settings Helpers ─────────────────────────────────────────────────────────
 let cachedSettings = null;
 let cachedSettingsTime = 0;
-const SETTINGS_CACHE_TTL = 15 * 60 * 1000; // 15 minutes TTL (invalidated immediately by updateSettings)
+const SETTINGS_CACHE_TTL = 5_000; // 5 seconds TTL (invalidated immediately on write, fast cross-instance sync)
 
 export async function getSettings() {
   const now = Date.now();
@@ -729,7 +781,7 @@ export function parseValidityHours(raw, fallback = 24) {
 // ─── Telegram API helpers ─────────────────────────────────────────────────────
 export async function sendTelegramMessage(chatId, text, replyMarkup = null, protectContent = false, maxRetries = 2, disableWebPagePreview = true, styled = true) {
   const token = getToken();
-  if (!token) return { ok: false, reason: 'missing_token' };
+  if (!token) return { ok: false, messageId: null, reason: 'missing_token', detail: null };
   try {
     const styledText = styled ? toSmallCapsSafe(text) : text;
     const body = {
@@ -747,15 +799,15 @@ export async function sendTelegramMessage(chatId, text, replyMarkup = null, prot
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
       return sendTelegramMessage(chatId, text, replyMarkup, protectContent, maxRetries - 1, disableWebPagePreview, styled);
     }
-    return { ok: res.ok, messageId: data.result?.message_id, detail: data };
+    return { ok: res.ok && Boolean(data?.ok), messageId: data.result?.message_id ?? null, detail: data };
   } catch (err) {
-    return { ok: false, reason: 'network_error', detail: err.message };
+    return { ok: false, messageId: null, reason: 'network_error', detail: err.message };
   }
 }
 
 export async function sendTelegramDocument(chatId, documentId, caption = '', replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
-  if (!token) return { ok: false, reason: 'missing_token' };
+  if (!token) return { ok: false, messageId: null, reason: 'missing_token', detail: null };
   try {
     const styledCaption = toSmallCapsSafe(caption);
     const body = { chat_id: chatId, document: documentId, caption: styledCaption, parse_mode: 'HTML', protect_content: protectContent };
@@ -769,13 +821,13 @@ export async function sendTelegramDocument(chatId, documentId, caption = '', rep
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
       return sendTelegramDocument(chatId, documentId, caption, replyMarkup, protectContent, maxRetries - 1);
     }
-    return data;
-  } catch (err) { return { ok: false, reason: err.message }; }
+    return { ok: res.ok && Boolean(data?.ok), messageId: data.result?.message_id ?? null, detail: data };
+  } catch (err) { return { ok: false, messageId: null, reason: err.message, detail: err.message }; }
 }
 
 export async function sendTelegramFileBuffer(chatId, buffer, filename, caption = '', replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
-  if (!token) return { ok: false, reason: 'missing_token' };
+  if (!token) return { ok: false, messageId: null, reason: 'missing_token', detail: null };
   try {
     const formData = new FormData();
     formData.append('chat_id', chatId);
@@ -796,15 +848,15 @@ export async function sendTelegramFileBuffer(chatId, buffer, filename, caption =
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
       return sendTelegramFileBuffer(chatId, buffer, filename, caption, replyMarkup, protectContent, maxRetries - 1);
     }
-    return data;
+    return { ok: res.ok && Boolean(data?.ok), messageId: data.result?.message_id ?? null, detail: data };
   } catch (err) {
-    return { ok: false, reason: err.message };
+    return { ok: false, messageId: null, reason: err.message, detail: err.message };
   }
 }
 
 export async function sendTelegramVideo(chatId, videoId, caption = '', replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
-  if (!token) return { ok: false, reason: 'missing_token' };
+  if (!token) return { ok: false, messageId: null, reason: 'missing_token', detail: null };
   try {
     const styledCaption = toSmallCapsSafe(caption);
     const body = { chat_id: chatId, video: videoId, caption: styledCaption, parse_mode: 'HTML', protect_content: protectContent };
@@ -818,13 +870,13 @@ export async function sendTelegramVideo(chatId, videoId, caption = '', replyMark
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
       return sendTelegramVideo(chatId, videoId, caption, replyMarkup, protectContent, maxRetries - 1);
     }
-    return data;
-  } catch (err) { return { ok: false, reason: err.message }; }
+    return { ok: res.ok && Boolean(data?.ok), messageId: data.result?.message_id ?? null, detail: data };
+  } catch (err) { return { ok: false, messageId: null, reason: err.message, detail: err.message }; }
 }
 
 export async function sendTelegramAudio(chatId, audioId, caption = '', replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
-  if (!token) return { ok: false, reason: 'missing_token' };
+  if (!token) return { ok: false, messageId: null, reason: 'missing_token', detail: null };
   try {
     const styledCaption = toSmallCapsSafe(caption);
     const body = { chat_id: chatId, audio: audioId, caption: styledCaption, parse_mode: 'HTML', protect_content: protectContent };
@@ -838,13 +890,13 @@ export async function sendTelegramAudio(chatId, audioId, caption = '', replyMark
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
       return sendTelegramAudio(chatId, audioId, caption, replyMarkup, protectContent, maxRetries - 1);
     }
-    return data;
-  } catch (err) { return { ok: false, reason: err.message }; }
+    return { ok: res.ok && Boolean(data?.ok), messageId: data.result?.message_id ?? null, detail: data };
+  } catch (err) { return { ok: false, messageId: null, reason: err.message, detail: err.message }; }
 }
 
 export async function sendTelegramPhoto(chatId, photoUrl, caption, replyMarkup = null, protectContent = false, maxRetries = 2) {
   const token = getToken();
-  if (!token) return { ok: false, reason: 'missing_token' };
+  if (!token) return { ok: false, messageId: null, reason: 'missing_token', detail: null };
   try {
     const styledCaption = toSmallCapsSafe(caption);
     const body = { chat_id: chatId, photo: photoUrl, caption: styledCaption, parse_mode: 'HTML', protect_content: protectContent };
@@ -859,8 +911,8 @@ export async function sendTelegramPhoto(chatId, photoUrl, caption, replyMarkup =
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
       return sendTelegramPhoto(chatId, photoUrl, caption, replyMarkup, protectContent, maxRetries - 1);
     }
-    return { ok: res.ok, messageId: data.result?.message_id };
-  } catch (err) { return { ok: false, reason: err.message }; }
+    return { ok: res.ok && Boolean(data?.ok), messageId: data.result?.message_id ?? null, detail: data };
+  } catch (err) { return { ok: false, messageId: null, reason: err.message, detail: err.message }; }
 }
 
 export async function editTelegramCaption(chatId, messageId, caption, replyMarkup = null) {
@@ -1043,6 +1095,76 @@ export async function copyTelegramMessages(toChatId, fromChatId, messageIds, pro
   return { ok: copiedIds.length > 0, messageIds: copiedIds };
 }
 
+export async function copyMessage(toChatId, fromChatId, msgId, protectContent = false, replyMarkup = null, maxRetries = 2, customCaption = null) {
+  const token = getToken();
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const body = {
+      chat_id: toChatId,
+      from_chat_id: fromChatId,
+      message_id: msgId,
+      protect_content: protectContent,
+    };
+    if (replyMarkup) body.reply_markup = replyMarkup;
+    if (customCaption !== null) {
+      body.caption = customCaption;
+      body.parse_mode = 'HTML';
+    }
+
+    const response = await fetch(`https://api.telegram.org/bot${token}/copyMessage`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (response.status === 429 && maxRetries > 0) {
+      const waitSec = data?.parameters?.retry_after || 2;
+      log('warn', `Telegram rate limited copyMessage (429). Waiting ${waitSec}s before retrying...`, { toChatId, fromChatId, msgId, waitSec });
+      await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
+      return copyMessage(toChatId, fromChatId, msgId, protectContent, replyMarkup, maxRetries - 1, customCaption);
+    }
+    if (!response.ok) {
+      log('error', 'copyMessage failed', { toChatId, fromChatId, msgId, telegramError: data });
+      const desc = (data.description || '').toLowerCase();
+      const isNotFound = desc.includes('message to copy not found') ||
+                         desc.includes('message_id_invalid') ||
+                         desc.includes('chat not found');
+      return { ok: false, reason: data.description || 'unknown_error', isNotFound, telegramError: data };
+    }
+    return { ok: true, messageId: data.result?.message_id };
+  } catch (err) {
+    log('error', 'copyMessage network error', { errorMessage: err.message, msgId });
+    return { ok: false, reason: 'network_error' };
+  }
+}
+
+export async function forwardMessage(toChatId, fromChatId, msgId, protectContent = false) {
+  const token = getToken();
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const body = {
+      chat_id: toChatId,
+      from_chat_id: fromChatId,
+      message_id: msgId,
+      protect_content: protectContent,
+    };
+    const response = await fetch(`https://api.telegram.org/bot${token}/forwardMessage`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      log('error', 'forwardMessage failed', { toChatId, fromChatId, msgId, telegramError: data });
+      return { ok: false, reason: data.description || 'unknown_error', telegramError: data };
+    }
+    return { ok: true, message: data.result, messageId: data.result?.message_id };
+  } catch (err) {
+    log('error', 'forwardMessage network error', { errorMessage: err.message, msgId });
+    return { ok: false, reason: 'network_error' };
+  }
+}
+
 export async function answerCallbackQuery(callbackQueryId, text = '', showAlert = false) {
   const token = getToken();
   if (!token) return;
@@ -1181,3 +1303,51 @@ export function getCurrentBotId() {
   const token = getToken();
   return token ? token.split(':')[0] : null;
 }
+
+// ─── Indian Standard Time (IST, UTC+5:30) Helpers ─────────────────────────────
+/**
+ * Formats a date/timestamp to Indian Standard Time (IST, UTC+5:30).
+ * e.g., "Sep 17, 2026, 12:20 AM IST" or with seconds "Sep 17, 2026, 12:20:45 AM IST"
+ */
+export function formatISTDateTime(input = new Date(), includeSeconds = false) {
+  if (!input) return 'N/A';
+  const d = input instanceof Date ? input : new Date(input);
+  if (isNaN(d.getTime())) return String(input);
+  return d.toLocaleString('en-US', {
+    timeZone: 'Asia/Kolkata',
+    dateStyle: 'medium',
+    timeStyle: includeSeconds ? 'medium' : 'short',
+  }) + ' IST';
+}
+
+/**
+ * Formats time only to Indian Standard Time (IST, UTC+5:30).
+ * e.g., "12:20:45 AM IST"
+ */
+export function formatISTTime(input = new Date(), includeSeconds = true) {
+  if (!input) return 'N/A';
+  const d = input instanceof Date ? input : new Date(input);
+  if (isNaN(d.getTime())) return String(input);
+  return d.toLocaleTimeString('en-US', {
+    timeZone: 'Asia/Kolkata',
+    hour12: true,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: includeSeconds ? '2-digit' : undefined,
+  }) + ' IST';
+}
+
+/**
+ * Returns YYYY-MM-DD date string in Indian Standard Time (IST, UTC+5:30).
+ */
+export function getISTDateString(input = new Date()) {
+  const d = input instanceof Date ? input : new Date(input);
+  if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+

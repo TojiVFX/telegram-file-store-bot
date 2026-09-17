@@ -1,11 +1,29 @@
+/**
+ * src/ghost-fleet.js — Ghost Fleet worker bots management, circuit breaker, and dispatch.
+ *
+ * ─── Multi-Instance State Strategy ───────────────────────────────────────────
+ * 1. worker_bots MongoDB collection: Source of truth for registered worker bots.
+ * 2. workerBotsCache / lastWorkersRefresh:
+ *    - Purpose: In-memory cache of verified workers to avoid continuous `getMe` HTTP calls
+ *      on every media delivery.
+ *    - Multi-instance behavior: TTL is 30 seconds (`WORKER_CACHE_TTL_MS = 30_000`). Instances
+ *      automatically sync worker changes from MongoDB every 30s.
+ * 3. lastWorkerIndex: Local round-robin index. Acceptable per-instance to distribute load.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
 import crypto from 'crypto';
 import {
-  getCollection, getSettings, updateSettings, log, getMainToken, botContext, toSmallCaps, esc
+  getCollection, getSettings, updateSettings, log, getMainToken, botContext, toSmallCaps, esc,
+  sendTelegramMessage, deleteTelegramMessage, copyMessage, getCurrentBotId
 } from './bot-common.js';
+import { getAdminIds } from './auth.js';
 
 // Cache of verified worker bots: Map<botId, { token, username, firstName, isAlive, lastChecked }>
 const workerBotsCache = new Map();
 let lastWorkerIndex = 0;
+const WORKER_CACHE_TTL_MS = 30_000; // 30 seconds
+let lastWorkersRefresh = 0;
 
 /**
  * Parses worker bot tokens from environment variable (WORKER_BOT_TOKENS=token1,token2).
@@ -119,6 +137,7 @@ export async function verifyWorkerBot(token) {
  * Marks dead or banned worker bots in cache.
  */
 export async function refreshWorkerBots() {
+  lastWorkersRefresh = Date.now();
   const all = await getAllWorkerBots();
   for (const w of all) {
     if (!w.enabled) continue;
@@ -275,8 +294,6 @@ export async function hotSwapStandbyWorker() {
 
   // Notify admin
   try {
-    const { getAdminIds } = await import('./bot-users.js');
-    const { sendTelegramMessage } = await import('./bot-common.js');
     const adminIds = getAdminIds();
     const alertText = `🔄 <b>Ghost Fleet Worker Hot-Swap Activated!</b>\n\n` +
       `Standby Worker <b>@${esc(verify.username || standby.botId)}</b> has been automatically promoted to active delivery rotation!\n\n` +
@@ -296,11 +313,10 @@ export async function hotSwapStandbyWorker() {
  * Selects the next healthy worker bot from the active pool using Round-Robin.
  */
 export async function getNextWorkerBot() {
-  if (workerBotsCache.size === 0) {
+  const now = Date.now();
+  if (workerBotsCache.size === 0 || (now - lastWorkersRefresh) > WORKER_CACHE_TTL_MS) {
     await refreshWorkerBots();
   }
-
-  const now = Date.now();
   let healthyWorkers = Array.from(workerBotsCache.values()).filter(w =>
     w.isAlive &&
     w.token &&
@@ -585,7 +601,6 @@ export async function untrackRelayTransit(relayChatId, messageId) {
 
 export async function sweepRelayOrphans() {
   const now = Date.now();
-  const { deleteTelegramMessage } = await import('./bot-common.js');
 
   // 1. In-memory map sweep
   for (const [key, item] of inFlightTransits.entries()) {
@@ -620,9 +635,6 @@ export async function deliverViaRelayTunnel(toChatId, dbChannelId, dbMessageId, 
   const relayChatId = await getRelayChatId();
   if (!relayChatId) return { ok: false, reason: 'relay_not_configured' };
 
-  const { copyMessage } = await import('./bot-helpers.js');
-  const { deleteTelegramMessage } = await import('./bot-common.js');
-
   // Step 1: Main Bot copies media from protected DB Channel to the Relay Tunnel
   const transitRes = await botContext.run({ token: getMainToken() }, () =>
     copyMessage(relayChatId, dbChannelId, dbMessageId, false)
@@ -644,7 +656,6 @@ export async function deliverViaRelayTunnel(toChatId, dbChannelId, dbMessageId, 
     await untrackRelayTransit(relayChatId, transitMsgId);
     deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
 
-    const { getCurrentBotId } = await import('./bot-common.js');
     const curBotId = getCurrentBotId();
     if (workerRes?.ok) {
       if (curBotId) reportWorkerSuccess(curBotId);
@@ -674,8 +685,6 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
   const relayChatId = await getRelayChatId();
   if (!relayChatId) return { ok: false, reason: 'relay_not_configured', sentMessageIds: [], healedIndices: [] };
 
-  const { copyMessage } = await import('./bot-helpers.js');
-  const { deleteTelegramMessage } = await import('./bot-common.js');
 
   const sentMessageIds = [];
   const totalCount = msgIds.length;
@@ -783,9 +792,6 @@ export async function benchmarkRelayTunnel() {
     return { ok: false, error: 'Relay Tunnel is not configured. Please set a Relay Chat ID first.' };
   }
 
-  const { sendTelegramMessage, deleteTelegramMessage } = await import('./bot-common.js');
-  const { copyMessage } = await import('./bot-helpers.js');
-
   const workers = await getAllWorkerBots();
   const activeWorker = workers.find(w => w.enabled && w.isAlive !== false);
   if (!activeWorker) {
@@ -850,7 +856,6 @@ export async function benchmarkRelayTunnel() {
     };
   } catch (err) {
     if (probeMsgId) {
-      const { deleteTelegramMessage } = await import('./bot-common.js');
       await deleteTelegramMessage(relayChatId, probeMsgId).catch(() => {});
     }
     return { ok: false, error: err.message };

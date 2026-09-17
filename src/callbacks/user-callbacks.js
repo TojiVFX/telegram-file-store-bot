@@ -1,6 +1,22 @@
-import { getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessage, answerCallbackQuery, getToken, getCurrentBotId } from '../bot-common.js';
-import { getBotUsername, buildStartMenuButtons, buildForceSubscribeGate, formatStartMessage, getMainBotUsername } from '../bot-helpers.js';
-import { generateTempToken, revokeTempToken, listActiveTempTokens, formatDuration } from '../filestore.js';
+import {
+  getCollection, getSettings, getDb, toSmallCaps, esc, editTelegramMessage,
+  answerCallbackQuery, getToken, getCurrentBotId, formatISTDateTime,
+  editTelegramCaption, deleteTelegramMessage, sendTelegramPhoto, sendChatAction,
+  sendTelegramMessage, sendTelegramVideo, sendTelegramDocument
+} from '../bot-common.js';
+import {
+  getBotUsername, buildStartMenuButtons, buildForceSubscribeGate,
+  formatStartMessage, getMainBotUsername, renderPingReport, renderSystemStatus,
+  getUserHelpMessage, copyFromDbChannel, scheduleAutoDelete
+} from '../bot-helpers.js';
+import {
+  generateTempToken, revokeTempToken, listActiveTempTokens, formatDuration,
+  setBulkStoreActive, clearStoreSession, getBundle, incrementAccessCount
+} from '../filestore.js';
+import { getReferralStats, hasPremium } from '../bot-users.js';
+import { getAdminId } from '../auth.js';
+import { verifyCaptchaAnswer, sendCaptchaChallenge } from '../anti-scraper.js';
+import { handleStartPayload, checkRequestCooldown, updateRequestCooldown } from '../commands/start.js';
 
 export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin) {
   if (action === 'save_tip') {
@@ -50,7 +66,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
 
   if (action === 'refresh_ping') {
     await answerCallbackQuery(cq.id, '🏓 Refreshing ping...').catch(() => {});
-    const { renderPingReport } = await import('../bot-helpers.js');
     await renderPingReport(chatId, messageId);
     return;
   }
@@ -61,7 +76,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       return;
     }
     await answerCallbackQuery(cq.id, '🩺 Refreshing status...').catch(() => {});
-    const { renderSystemStatus } = await import('../bot-helpers.js');
     await renderSystemStatus(chatId, messageId);
     return;
   }
@@ -102,7 +116,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const text = `⏳ <b>Temporary Access Token Generated!</b>\n\n` +
       `📁 Target: <code>${esc(genRes.tokenDoc.targetCode)}</code> (${genRes.tokenDoc.targetType})\n` +
       `⏱ Validity: <b>${genRes.durationLabel}</b>\n` +
-      `📅 Expires at: <code>${new Date(genRes.expiresAt).toUTCString()}</code>\n\n` +
+      `📅 Expires at: <code>${formatISTDateTime(genRes.expiresAt)}</code>\n\n` +
       `🔗 <b>Temporary Share Link:</b>\n<code>${shareLink}</code>\n\n` +
       `<i>This link will automatically expire after the validity duration.</i>`;
 
@@ -177,7 +191,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
        return;
     }
 
-    const { getReferralStats, hasPremium } = await import('../bot-users.js');
     const refs = await getReferralStats(chatId);
     const premium = await hasPremium(chatId);
     let premiumText = 'Standard';
@@ -191,7 +204,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\nStatus: <b>${premiumText}</b>\nReferrals: <b>${refs}</b>\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n<i>Share this link to earn Premium access! 3 referrals = 24h Premium.</i>`;
 
     if (cs.bannerProfile) {
-      const { editTelegramCaption, deleteTelegramMessage, sendTelegramPhoto } = await import('../bot-common.js');
       const capRes = await editTelegramCaption(chatId, messageId, text, {
         inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
       });
@@ -207,7 +219,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       });
     }
   } else if (action === 'help') {
-    const { getUserHelpMessage } = await import('../bot-helpers.js');
     const { text, replyMarkup } = getUserHelpMessage(admin);
     await editTelegramMessage(chatId, messageId, text, replyMarkup);
   } else if (action === 'about') {
@@ -234,7 +245,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
                  `Used: <b>${(usedStorage / (1024 * 1024)).toFixed(2)} MB</b> / <b>${(totalStorage / (1024 * 1024)).toFixed(2)} MB</b>\n\n` +
                  `<i>Powering your file sharing experience.</i>`;
 
-    const { getAdminId } = await import('../bot-users.js');
     const adminId = getAdminId();
     const contactUrl = cs?.supportContact || (adminId ? `tg://user?id=${adminId}` : `https://t.me/${botUsername}`);
 
@@ -250,7 +260,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
       await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
       await sessions.deleteOne({ _id: `admin:broadcast_draft:${chatId}` });
-      const { setBulkStoreActive, clearStoreSession } = await import('../filestore.js');
       await setBulkStoreActive(chatId, false);
       await clearStoreSession(chatId);
     }
@@ -261,7 +270,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const styledButtons = await buildStartMenuButtons(admin);
 
     if (s.startPhoto) {
-      const { editTelegramCaption, deleteTelegramMessage, sendTelegramPhoto } = await import('../bot-common.js');
       const capRes = await editTelegramCaption(chatId, messageId, startMsg, { inline_keyboard: styledButtons });
       if (!capRes.ok) {
         await deleteTelegramMessage(chatId, messageId).catch(() => {});
@@ -276,11 +284,9 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const parts = action.split(':');
     const token = parts[1];
     const chosenIndex = parseInt(parts[2], 10);
-    const { verifyCaptchaAnswer, sendCaptchaChallenge } = await import('../anti-scraper.js');
     const verifyRes = await verifyCaptchaAnswer(chatId, token, chosenIndex);
     if (!verifyRes.ok) {
       await answerCallbackQuery(cq.id, '❌ Incorrect! Please solve the new challenge.', true);
-      const { deleteTelegramMessage } = await import('../bot-common.js');
       await deleteTelegramMessage(chatId, messageId).catch(() => {});
       if (verifyRes.originalPayload) {
         await sendCaptchaChallenge(chatId, verifyRes.originalPayload);
@@ -288,9 +294,7 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       return;
     }
     await answerCallbackQuery(cq.id, '✅ Verified! Delivering files...', false);
-    const { deleteTelegramMessage } = await import('../bot-common.js');
     await deleteTelegramMessage(chatId, messageId).catch(() => {});
-    const { handleStartPayload } = await import('../commands/start.js');
     await handleStartPayload(chatId, verifyRes.originalPayload, { from: cq.from }, admin, true);
     return;
   }
@@ -301,7 +305,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const qIndex = parseInt(parts[2], 10);
 
     if (!admin) {
-      const { checkRequestCooldown, updateRequestCooldown } = await import('../commands/start.js');
       const cd = checkRequestCooldown(chatId);
       if (cd.limited) {
         await answerCallbackQuery(cq.id, `⏳ Please wait ${cd.remainingSec}s before downloading another file!`, true);
@@ -310,7 +313,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       updateRequestCooldown(chatId);
     }
 
-    const { getBundle, incrementAccessCount } = await import('../filestore.js');
     const bundle = await getBundle(bundleCode);
     if (!bundle || !bundle.qualities?.[qIndex]) {
       await answerCallbackQuery(cq.id, 'File or quality not found.', true);
@@ -320,13 +322,10 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const q = bundle.qualities[qIndex];
     await answerCallbackQuery(cq.id, `Sending ${q.quality}...`);
 
-    const { sendChatAction } = await import('../bot-common.js');
     sendChatAction(chatId, 'upload_document').catch(() => {});
 
     const s = await getSettings();
     const protect = s?.protectContent === '1';
-    const { copyFromDbChannel, scheduleAutoDelete } = await import('../bot-helpers.js');
-    const { sendTelegramMessage } = await import('../bot-common.js');
 
     let sentMsgId = null;
     let resCopy = await copyFromDbChannel(chatId, bundle.dbChannelId, q.dbMessageId, protect);
@@ -353,13 +352,12 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       sentMsgId = resCopy.messageId;
     } else if (q.fileId) {
       // Triple-layer fallback: direct bot-to-user send via cached file_id
-      const { sendTelegramVideo, sendTelegramDocument } = await import('../bot-common.js');
       const caption = q.fileName ? `<b>${esc(q.fileName)}</b>` : '';
       const resSend = (q.type === 'document')
         ? await sendTelegramDocument(chatId, q.fileId, caption, null, protect)
         : await sendTelegramVideo(chatId, q.fileId, caption, null, protect);
-      if (resSend?.result?.message_id) {
-        sentMsgId = resSend.result.message_id;
+      if (resSend?.messageId) {
+        sentMsgId = resSend.messageId;
       }
     }
 
@@ -378,7 +376,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     const bundleCode = action.split(':').slice(1).join(':');
 
     if (!admin) {
-      const { checkRequestCooldown, updateRequestCooldown } = await import('../commands/start.js');
       const cd = checkRequestCooldown(chatId);
       if (cd.limited) {
         await answerCallbackQuery(cq.id, `⏳ Please wait ${cd.remainingSec}s before downloading another file!`, true);
@@ -387,7 +384,6 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       updateRequestCooldown(chatId);
     }
 
-    const { getBundle, incrementAccessCount } = await import('../filestore.js');
     const bundle = await getBundle(bundleCode);
     if (!bundle || !bundle.qualities?.length) {
       await answerCallbackQuery(cq.id, 'Bundle not found.', true);
@@ -396,12 +392,10 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
 
     await answerCallbackQuery(cq.id, 'Delivering all resolutions...');
 
-    const { sendChatAction } = await import('../bot-common.js');
     sendChatAction(chatId, 'upload_document').catch(() => {});
 
     const s = await getSettings();
     const protect = s?.protectContent === '1';
-    const { copyFromDbChannel, scheduleAutoDelete } = await import('../bot-helpers.js');
 
     const sentIds = [];
     let anyHealed = false;
@@ -421,13 +415,12 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
       if (resCopy?.ok && resCopy?.messageId) {
         sentIds.push(resCopy.messageId);
       } else if (q.fileId) {
-        const { sendTelegramVideo, sendTelegramDocument } = await import('../bot-common.js');
         const caption = q.fileName ? `<b>${esc(q.fileName)}</b>` : '';
         const resSend = (q.type === 'document')
           ? await sendTelegramDocument(chatId, q.fileId, caption, null, protect)
           : await sendTelegramVideo(chatId, q.fileId, caption, null, protect);
-        if (resSend?.result?.message_id) {
-          sentIds.push(resSend.result.message_id);
+        if (resSend?.messageId) {
+          sentIds.push(resSend.messageId);
         }
       }
       await new Promise(r => setTimeout(r, 100));

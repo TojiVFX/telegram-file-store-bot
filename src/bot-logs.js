@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { getCollection, getSettings, sendTelegramMessage, esc } from './bot-common.js';
+import { getCollection, getSettings, sendTelegramMessage, esc, formatISTTime } from './bot-common.js';
 
 // ─── Event Icons & Labels ─────────────────────────────────────────────────────
 export const EVENT_META = {
@@ -216,7 +216,7 @@ export function formatLogEntryTelegram(log, idx = null) {
   const meta = EVENT_META[log.eventType] || { icon: '📝', label: log.eventType };
   const d = new Date(log.timestamp);
   const timeStr = !isNaN(d.getTime())
-    ? d.toTimeString().split(' ')[0] + ' UTC'
+    ? formatISTTime(d, true)
     : 'Recently';
 
   let userTag = '<code>System</code>';
