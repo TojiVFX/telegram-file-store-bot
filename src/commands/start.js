@@ -438,41 +438,39 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       ? b.dbMessageIds.length
       : (b.dbFirstMsgId && b.dbLastMsgId ? b.dbLastMsgId - b.dbFirstMsgId + 1 : 1);
 
-    const summaryText = `📦 <b>Batch Delivery</b>\n\n` +
-      `• Total Files: <b>${totalFiles}</b>\n` +
-      (isAutoDelete ? `• Auto-Delete: <b>In ${timerLabel}</b>\n` : '') +
-      `────────────────────────\n` +
-      `⏳ <i>Delivering files... [▒▒▒▒▒▒▒▒▒▒] 0%</i>`;
-
     const protect = s?.protectContent === '1';
-    const progressMsg = s?.bannerDelivery
-      ? await sendTelegramPhoto(chatId, s.bannerDelivery, summaryText, null, protect)
-      : await sendTelegramMessage(chatId, summaryText, null, protect);
 
-    let lastProgressPct = 0;
+    // ─── Show loading animation while files are prepared ──────────────────────
+    const loadingText = `⏳ <b>Loading ${totalFiles} file(s)...</b>\n\n` +
+      `[▒▒▒▒▒▒▒▒▒▒] Preparing...`;
+    const loadingMsg = s?.bannerDelivery
+      ? await sendTelegramPhoto(chatId, s.bannerDelivery, loadingText, null, protect)
+      : await sendTelegramMessage(chatId, loadingText, null, protect);
+
+    // Animate loading bar while files are staging/delivering behind the scenes
     let lastProgressTime = 0;
-    await deliverBatch(chatId, b, s?.protectContent === '1', payload, async (current, total) => {
+    await deliverBatch(chatId, b, protect, payload, async (current, total, phase) => {
       const now = Date.now();
-      const pct = Math.min(100, Math.round((current / total) * 100));
-      if (pct >= lastProgressPct + 10 || pct === 100 || (now - lastProgressTime >= 1500)) {
-        lastProgressPct = pct;
+      if (now - lastProgressTime >= 1500 || current === total) {
         lastProgressTime = now;
         sendChatAction(chatId, 'upload_document').catch(() => {});
+        const pct = Math.min(100, Math.round((current / total) * 100));
         const filled = Math.round((pct / 100) * 10);
         const bar = '█'.repeat(filled) + '▒'.repeat(10 - filled);
-        if (progressMsg?.messageId) {
-          const updatedSummary = `📦 <b>Batch Delivery</b>\n\n` +
-            `• Total Files: <b>${totalFiles}</b>\n` +
-            (isAutoDelete ? `• Auto-Delete: <b>In ${timerLabel}</b>\n` : '') +
-            `────────────────────────\n` +
-            `⏳ <i>Delivering files... ${bar} ${pct}% (${current}/${total})</i>`;
-          await editTelegramMessage(chatId, progressMsg.messageId, updatedSummary).catch(() => {});
+        const phaseLabel = phase === 'staging' ? 'Preparing files...' : 'Sending...';
+        if (loadingMsg?.messageId) {
+          await editTelegramMessage(chatId, loadingMsg.messageId,
+            `⏳ <b>Loading ${totalFiles} file(s)...</b>\n\n` +
+            `${bar} ${pct}%\n` +
+            `<i>${phaseLabel}</i>`
+          ).catch(() => {});
         }
       }
     });
 
-    if (progressMsg?.messageId) {
-      await deleteTelegramMessage(chatId, progressMsg.messageId).catch(() => {});
+    // ─── Delete loading message after files arrive ────────────────────────────
+    if (loadingMsg?.messageId) {
+      await deleteTelegramMessage(chatId, loadingMsg.messageId).catch(() => {});
     }
     return;
   }

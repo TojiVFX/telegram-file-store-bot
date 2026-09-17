@@ -93,7 +93,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
         if (copyBatchRes?.ok && copyBatchRes.messageIds.length === chunk.length) {
           sentMessageIds.push(...copyBatchRes.messageIds);
           if (typeof onProgress === 'function') {
-            await onProgress(sentMessageIds.length, totalCount).catch(() => {});
+            await onProgress(sentMessageIds.length, totalCount, 'delivering').catch(() => {});
           }
           if (i + CHUNK_SIZE < dbMessageIds.length) {
             await new Promise((r) => setTimeout(r, 500));
@@ -121,7 +121,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
               failedCount++;
             }
             if (typeof onProgress === 'function') {
-              await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+              await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
             }
             if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
           }
@@ -166,7 +166,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
           failedCount++;
         }
         if (typeof onProgress === 'function') {
-          await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+          await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
         }
         if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
       }
@@ -192,7 +192,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
         if (copyBatchRes?.ok && copyBatchRes.messageIds.length === chunk.length) {
           sentMessageIds.push(...copyBatchRes.messageIds);
           if (typeof onProgress === 'function') {
-            await onProgress(sentMessageIds.length, totalCount).catch(() => {});
+            await onProgress(sentMessageIds.length, totalCount, 'delivering').catch(() => {});
           }
           if (i + CHUNK_SIZE < rangeIds.length) {
             await new Promise((r) => setTimeout(r, 500));
@@ -208,7 +208,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
               failedCount++;
             }
             if (typeof onProgress === 'function') {
-              await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+              await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
             }
             if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
           }
@@ -226,7 +226,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
           failedCount++;
         }
         if (typeof onProgress === 'function') {
-          await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+          await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
         }
         if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
       }
