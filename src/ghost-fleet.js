@@ -665,6 +665,70 @@ export async function sweepRelayOrphans() {
 setInterval(sweepRelayOrphans, 2 * 60 * 1000).unref?.();
 
 /**
+ * Autonomous Ghost Fleet Heartbeat:
+ * Proactively verifies all active worker bots every 15 minutes.
+ * If any worker bot has been banned or revoked by Telegram, it autonomously
+ * drops the dead node and hot-swaps an idle Standby Worker into active rotation,
+ * preventing users from encountering broken dispatch links.
+ */
+export async function runGhostFleetHeartbeat() {
+  try {
+    const active = await isGhostFleetEnabled();
+    if (!active) return;
+
+    const all = await getAllWorkerBots();
+    const activeWorkers = all.filter(w => w.role !== 'standby' && w.enabled && w.circuitState !== 'BANNED');
+
+    for (const w of activeWorkers) {
+      const v = await verifyWorkerBot(w.token);
+      if (!v.ok) {
+        const isBanned = String(v.reason || '').toLowerCase().includes('deactivated') ||
+                         String(v.reason || '').toLowerCase().includes('terminated') ||
+                         String(v.reason || '').toLowerCase().includes('revoked') ||
+                         String(v.reason || '').toLowerCase().includes('unauthorized');
+
+        log('warn', `Ghost Fleet Heartbeat: Active Worker Bot ${w.botId} (@${w.username || 'unknown'}) failed probe`, { reason: v.reason, isBanned });
+
+        workerBotsCache.set(w.botId, {
+          ...w,
+          circuitState: isBanned ? 'BANNED' : 'OFFLINE',
+          isAlive: false,
+          lastChecked: Date.now(),
+          error: v.reason
+        });
+
+        const coll = await getCollection('worker_bots');
+        await coll.updateOne(
+          { botId: w.botId },
+          { $set: { circuitState: isBanned ? 'BANNED' : 'OFFLINE', isAlive: false, lastChecked: new Date(), error: v.reason } }
+        ).catch(() => {});
+
+        // Proactively hot-swap standby reserve worker to take over
+        const swapRes = await hotSwapStandbyWorker();
+
+        // Alert administrators immediately
+        try {
+          const adminIds = getAdminIds();
+          const alertMsg = `🛡️ <b>Ghost Fleet Autonomous Heartbeat Alert</b>\n\n` +
+            `Active Worker Bot <b>@${esc(w.username || w.botId)}</b> failed Telegram API health probe: <i>${esc(v.reason)}</i>.\n\n` +
+            (swapRes?.ok
+              ? `✅ <b>Hot-Swap Successful:</b> Standby Worker <b>@${esc(swapRes.worker?.username || swapRes.worker?.botId)}</b> has been automatically promoted to active delivery rotation!`
+              : `⚠️ <b>No Standby Available:</b> Please add a new worker bot in <b>/setting > Ghost Fleet</b>.`);
+
+          for (const aid of adminIds) {
+            await sendTelegramMessage(aid, alertMsg).catch(() => {});
+          }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    log('warn', 'runGhostFleetHeartbeat error', { error: err.message });
+  }
+}
+
+setInterval(runGhostFleetHeartbeat, 15 * 60 * 1000).unref?.();
+
+/**
  * Executes an Air-Gapped media delivery through the Relay Tunnel:
  * 1. Main Bot (with DB channel permissions) copies media into Relay Tunnel.
  * 2. Worker Bot (with worker token) copies media from Relay Tunnel to User.

@@ -95,6 +95,20 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     }
   }
 
+  if (action.startsWith('resend:')) {
+    const targetCode = action.replace(/^resend:/, '').trim();
+    if (!targetCode) return;
+
+    const cd = checkRequestCooldown(chatId);
+    if (cd.limited && !admin) {
+      await answerCallbackQuery(cq.id, `⏳ Please wait ${cd.remainingSec}s before requesting again.`, true).catch(() => {});
+      return;
+    }
+
+    await answerCallbackQuery(cq.id, '♻️ Delivering files again...').catch(() => {});
+    return handleStartPayload(chatId, targetCode, { from }, admin, false);
+  }
+
   if (action.startsWith('gen_temp:')) {
     const parts = action.split(':');
     const targetCode = parts[1];

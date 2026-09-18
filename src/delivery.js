@@ -376,7 +376,8 @@ export async function scheduleAutoDelete(chatId, messageIds, fileOrBatchCode = n
           const reGetUrl = `https://t.me/${botUsername}?start=${fileOrBatchCode}`;
           const kb = {
             inline_keyboard: [
-              [{ text: toSmallCaps('Get File Again'), url: reGetUrl }]
+              [{ text: toSmallCaps('♻️ Re-send Files'), callback_data: `user:resend:${fileOrBatchCode}` }],
+              [{ text: toSmallCaps('Open in Main Bot'), url: reGetUrl }]
             ]
           };
           if (sponsorBtn) kb.inline_keyboard.push([sponsorBtn]);
@@ -450,7 +451,8 @@ export async function processDueAutoDeletes() {
             const sponsorBtn = await getSponsorButton();
             const kb = {
               inline_keyboard: [
-                [{ text: toSmallCaps('Get File Again'), url: reGetUrl }]
+                [{ text: toSmallCaps('♻️ Re-send Files'), callback_data: `user:resend:${doc.fileOrBatchCode}` }],
+                [{ text: toSmallCaps('Open in Main Bot'), url: reGetUrl }]
               ]
             };
             if (sponsorBtn) kb.inline_keyboard.push([sponsorBtn]);
