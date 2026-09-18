@@ -4,6 +4,7 @@ import {
 } from '../../bot-common.js';
 import { getStandbyChannelId } from '../../phoenix-protocol.js';
 import { sendDatabaseBackup } from '../../backup.js';
+import { grantPremium, revokePremium } from '../../bot-users.js';
 import { navButtons } from './common.js';
 
 export async function renderSecHub(chatId, messageId = null) {
@@ -239,7 +240,7 @@ export const settingsSecurityActions = {
   },
 
   'fs_set_premium:': async ({ chatId, messageId, action, cq, safeAnswer, sessions }) => {
-    const days = parseInt(action.split(':')[1], 10);
+    const rawVal = action.split(':')[1];
     const targetDoc = await sessions.findOne({ _id: `admin:premium_target:${chatId}` });
     const targetUserId = targetDoc && targetDoc.expiresAt > new Date() ? targetDoc.val : null;
     if (!targetUserId) {
@@ -247,20 +248,34 @@ export const settingsSecurityActions = {
       return;
     }
 
-    const ttlSeconds = days * 24 * 3600;
-    const premiumUntil = new Date(Date.now() + ttlSeconds * 1000);
-    const users = await getCollection('users');
-    await users.updateOne(
-      { _id: String(targetUserId) },
-      { $set: { premiumUntil } },
-      { upsert: true }
-    );
-
     await sessions.deleteOne({ _id: `admin:premium_target:${chatId}` });
     await sessions.deleteOne({ _id: `admin:premium_msg_id:${chatId}` });
-    await editTelegramMessage(chatId, messageId, `<b>Premium Access Granted!</b>\n\nUser: <code>${targetUserId}</code>\nDuration: <b>${days} days</b>`, {
+
+    if (rawVal === 'revoke') {
+      const revRes = await revokePremium(targetUserId);
+      if (revRes.ok) {
+        await editTelegramMessage(chatId, messageId, `✅ <b>VIP Access Revoked!</b>\n\nUser: <code>${targetUserId}</code>`, {
+          inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
+        });
+      } else {
+        await editTelegramMessage(chatId, messageId, `❌ <b>Failed to revoke VIP:</b> ${revRes.error}`, {
+          inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
+        });
+      }
+      return;
+    }
+
+    const grantRes = await grantPremium(targetUserId, rawVal);
+    if (!grantRes.ok) {
+      await editTelegramMessage(chatId, messageId, `❌ <b>Failed to grant VIP:</b> ${grantRes.error}`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
+      });
+      return;
+    }
+
+    const durLabel = rawVal === 'lifetime' ? 'Lifetime ♾️' : `${rawVal} Days`;
+    await editTelegramMessage(chatId, messageId, `⭐ <b>VIP Access Granted!</b>\n\n• User: <code>${targetUserId}</code>\n• Duration: <b>${durLabel}</b>\n• Expiry: <code>${grantRes.isLifetime ? 'Lifetime' : grantRes.premiumUntil.toISOString().slice(0, 10)}</code>`, {
       inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
     });
-    await sendTelegramMessage(targetUserId, `<b>Congratulations!</b>\n\nYou have been granted <b>Premium Access</b> for <b>${days} days</b>.`);
   }
 };

@@ -2,7 +2,7 @@ import {
   getSettings, updateSettings, toSmallCaps, editTelegramMessage,
   esc, logHistory
 } from '../../bot-common.js';
-import { getForceSubChannelsList } from '../../force-subscribe.js';
+import { getForceSubChannelsList, testAllForceSubChannels, getChannelHealth } from '../../force-subscribe.js';
 import { isBotAdmin } from '../../channel-helpers.js';
 import { getVerificationStats } from '../../filestore.js';
 
@@ -25,17 +25,31 @@ export async function renderFsCfg(chatId, messageId, cfgType) {
     const globalMode = s.forceSubscribeMode || 'normal';
     const channels = getForceSubChannelsList(fsub, globalMode);
 
-    text = `<b><u>Force Sub</u></b>\n\nUsers can only use your main bot after joining all force sub channels.\nmain bot now also supports join request mode.\n\nYou can add up to 6 channels`;
+    text = `<b><u>Force Subscribe & Auto-Failover</u></b>\n\n` +
+      `Configure mandatory channels and reserve backup channels.\n` +
+      `🛡️ <b>Auto-Failover:</b> If a primary channel is banned or inaccessible, the bot automatically switches to your backup channel without locking users out!\n\n` +
+      `• Primary (Required): <b>${channels.filter(c => c.role !== 'backup').length}</b>\n` +
+      `• Reserve Backups: <b>${channels.filter(c => c.role === 'backup').length}</b>\n\n` +
+      `<i>Tap a channel's Role button to switch between Primary and Backup.</i>`;
 
     buttons = [];
     for (let i = 0; i < channels.length; i++) {
       const chan = channels[i];
+      const health = getChannelHealth(chan.id);
       let displayName = chan.title || 'Channel';
       if (displayName.startsWith('-100')) {
         displayName = 'Channel ' + displayName.replace('-100', '');
       }
+      const roleBadge = chan.role === 'backup' ? '🛡️ [BACKUP]' : '🟢 [PRIMARY]';
+      const healthBadge = health.isHealthy ? '' : ' ⚠️ (Degraded)';
+      const modeLabel = chan.mode === 'join_request' ? 'Join Req' : 'Normal';
+
       buttons.push([
-        { text: toSmallCaps(displayName), callback_data: `admin:fs_fsub_toggle:${i}` },
+        { text: toSmallCaps(`${roleBadge} ${displayName}${healthBadge}`), callback_data: `admin:fs_fsub_toggle:${i}` }
+      ]);
+      buttons.push([
+        { text: toSmallCaps(`Role: ${chan.role === 'backup' ? 'Backup' : 'Primary'}`), callback_data: `admin:fs_fsub_role:${i}` },
+        { text: toSmallCaps(`Mode: ${modeLabel}`), callback_data: `admin:fs_fsub_toggle:${i}` },
         { text: toSmallCaps('Edit Label'), callback_data: `admin:fs_fsub_setlbl:${i}` },
         { text: toSmallCaps('Delete'), callback_data: `admin:fs_fsub_del:${i}` }
       ]);
@@ -48,7 +62,7 @@ export async function renderFsCfg(chatId, messageId, cfgType) {
     buttons.push([{ text: toSmallCaps('Bulk Setup'), callback_data: `admin:fs_fsub_bulk` }]);
 
     buttons.push([
-      { text: toSmallCaps('Check Status'), callback_data: `admin:fs_fsub_status` },
+      { text: toSmallCaps('🧪 Test All Channels'), callback_data: `admin:fs_fsub_test_all` },
       { text: toSmallCaps('Custom Message'), callback_data: `admin:fs_set_fsub_msg` }
     ]);
     buttons.push([{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]);
@@ -162,6 +176,47 @@ export const forceSubActions = {
       await safeAnswer(cq.id, `Mode toggled to ${channels[index].mode === 'join_request' ? 'Join Request' : 'Normal'} Mode!`);
     }
     await renderFsCfg(chatId, messageId, 'fsub');
+  },
+  'fs_fsub_role:': async ({ chatId, messageId, action, safeAnswer, cq }) => {
+    const index = parseInt(action.split(':')[1], 10);
+    const s = await getSettings();
+    const fsub = s.forceSubscribeChannels || '';
+    const globalMode = s.forceSubscribeMode || 'normal';
+    const channels = getForceSubChannelsList(fsub, globalMode);
+    if (channels[index]) {
+      channels[index].role = channels[index].role === 'backup' ? 'primary' : 'backup';
+      await updateSettings({ forceSubscribeChannels: JSON.stringify(channels) });
+      await safeAnswer(cq.id, `Role changed to ${channels[index].role.toUpperCase()}!`);
+    }
+    await renderFsCfg(chatId, messageId, 'fsub');
+  },
+  fs_fsub_test_all: async ({ chatId, messageId }) => {
+    await editTelegramMessage(chatId, messageId, `⏳ <b>Testing all channels & invite link creation...</b>\n\nPlease wait a moment.`);
+    const report = await testAllForceSubChannels();
+    let text = `🧪 <b>Force-Sub Channel Diagnostics & Failover Status</b>\n\n`;
+    if (!report.channels.length) {
+      text += `<i>No force subscribe channels configured.</i>`;
+    } else {
+      for (const c of report.channels) {
+        const icon = c.isHealthy ? '🟢' : '🔴';
+        const role = c.role === 'backup' ? '[BACKUP]' : '[PRIMARY]';
+        text += `• ${icon} <b>${esc(c.title)}</b> ${role}\n` +
+          `  ID: <code>${c.id}</code>\n` +
+          `  Mode: <code>${c.mode}</code>\n` +
+          `  Status: <b>${c.isHealthy ? 'Healthy (Invite Link Active)' : `Degraded (${esc(c.error)})`}</b>\n\n`;
+      }
+      if (report.allHealthy) {
+        text += `✅ <b>All channels are fully operational with active bot admin rights!</b>`;
+      } else {
+        text += `⚠️ <b>One or more channels are degraded!</b> Auto-failover will route users to backup channels or bypass broken channels to keep your bot accessible.`;
+      }
+    }
+    await editTelegramMessage(chatId, messageId, text, {
+      inline_keyboard: [
+        [{ text: toSmallCaps('🔄 Re-Test Channels'), callback_data: 'admin:fs_fsub_test_all' }],
+        [{ text: toSmallCaps('Back to Force Sub'), callback_data: 'admin:fs_cfg:fsub' }]
+      ]
+    });
   },
   'fs_fsub_del:': async ({ chatId, messageId, action, safeAnswer, cq }) => {
     const index = parseInt(action.split(':')[1], 10);

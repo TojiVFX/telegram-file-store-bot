@@ -4,6 +4,7 @@ import { closeDb } from './bot-common.js';
 import { registerWebhook, startAutoDeleteWorker, startDailyBackupWorker } from './bot-helpers.js';
 import { registerAllWorkerWebhooks } from './ghost-fleet.js';
 import { startMemoryRecycler } from './memory-cleaner.js';
+import { startAutomatedDbAuditorWorker } from './filestore.js';
 import './phoenix-protocol.js';
 
 const envCheck = validateEnv();
@@ -20,6 +21,7 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   startAutoDeleteWorker();
   startDailyBackupWorker();
   startMemoryRecycler();
+  startAutomatedDbAuditorWorker();
 
   // Auto-register Telegram webhook if BOT_DOMAIN and TELEGRAM_BOT_TOKEN are configured
   let domain = (process.env.BOT_DOMAIN || '').trim()

@@ -8,7 +8,7 @@ import {
 import { verifyTelegramWebhook } from '../auth.js';
 import { validateEnv } from '../env-validator.js';
 import {
-  isBanned, isAdmin, upsertUser, getAdminId
+  isBanned, isAdmin, upsertUser, getAdminId, hasPremium
 } from '../bot-users.js';
 import { logActivity } from '../bot-logs.js';
 import { handleUserCallback } from '../callbacks/user-callbacks.js';
@@ -191,10 +191,13 @@ async function handleUpdate(req) {
     if (data.startsWith('sub_check:')) {
       const payload = data.slice('sub_check:'.length);
       invalidateFsubCache(chatId);
-      const sub = await checkSubscription(chatId, chatId);
-      if (!sub.ok) {
-        await answerCallbackQuery(cbId, "❌ You still haven't joined all the required channels.", true);
-        return;
+      const isVip = await hasPremium(chatId);
+      if (!admin && !isVip) {
+        const sub = await checkSubscription(chatId, chatId);
+        if (!sub.ok) {
+          await answerCallbackQuery(cbId, "❌ You still haven't joined all the required channels.", true);
+          return;
+        }
       }
 
       await answerCallbackQuery(cbId, '✅ Verified!');

@@ -2,12 +2,13 @@ import { randomInt } from 'crypto';
 import {
   getCollection, getSettings, log, isSafePublicUrl,
   sendTelegramDocument, sendTelegramVideo, sendTelegramAudio, sendTelegramPhoto,
-  esc, botContext, getMainToken, formatISTDateTime, getISTDateString,
+  sendTelegramMessage, esc, botContext, getMainToken, formatISTDateTime, getISTDateString,
   deleteTelegramMessages, deleteTelegramMessage
 } from './bot-common.js';
 import { logActivity, clearOldLogs } from './bot-logs.js';
-import { checkChannelMessageExists } from './channel-helpers.js';
+import { checkChannelMessageExists, getDbChannelId, getBackupDbChannelId } from './channel-helpers.js';
 import { copyIntoDbChannel } from './delivery.js';
+import { getAdminId } from './auth.js';
 
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
@@ -751,6 +752,214 @@ export async function scanAndRepairBrokenLinks(primaryChannelId, backupChannelId
     healed,
     unrecoverable
   };
+}
+
+export async function runAutomatedDbAudit(options = {}) {
+  const { batchSize = 50, fullScan = false, notifyAdmin = true } = options;
+  const primaryChannelId = await getDbChannelId();
+  const backupChannelId = await getBackupDbChannelId();
+
+  if (!primaryChannelId) {
+    return { ok: false, error: 'Primary DB Channel is not configured' };
+  }
+
+  const files = await getCollection('files');
+  const sessions = await getCollection('sessions');
+  const dbAudits = await getCollection('db_audits');
+
+  let query = {};
+  if (!fullScan) {
+    const cursorDoc = await sessions.findOne({ _id: 'auditor:last_scanned_id' });
+    if (cursorDoc && cursorDoc.val) {
+      query = { _id: { $gt: cursorDoc.val } };
+    }
+  }
+
+  let records = await files.find(query).sort({ _id: 1 }).limit(batchSize).toArray();
+
+  if (records.length === 0 && !fullScan) {
+    await sessions.deleteOne({ _id: 'auditor:last_scanned_id' });
+    records = await files.find({}).sort({ _id: 1 }).limit(batchSize).toArray();
+  }
+
+  if (records.length === 0) {
+    return { ok: true, totalScanned: 0, healthy: 0, healed: 0, unrecoverable: 0, deadItems: [] };
+  }
+
+  const lastId = records[records.length - 1]._id;
+  await sessions.updateOne(
+    { _id: 'auditor:last_scanned_id' },
+    { $set: { val: lastId, updatedAt: new Date() } },
+    { upsert: true }
+  );
+
+  let healthy = 0;
+  let healed = 0;
+  let unrecoverable = 0;
+  const deadItems = [];
+
+  for (const item of records) {
+    try {
+      if (item.type === 'batch') {
+        if (Array.isArray(item.dbMessageIds) && item.dbMessageIds.length) {
+          let batchModified = false;
+          const newDbIds = [...item.dbMessageIds];
+          let allHealthy = true;
+
+          for (let j = 0; j < item.dbMessageIds.length; j++) {
+            const pMsgId = item.dbMessageIds[j];
+            const status = await checkChannelMessageExists(primaryChannelId, pMsgId);
+            if (!status.alive) {
+              allHealthy = false;
+              const bMsgId = item.backupDbMessageIds?.[j];
+              if (backupChannelId && bMsgId) {
+                const bStatus = await checkChannelMessageExists(backupChannelId, bMsgId);
+                if (bStatus.alive) {
+                  const copyRes = await copyIntoDbChannel(primaryChannelId, backupChannelId, bMsgId);
+                  if (copyRes?.ok && copyRes?.messageId) {
+                    newDbIds[j] = copyRes.messageId;
+                    batchModified = true;
+                  }
+                }
+              }
+            }
+            await new Promise(r => setTimeout(r, 40));
+          }
+
+          if (batchModified) {
+            await files.updateOne({ _id: item._id }, { $set: { dbMessageIds: newDbIds } });
+            healed++;
+          } else if (allHealthy) {
+            healthy++;
+          } else {
+            unrecoverable++;
+            deadItems.push({ code: item._id, title: item.title || item.caption || 'Batch', reason: 'Missing messages in primary channel with no backup available' });
+          }
+        }
+      } else if (item.type === 'bundle') {
+        if (Array.isArray(item.qualities) && item.qualities.length) {
+          let bundleModified = false;
+          const newQualities = [...item.qualities];
+          let allHealthy = true;
+
+          for (let j = 0; j < item.qualities.length; j++) {
+            const q = item.qualities[j];
+            const status = await checkChannelMessageExists(primaryChannelId, q.dbMessageId);
+            if (!status.alive) {
+              allHealthy = false;
+              const bMsgId = q.backupDbMessageId;
+              const bChannel = q.backupDbChannelId || item.backupDbChannelId || backupChannelId;
+              if (bChannel && bMsgId) {
+                const bStatus = await checkChannelMessageExists(bChannel, bMsgId);
+                if (bStatus.alive) {
+                  const copyRes = await copyIntoDbChannel(primaryChannelId, bChannel, bMsgId);
+                  if (copyRes?.ok && copyRes?.messageId) {
+                    newQualities[j] = { ...q, dbMessageId: copyRes.messageId };
+                    bundleModified = true;
+                  }
+                }
+              }
+            }
+            await new Promise(r => setTimeout(r, 40));
+          }
+
+          if (bundleModified) {
+            await files.updateOne({ _id: item._id }, { $set: { qualities: newQualities } });
+            healed++;
+          } else if (allHealthy) {
+            healthy++;
+          } else {
+            unrecoverable++;
+            deadItems.push({ code: item._id, title: item.title || 'Bundle', reason: 'Missing quality posts in primary channel with no backup' });
+          }
+        }
+      } else if (item.dbMessageId) {
+        const status = await checkChannelMessageExists(primaryChannelId, item.dbMessageId);
+        if (status.alive) {
+          healthy++;
+        } else {
+          const bMsgId = item.backupDbMessageId;
+          const bChannel = item.backupDbChannelId || backupChannelId;
+          let recovered = false;
+          if (bChannel && bMsgId) {
+            const bStatus = await checkChannelMessageExists(bChannel, bMsgId);
+            if (bStatus.alive) {
+              const copyRes = await copyIntoDbChannel(primaryChannelId, bChannel, bMsgId);
+              if (copyRes?.ok && copyRes?.messageId) {
+                await files.updateOne({ _id: item._id }, { $set: { dbMessageId: copyRes.messageId } });
+                healed++;
+                recovered = true;
+              }
+            }
+          }
+          if (!recovered) {
+            unrecoverable++;
+            deadItems.push({ code: item._id, title: item.title || item.fileName || 'File', reason: 'Deleted from primary channel and not found in backup' });
+          }
+        }
+        await new Promise(r => setTimeout(r, 40));
+      }
+    } catch (err) {
+      log('error', 'runAutomatedDbAudit record error', { code: item._id, errorMessage: err.message });
+    }
+  }
+
+  const report = {
+    scannedAt: new Date(),
+    totalScanned: records.length,
+    healthy,
+    healed,
+    unrecoverable,
+    deadItems: deadItems.slice(0, 10),
+    primaryChannelId,
+    backupChannelId: backupChannelId || null
+  };
+
+  await dbAudits.insertOne(report);
+
+  if (unrecoverable > 0 && notifyAdmin) {
+    const adminId = getAdminId();
+    if (adminId) {
+      let alertMsg = `⚠️ <b>Database Auditor Alert: Dead Links Detected!</b>\n\n` +
+        `• Records Scanned: <b>${records.length}</b>\n` +
+        `• Healthy: <b>${healthy}</b>\n` +
+        `• Auto-Healed: <b>${healed}</b>\n` +
+        `• <b>Dead / Missing:</b> <b>${unrecoverable}</b>\n\n` +
+        `<b>Affected Files/Batches:</b>\n`;
+      for (const d of deadItems.slice(0, 5)) {
+        alertMsg += `• <code>${d.code}</code> (${esc(d.title)}) — <i>${esc(d.reason)}</i>\n`;
+      }
+      if (deadItems.length > 5) {
+        alertMsg += `<i>...and ${deadItems.length - 5} more.</i>\n`;
+      }
+      alertMsg += `\n<i>Tip: Configure a Backup DB Channel or run /rebuildchannel to recover missing files.</i>`;
+      await sendTelegramMessage(adminId, alertMsg).catch(() => {});
+    }
+  }
+
+  return { ok: true, ...report };
+}
+
+export async function getLatestDbAuditReport() {
+  try {
+    const dbAudits = await getCollection('db_audits');
+    return await dbAudits.findOne({}, { sort: { scannedAt: -1 } });
+  } catch {
+    return null;
+  }
+}
+
+let dbAuditorWorkerRunning = false;
+export function startAutomatedDbAuditorWorker(intervalMs = 6 * 3600 * 1000) {
+  if (dbAuditorWorkerRunning) return;
+  dbAuditorWorkerRunning = true;
+  setTimeout(() => {
+    runAutomatedDbAudit({ batchSize: 50, notifyAdmin: true }).catch(() => {});
+  }, 2 * 60 * 1000);
+
+  setInterval(() => {
+    runAutomatedDbAudit({ batchSize: 50, notifyAdmin: true }).catch(() => {});
+  }, intervalMs).unref?.();
 }
 
 export async function runWeeklyCleanup() {

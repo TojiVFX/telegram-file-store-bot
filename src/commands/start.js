@@ -110,8 +110,9 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
     }
   }
 
-  // 1. Force Subscribe Check (skip if admin)
-  if (!admin) {
+  // 1. Force Subscribe Check (skip if admin or premium)
+  const isVip = await hasPremium(chatId);
+  if (!admin && !isVip) {
     const sub = await checkSubscription(chatId, chatId);
     if (!sub.ok) {
       const s = await getSettings();
@@ -229,7 +230,7 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
     }
 
     // Check if user has premium
-    const premium = await hasPremium(chatId);
+    const premium = isVip || await hasPremium(chatId);
 
     if (premium) {
       await sendTelegramMessage(chatId, `✨ <b>You are free like a bird!</b> Premium access is active.`);

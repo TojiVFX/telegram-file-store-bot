@@ -1208,9 +1208,9 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     const msgId = pmDoc && pmDoc.expiresAt > new Date() ? pmDoc.val : null;
     const durationKb = {
       inline_keyboard: [
-        [{ text: toSmallCaps('7 Days'), callback_data: 'admin:fs_set_premium:7' }, { text: toSmallCaps('30 Days'), callback_data: 'admin:fs_set_premium:30' }],
-        [{ text: toSmallCaps('365 Days'), callback_data: 'admin:fs_set_premium:365' }],
-        [{ text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
+        [{ text: toSmallCaps('1 Day'), callback_data: 'admin:fs_set_premium:1' }, { text: toSmallCaps('7 Days'), callback_data: 'admin:fs_set_premium:7' }, { text: toSmallCaps('30 Days'), callback_data: 'admin:fs_set_premium:30' }],
+        [{ text: toSmallCaps('90 Days'), callback_data: 'admin:fs_set_premium:90' }, { text: toSmallCaps('365 Days'), callback_data: 'admin:fs_set_premium:365' }, { text: toSmallCaps('♾️ Lifetime'), callback_data: 'admin:fs_set_premium:lifetime' }],
+        [{ text: toSmallCaps('❌ Revoke VIP'), callback_data: 'admin:fs_set_premium:revoke' }, { text: toSmallCaps('Cancel'), callback_data: 'admin:cancel_session' }]
       ]
     };
 

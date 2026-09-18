@@ -1,8 +1,8 @@
 import {
-  toSmallCaps, editTelegramMessage, sendTelegramMessage, esc, updateSettings
+  toSmallCaps, editTelegramMessage, sendTelegramMessage, esc, updateSettings, formatISTDateTime
 } from '../../bot-common.js';
 import { getDbChannelId, getBackupDbChannelId, getChannelDisplayDetails } from '../../channel-helpers.js';
-import { getStorageAuditStats, runRetroactiveMirror, scanAndRepairBrokenLinks } from '../../filestore.js';
+import { getStorageAuditStats, runRetroactiveMirror, scanAndRepairBrokenLinks, getLatestDbAuditReport, runAutomatedDbAudit } from '../../filestore.js';
 import { getStandbyChannelId } from '../../phoenix-protocol.js';
 import { navButtons } from './common.js';
 
@@ -16,6 +16,7 @@ export async function renderStorageAudit(chatId, messageId = null) {
   const standbyInfo = standbyCid ? await getChannelDisplayDetails(standbyCid) : null;
 
   const stats = await getStorageAuditStats();
+  const latestAudit = await getLatestDbAuditReport();
   const redundancyPct = stats.total > 0 ? Math.round((stats.mirrored / stats.total) * 100) : 100;
   const cdnPct = stats.total > 0 ? Math.round(((stats.cachedFileIds || 0) / stats.total) * 100) : 100;
 
@@ -64,7 +65,12 @@ export async function renderStorageAudit(chatId, messageId = null) {
     `• Mirrored in Backup: <b>${stats.mirrored}</b>\n` +
     `• Unmirrored Records: <b>${stats.unmirrored}</b>\n` +
     `• Cloud CDN Redundancy: <b>${stats.cachedFileIds || 0}/${stats.total} (${cdnPct}%)</b>\n` +
-    `• Channel Failover Coverage: <b>${redundancyPct}%</b>\n\n`;
+    `• Channel Failover Coverage: <b>${redundancyPct}%</b>\n\n` +
+    `🩺 <b>Automated Link Integrity & Self-Healing:</b>\n` +
+    `• Last Auditor Scan: <b>${latestAudit ? formatISTDateTime(latestAudit.scannedAt) : 'Never run'}</b>\n` +
+    `• Records Inspected: <b>${latestAudit?.totalScanned || 0}</b>\n` +
+    `• Healthy: <b>${latestAudit?.healthy || 0}</b> | Auto-Healed: <b>${latestAudit?.healed || 0}</b>\n` +
+    `• Dead / Missing: <b>${latestAudit?.unrecoverable || 0}</b>\n\n`;
 
   if (!backupCid) {
     text += `<i>💡 Tip: Set a backup channel to automatically duplicate all stored files and prevent link breakage if your primary channel is struck or banned.</i>`;
@@ -91,6 +97,10 @@ export async function renderStorageAudit(chatId, messageId = null) {
 
   buttons.push([
     { text: toSmallCaps(standbyCid ? '🔥 Change Phoenix Standby' : '🔥 Set Phoenix Standby'), callback_data: 'admin:set_standby_prompt' }
+  ]);
+
+  buttons.push([
+    { text: toSmallCaps('🩺 Run Deep DB Audit Now'), callback_data: 'admin:run_deep_audit' }
   ]);
 
   if (!backupCid) {
@@ -224,6 +234,21 @@ export const storageAuditActions = {
 
     const report = await scanAndRepairBrokenLinks(primaryCid, backupCid, 50);
     await safeAnswer(cq.id, `Healthy: ${report.healthy}, Healed: ${report.healed}, Dead: ${report.unrecoverable}`, true);
+    await renderStorageAudit(chatId, messageId);
+  },
+  run_deep_audit: async ({ chatId, messageId, safeAnswer, cq }) => {
+    const primaryCid = await getDbChannelId();
+    if (!primaryCid) {
+      await safeAnswer(cq.id, 'Primary DB Channel not configured!', true);
+      return;
+    }
+    await editTelegramMessage(chatId, messageId, `🩺 <b>Running Deep Database & Link Integrity Audit...</b>\n\nTesting stored records against primary channel and self-healing from backup...`);
+    const res = await runAutomatedDbAudit({ batchSize: 100, fullScan: true, notifyAdmin: false });
+    if (!res.ok) {
+      await safeAnswer(cq.id, `Audit failed: ${res.error}`, true);
+    } else {
+      await safeAnswer(cq.id, `Audit Complete! Inspected: ${res.totalScanned}, Healthy: ${res.healthy}, Healed: ${res.healed}, Dead: ${res.unrecoverable}`, true);
+    }
     await renderStorageAudit(chatId, messageId);
   }
 };

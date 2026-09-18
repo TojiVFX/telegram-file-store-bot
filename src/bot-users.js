@@ -261,8 +261,12 @@ export async function getUserProfile(identifier) {
   if (user.premiumUntil) {
     const premMs = new Date(user.premiumUntil).getTime();
     if (premMs > now) {
-      const days = Math.ceil((premMs - now) / (86400 * 1000));
-      premiumStatus = `Active (${days} day${days === 1 ? '' : 's'} left)`;
+      if (premMs > new Date('9900-01-01').getTime()) {
+        premiumStatus = 'Active (Lifetime ♾️)';
+      } else {
+        const days = Math.ceil((premMs - now) / (86400 * 1000));
+        premiumStatus = `Active (${days} day${days === 1 ? '' : 's'} left)`;
+      }
     }
   }
 
@@ -655,3 +659,148 @@ export async function hasPremium(userId) {
     return false;
   }
 }
+
+export async function grantPremium(targetUserId, duration = 30, reason = 'Admin Grant') {
+  try {
+    const users = await getCollection('users');
+    let u = await users.findOne({ _id: String(targetUserId) });
+    if (!u) {
+      const cleanUsername = String(targetUserId).replace(/^@/, '');
+      u = await users.findOne({ username: new RegExp(`^${cleanUsername}$`, 'i') });
+    }
+    if (!u) {
+      if (/^\d+$/.test(String(targetUserId))) {
+        await users.updateOne(
+          { _id: String(targetUserId) },
+          { $setOnInsert: { joinedAt: new Date(), lastSeen: new Date() } },
+          { upsert: true }
+        );
+        u = { _id: String(targetUserId) };
+      } else {
+        return { ok: false, error: 'User not found. They must start the bot first.' };
+      }
+    }
+
+    const userId = u._id;
+    const isLifetime = String(duration).toLowerCase() === 'lifetime' || duration === 'forever' || duration >= 36500;
+    const now = Date.now();
+    let newPremiumUntil;
+
+    if (isLifetime) {
+      newPremiumUntil = new Date('9999-12-31T23:59:59Z');
+    } else {
+      const days = parseInt(duration, 10) || 30;
+      const curUntil = u.premiumUntil ? new Date(u.premiumUntil).getTime() : 0;
+      if (curUntil > now && curUntil < new Date('9900-01-01').getTime()) {
+        newPremiumUntil = new Date(curUntil + days * 86400 * 1000);
+      } else {
+        newPremiumUntil = new Date(now + days * 86400 * 1000);
+      }
+    }
+
+    await users.updateOne(
+      { _id: String(userId) },
+      {
+        $set: {
+          premiumUntil: newPremiumUntil,
+          premiumPlan: isLifetime ? 'Lifetime' : `${duration} Days`,
+          premiumGrantedAt: new Date(),
+          premiumReason: reason
+        }
+      }
+    );
+
+    const durText = isLifetime ? 'Lifetime ♾️' : `${duration} Days`;
+    await sendTelegramMessage(
+      userId,
+      `⭐ <b>VIP Membership Activated!</b>\n\n` +
+      `Congratulations! You have been granted <b>VIP / Premium Access</b> for <b>${durText}</b>.\n\n` +
+      `🚀 <b>Your VIP Perks:</b>\n` +
+      `• ⚡ Instant 1-Tap Delivery (Zero Ads / No Shorteners)\n` +
+      `• 🔓 Bypass Channel Force-Sub\n` +
+      `• ♾️ Unlimited Fast Downloads\n\n` +
+      `<i>Type /myplan anytime to check your membership status.</i>`
+    ).catch(() => {});
+
+    return { ok: true, userId, username: u.username, isLifetime, premiumUntil: newPremiumUntil };
+  } catch (err) {
+    log('error', 'grantPremium failed', { targetUserId, errorMessage: err.message });
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function revokePremium(targetUserId, notify = true) {
+  try {
+    const users = await getCollection('users');
+    let u = await users.findOne({ _id: String(targetUserId) });
+    if (!u) {
+      const cleanUsername = String(targetUserId).replace(/^@/, '');
+      u = await users.findOne({ username: new RegExp(`^${cleanUsername}$`, 'i') });
+    }
+    if (!u) {
+      return { ok: false, error: 'User not found.' };
+    }
+
+    const userId = u._id;
+    await users.updateOne(
+      { _id: String(userId) },
+      { $unset: { premiumUntil: '', premiumPlan: '', premiumReason: '', premiumGrantedAt: '' } }
+    );
+
+    if (notify) {
+      await sendTelegramMessage(
+        userId,
+        `ℹ️ <b>VIP Membership Status Update</b>\n\nYour VIP / Premium membership has been revoked. Standard access limits apply.`
+      ).catch(() => {});
+    }
+
+    return { ok: true, userId, username: u.username };
+  } catch (err) {
+    log('error', 'revokePremium failed', { targetUserId, errorMessage: err.message });
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function getPremiumDetails(userId) {
+  try {
+    const users = await getCollection('users');
+    const u = await users.findOne({ _id: String(userId) });
+    if (!u || !u.premiumUntil) {
+      return { isPremium: false, label: 'Standard (Free)' };
+    }
+
+    const now = Date.now();
+    const premMs = new Date(u.premiumUntil).getTime();
+    if (premMs <= now) {
+      return { isPremium: false, label: 'Expired' };
+    }
+
+    const isLifetime = premMs > new Date('9900-01-01').getTime();
+    if (isLifetime) {
+      return {
+        isPremium: true,
+        isLifetime: true,
+        label: 'Lifetime VIP ♾️',
+        expiryDate: 'Lifetime (Never Expires)',
+        daysLeft: 'Unlimited'
+      };
+    }
+
+    const totalSeconds = Math.round((premMs - now) / 1000);
+    const daysLeft = Math.ceil(totalSeconds / 86400);
+    const hoursLeft = Math.ceil(totalSeconds / 3600);
+
+    return {
+      isPremium: true,
+      isLifetime: false,
+      label: `VIP (${daysLeft} day${daysLeft === 1 ? '' : 's'} left)`,
+      expiryDate: formatISTDateTime(u.premiumUntil),
+      daysLeft,
+      hoursLeft,
+      plan: u.premiumPlan || `${daysLeft} Days`
+    };
+  } catch {
+    return { isPremium: false, label: 'Standard (Free)' };
+  }
+}
+

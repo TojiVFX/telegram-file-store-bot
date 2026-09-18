@@ -87,6 +87,7 @@ export async function setMyCommands() {
 
   const userCommands = [
     { command: 'start',       description: toSmallCaps('Open the main menu') },
+    { command: 'myplan',      description: toSmallCaps('View VIP membership status & perks') },
     { command: 'temptoken',   description: toSmallCaps('Create temporary file sharing token') },
     { command: 'mytokens',    description: toSmallCaps('View active temporary tokens') },
     { command: 'revoketoken', description: toSmallCaps('Invalidate an active token') },
@@ -108,6 +109,9 @@ export async function setMyCommands() {
         { command: 'setting',    description: toSmallCaps('Open admin dashboard') },
         { command: 'status',     description: toSmallCaps('Full system health monitor') },
         { command: 'userstats',  description: toSmallCaps('User stats & download activity chart') },
+        { command: 'addvip',     description: toSmallCaps('Grant VIP membership to user') },
+        { command: 'delvip',     description: toSmallCaps('Revoke VIP membership from user') },
+        { command: 'audit',      description: toSmallCaps('Run automated DB & link health audit') },
         { command: 'topfiles',   description: toSmallCaps('Top 10 most downloaded files & batches') },
         { command: 'todaylinks', description: toSmallCaps("List all links created today with downloads") },
         { command: 'exportlinks', description: toSmallCaps('Export links by duration as .txt') },

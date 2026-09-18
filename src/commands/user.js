@@ -18,12 +18,13 @@ import {
   getFile, getBatch, getBundle, setBundleSession, clearBundleSession, getDownloadActivity,
   getTopFiles, getDailyFileStats, getTodayFiles, setBulkStoreActive, clearStoreSession,
   getFilesWithinDuration, generateLinksExportText, generateRawLinksText, formatDurationLabel,
-  rebuildChannelStorage, scanAndRepairBrokenLinks
+  rebuildChannelStorage, scanAndRepairBrokenLinks, runAutomatedDbAudit, getLatestDbAuditReport
 } from '../filestore.js';
 import { handleStartPayload } from './start.js';
 import {
   banUser, unbanUser, getBannedList, getBannedUsers, broadcastToAll, getUserStats, addReferral,
-  hasPremium, getReferralStats, upsertUser, getUserProfile, getTopReferrers, savePendingReferral
+  hasPremium, getReferralStats, upsertUser, getUserProfile, getTopReferrers, savePendingReferral,
+  grantPremium, revokePremium, getPremiumDetails
 } from '../bot-users.js';
 import { processAdminMessage, processBundleRange } from './admin.js';
 import { logActivity } from '../bot-logs.js';
@@ -626,6 +627,124 @@ async function handleUserInfoCommand({ chatId, rawText, message }) {
   await sendTelegramMessage(chatId, profileText, { inline_keyboard: buttons });
 }
 
+async function handleAddVipCommand({ chatId, rawText, message }) {
+  const parts = rawText.trim().split(/\s+/);
+  let targetArg = parts[1];
+  let durationArg = parts[2] || '30';
+
+  if (!targetArg && message?.reply_to_message) {
+    targetArg = String(message.reply_to_message.from?.id);
+    durationArg = parts[1] || '30';
+  }
+
+  if (!targetArg) {
+    await sendTelegramMessage(
+      chatId,
+      `ℹ️ <b>Usage:</b>\n` +
+      `• <code>/addvip &lt;user_id|@username&gt; &lt;days|lifetime&gt;</code>\n` +
+      `• Reply to a user with: <code>/addvip 30</code> or <code>/addvip lifetime</code>\n\n` +
+      `<b>Examples:</b>\n` +
+      `<code>/addvip 123456789 30</code> (30 Days)\n` +
+      `<code>/addvip @username lifetime</code> (Lifetime ♾️)`
+    );
+    return;
+  }
+
+  const targetId = await resolveUser(targetArg);
+  if (!targetId) {
+    await sendTelegramMessage(chatId, `❌ Could not resolve user <code>${esc(targetArg)}</code>. They must start the bot first.`);
+    return;
+  }
+
+  const res = await grantPremium(targetId, durationArg);
+  if (!res.ok) {
+    await sendTelegramMessage(chatId, `❌ <b>Failed to grant VIP:</b> ${res.error}`);
+    return;
+  }
+
+  const durLabel = res.isLifetime ? 'Lifetime ♾️' : `${durationArg} Days`;
+  const expStr = res.isLifetime ? 'Lifetime (Never Expires)' : formatISTDateTime(res.premiumUntil);
+
+  await sendTelegramMessage(
+    chatId,
+    `⭐ <b>VIP Membership Granted!</b>\n\n` +
+    `• <b>User ID:</b> <code>${targetId}</code> ${res.username ? `(@${esc(res.username)})` : ''}\n` +
+    `• <b>Duration:</b> <b>${durLabel}</b>\n` +
+    `• <b>Expires:</b> <code>${expStr}</code>\n\n` +
+    `<i>User has been notified and granted instant delivery + force-sub bypass perks!</i>`
+  );
+}
+
+async function handleDelVipCommand({ chatId, rawText, message }) {
+  const parts = rawText.trim().split(/\s+/);
+  let targetArg = parts[1];
+
+  if (!targetArg && message?.reply_to_message) {
+    targetArg = String(message.reply_to_message.from?.id);
+  }
+
+  if (!targetArg) {
+    await sendTelegramMessage(
+      chatId,
+      `ℹ️ <b>Usage:</b>\n` +
+      `• <code>/delvip &lt;user_id|@username&gt;</code>\n` +
+      `• Reply to a user with: <code>/delvip</code>`
+    );
+    return;
+  }
+
+  const targetId = await resolveUser(targetArg);
+  if (!targetId) {
+    await sendTelegramMessage(chatId, `❌ Could not resolve user <code>${esc(targetArg)}</code>.`);
+    return;
+  }
+
+  const res = await revokePremium(targetId);
+  if (!res.ok) {
+    await sendTelegramMessage(chatId, `❌ <b>Failed to revoke VIP:</b> ${res.error}`);
+    return;
+  }
+
+  await sendTelegramMessage(
+    chatId,
+    `✅ <b>VIP Membership Revoked!</b>\n\nUser: <code>${targetId}</code> ${res.username ? `(@${esc(res.username)})` : ''}\n<i>VIP perks have been removed.</i>`
+  );
+}
+
+async function handleMyPlanCommand({ chatId }) {
+  const prem = await getPremiumDetails(chatId);
+  const user = await getUserProfile(chatId);
+  const botUsername = await getBotUsername();
+  const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
+
+  let text = `⭐ <b>Your Membership & VIP Plan</b>\n\n` +
+    `• <b>Account:</b> <code>${chatId}</code>\n` +
+    `• <b>Status:</b> <b>${prem.label}</b>\n`;
+
+  if (prem.isPremium) {
+    text += `• <b>Expiration:</b> <code>${prem.expiryDate}</code>\n` +
+      `• <b>Remaining:</b> <b>${prem.isLifetime ? 'Unlimited ♾️' : `${prem.daysLeft} days (${prem.hoursLeft} hours)`}</b>\n\n` +
+      `🚀 <b>Your Active Perks:</b>\n` +
+      `✅ Instant 1-Tap Media Delivery\n` +
+      `✅ Zero Ads & Shorteners Bypassed\n` +
+      `✅ Channel Force-Sub Bypassed\n` +
+      `✅ Unlimited High-Speed Downloads`;
+  } else {
+    text += `• <b>Tier:</b> Free / Standard\n\n` +
+      `💡 <b>Want Zero Ads & Instant Downloads?</b>\n` +
+      `Share your personal referral link with friends! For every 3 friends who join, you earn <b>24 hours of VIP access</b> for free!\n\n` +
+      `🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n` +
+      `<i>Total Referrals: <b>${user?.referralCount || 0}</b></i>`;
+  }
+
+  const buttons = [
+    ...(prem.isPremium ? [] : [[{ text: toSmallCaps('🔗 Share Referral Link'), url: `https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${encodeURIComponent('Get fast access to movies & files!')}` }]]),
+    [{ text: toSmallCaps('🔄 Refresh Status'), callback_data: 'user:my_plan' }, { text: toSmallCaps('👤 My Profile'), callback_data: 'user:me' }]
+  ];
+
+  await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+}
+
 async function handleTopRefsCommand({ chatId }) {
   const leaders = await getTopReferrers(10);
   if (!leaders.length) {
@@ -951,6 +1070,48 @@ async function handleScanBrokenCommand({ chatId, rawText }) {
   }
 }
 
+async function handleDbAuditCommand({ chatId, rawText }) {
+  const parts = rawText.trim().split(/\s+/);
+  const batchSize = parseInt(parts[1], 10) || 100;
+  const isFull = parts.includes('--full') || parts.includes('full');
+
+  const statusMsg = await sendTelegramMessage(chatId, `🩺 <b>Running Automated Database & Link Integrity Audit...</b>\n\nMode: <b>${isFull ? 'Full Scan' : 'Continuous Cursor'}</b> (Batch: ${batchSize})\n<i>Verifying stored files against primary channel...</i>`);
+
+  const res = await runAutomatedDbAudit({ batchSize, fullScan: isFull, notifyAdmin: false });
+  if (!res.ok) {
+    await sendTelegramMessage(chatId, `❌ <b>Audit failed:</b> ${res.error}`);
+    return;
+  }
+
+  let text = `🩺 <b>Database Audit Complete!</b>\n\n` +
+    `• Records Scanned: <b>${res.totalScanned}</b>\n` +
+    `• Healthy: <b>${res.healthy}</b>\n` +
+    `• Auto-Healed: <b>${res.healed}</b>\n` +
+    `• Dead / Missing: <b>${res.unrecoverable}</b>\n\n`;
+
+  if (res.deadItems?.length) {
+    text += `⚠️ <b>Unrecoverable Items Detected:</b>\n`;
+    for (const d of res.deadItems.slice(0, 5)) {
+      text += `• <code>${d.code}</code> (${esc(d.title)}) — <i>${esc(d.reason)}</i>\n`;
+    }
+    if (res.deadItems.length > 5) {
+      text += `<i>...and ${res.deadItems.length - 5} more.</i>\n`;
+    }
+  } else {
+    text += `✅ <i>All scanned database records are healthy and intact!</i>`;
+  }
+
+  const buttons = [
+    [{ text: toSmallCaps('Storage & Backup Audit'), callback_data: 'admin:storage_audit' }]
+  ];
+
+  if (statusMsg.ok) {
+    await editTelegramMessage(chatId, statusMsg.messageId, text, { inline_keyboard: buttons });
+  } else {
+    await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+  }
+}
+
 async function handlePingCommand({ chatId }) {
   const sendStart = Date.now();
   const msg = await sendTelegramMessage(chatId, `Pinging...`);
@@ -1117,6 +1278,9 @@ export const commandRegistry = [
   { name: 'unban', pattern: /^\/unban(\s+|$)/i, adminOnly: true, handler: handleUnbanCommand },
   { name: 'banlist', pattern: /^\/banlist/i, adminOnly: true, handler: handleBanListCommand },
   { name: 'user', pattern: /^\/user(\s+|$)/i, adminOnly: true, handler: handleUserInfoCommand },
+  { name: 'addvip', pattern: /^\/(addvip|grantvip|addpremium)\b/i, adminOnly: true, handler: handleAddVipCommand },
+  { name: 'delvip', pattern: /^\/(delvip|revokevip|delpremium|revokepremium)\b/i, adminOnly: true, handler: handleDelVipCommand },
+  { name: 'myplan', pattern: /^\/(myplan|plan|membership)\b/i, handler: handleMyPlanCommand },
   { name: 'toprefs', pattern: /^\/toprefs/i, handler: handleTopRefsCommand },
   { name: 'delete', pattern: /^\/delete(\s+|$)/i, adminOnly: true, handler: handleDeleteCommand },
   { name: 'wipe', pattern: /^\/(wipe|cleandb)(\s+|$)/i, adminOnly: true, handler: handleWipeCommand },
@@ -1128,6 +1292,7 @@ export const commandRegistry = [
   { name: 'adminhelp', pattern: /^\/adminhelp/i, adminOnly: true, handler: handleAdminHelpCommand },
   { name: 'status', pattern: /^\/status/i, adminOnly: true, handler: handleStatusCommand },
   { name: 'auditlinks', pattern: /^\/auditlinks/i, adminOnly: true, handler: handleAuditLinksCommand },
+  { name: 'audit', pattern: /^\/(audit|dbaudit)\b/i, adminOnly: true, handler: handleDbAuditCommand },
   { name: 'scanbroken', pattern: /^\/scanbroken/i, adminOnly: true, handler: handleScanBrokenCommand },
   { name: 'ping', pattern: /^\/ping/i, handler: handlePingCommand },
   { name: 'temptoken', pattern: /^\/(temptoken|sharetemp)/i, handler: handleTempTokenCommand },

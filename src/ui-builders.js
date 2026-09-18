@@ -91,7 +91,7 @@ export async function buildStartMenuButtons(admin) {
   }
 
   const buttons = [
-    [{ text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
+    [{ text: '⭐ My Plan', callback_data: 'user:my_plan' }, { text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
   ];
   if (admin) {
     buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
@@ -201,10 +201,13 @@ export function getAdminHelpMessage() {
     `• <code>/toprefs</code> — Viral referral leaderboard (Top 10 referrers)\n\n` +
     `🛡 <b>Storage Auditing & Disaster Recovery</b>\n` +
     `• <code>/auditlinks</code> — Interactive storage redundancy & backup channel audit\n` +
+    `• <code>/audit [batch] [--full]</code> — Run continuous/deep automated DB & link health audit with self-healing\n` +
     `• <code>/scanbroken [limit]</code> — Scan stored files and auto-heal missing links from backup DB channel\n` +
     `• <code>/rebuildchannel &lt;channel_id&gt;</code> — 1-click cloud CDN recovery: re-posts all database files into a new channel without breaking user links\n` +
     `• <code>/backup</code> (or <code>/exportdb</code>) — Download complete database backup as a JSON document\n\n` +
-    `👥 <b>User Moderation & Broadcasts</b>\n` +
+    `👥 <b>User Moderation & VIP Management</b>\n` +
+    `• <code>/addvip &lt;id|@username&gt; &lt;days|lifetime&gt;</code> — Grant VIP fast-pass membership (zero ads, no force-sub)\n` +
+    `• <code>/delvip &lt;id|@username&gt;</code> — Revoke VIP membership from user\n` +
     `• <code>/user &lt;id|@username&gt;</code> — Inspect user profile, join date, VIP status, and referrals\n` +
     `• <code>/ban &lt;id|@username&gt; [duration] [reason]</code> — Ban user (e.g. <code>/ban @user 24h spam</code>)\n` +
     `• <code>/unban &lt;id|@username&gt;</code> — Unban a user\n` +
