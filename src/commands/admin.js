@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import {
   getCollection, getSettings, updateSettings, log, sendTelegramMessage, editTelegramMessage,
   deleteTelegramMessage, toSmallCaps, getMainToken, esc, logHistory, getChat,
-  sendTelegramFileBuffer, isSafePublicUrl, sendChatAction
+  sendTelegramFileBuffer, isSafePublicUrl, sendChatAction, copyTelegramMessages
 } from '../bot-common.js';
 import {
   getBotUsername, getDbChannelId, getBackupDbChannelId, checkSubscription, isBotAdmin,
@@ -249,18 +249,53 @@ export async function processAdminMessage(chatId, rawText, message, req) {
           let processedCount = 1; // first file was already saved at step === 'first'
           const backupDbChannelId = await getBackupDbChannelId();
 
+          const remainingSrcIds = [];
           for (let srcId = batchSession.srcFirstMsgId + 1; srcId <= extracted.msgId; srcId++) {
-            const r = await copyIntoDbChannel(dbChannelId, batchSession.srcChannelId, srcId);
-            let backupId = null;
-            if (backupDbChannelId && r.ok) {
-              const bRes = await copyIntoDbChannel(backupDbChannelId, batchSession.srcChannelId, srcId);
-              if (bRes.ok && bRes.messageId) backupId = bRes.messageId;
-            }
-            if (r.ok && r.messageId) await addIdToBatch(chatId, r.messageId, backupId);
-            processedCount++;
+            remainingSrcIds.push(srcId);
+          }
 
+          const collectedIds = [...(batchSession.collectedIds || [])];
+          const backupCollectedIds = [...(batchSession.backupCollectedIds || [])];
+          const CHUNK_SIZE = 100;
+
+          for (let i = 0; i < remainingSrcIds.length; i += CHUNK_SIZE) {
+            const chunk = remainingSrcIds.slice(i, i + CHUNK_SIZE);
+
+            // Fast path: bulk copy entire chunk (up to 100 files in 1 call)
+            let copyRes = await copyTelegramMessages(dbChannelId, batchSession.srcChannelId, chunk, false);
+            let backupRes = null;
+            if (backupDbChannelId) {
+              backupRes = await copyTelegramMessages(backupDbChannelId, batchSession.srcChannelId, chunk, false);
+            }
+
+            if (copyRes?.ok && copyRes.messageIds.length === chunk.length) {
+              collectedIds.push(...copyRes.messageIds);
+              if (backupRes?.ok && backupRes.messageIds.length === chunk.length) {
+                backupCollectedIds.push(...backupRes.messageIds);
+              }
+              processedCount += chunk.length;
+            } else {
+              // Fallback for this chunk (e.g. deleted message or service alert in range)
+              for (let j = 0; j < chunk.length; j++) {
+                const srcId = chunk[j];
+                const r = await copyIntoDbChannel(dbChannelId, batchSession.srcChannelId, srcId);
+                let backupId = null;
+                if (backupDbChannelId && r.ok) {
+                  const bRes = await copyIntoDbChannel(backupDbChannelId, batchSession.srcChannelId, srcId);
+                  if (bRes.ok && bRes.messageId) backupId = bRes.messageId;
+                }
+                if (r.ok && r.messageId) {
+                  collectedIds.push(r.messageId);
+                  if (backupId) backupCollectedIds.push(backupId);
+                }
+                processedCount++;
+                if (totalFiles > 20) await new Promise((r) => setTimeout(r, 40));
+              }
+            }
+
+            // Update live progress bar
             const now = Date.now();
-            if (now - lastProgressEdit >= 1500 || processedCount === totalFiles) {
+            if (now - lastProgressEdit >= 1500 || processedCount >= totalFiles) {
               lastProgressEdit = now;
               sendChatAction(chatId, 'upload_document').catch(() => {});
               const pct = Math.min(100, Math.round((processedCount / totalFiles) * 100));
@@ -275,13 +310,8 @@ export async function processAdminMessage(chatId, rawText, message, req) {
                 await editTelegramMessage(chatId, progressMsg.messageId, updatedStatus).catch(() => {});
               }
             }
-
-            if (totalFiles > 5) await new Promise((r) => setTimeout(r, 50));
           }
 
-          const updatedSession = await getBatchSession(chatId);
-          const collectedIds = updatedSession?.collectedIds || [];
-          const backupCollectedIds = updatedSession?.backupCollectedIds || [];
           const batchCode = generateBatchCode();
           await storeBatch(batchCode, dbChannelId, collectedIds, { userId: chatId, username: message.from?.username, firstName: message.from?.first_name }, { backupDbChannelId, backupDbMessageIds: backupCollectedIds });
           await clearBatchSession(chatId);
