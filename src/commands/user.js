@@ -711,38 +711,60 @@ async function handleDelVipCommand({ chatId, rawText, message }) {
   );
 }
 
-async function handleMyPlanCommand({ chatId }) {
+export async function buildUnifiedProfileCard(chatId) {
+  const cs = await getSettings();
   const prem = await getPremiumDetails(chatId);
-  const user = await getUserProfile(chatId);
   const botUsername = await getBotUsername();
+  const refs = await getReferralStats(chatId);
   const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
+  const refDisabled = cs.referralDisabled === '1';
 
-  let text = `⭐ <b>Your Membership & VIP Plan</b>\n\n` +
-    `• <b>Account:</b> <code>${chatId}</code>\n` +
-    `• <b>Status:</b> <b>${prem.label}</b>\n`;
+  let text = `👤 <b>Your Account & Membership Profile</b>\n\n` +
+    `• <b>Account ID:</b> <code>${chatId}</code>\n` +
+    `• <b>Membership Tier:</b> <b>${prem.label}</b>\n`;
 
   if (prem.isPremium) {
     text += `• <b>Expiration:</b> <code>${prem.expiryDate}</code>\n` +
       `• <b>Remaining:</b> <b>${prem.isLifetime ? 'Unlimited ♾️' : `${prem.daysLeft} days (${prem.hoursLeft} hours)`}</b>\n\n` +
-      `🚀 <b>Your Active Perks:</b>\n` +
-      `✅ Instant 1-Tap Media Delivery\n` +
-      `✅ Zero Ads & Shorteners Bypassed\n` +
+      `🚀 <b>Your Active VIP Perks:</b>\n` +
+      `✅ Instant 1-Tap Media Delivery (Zero Ads)\n` +
+      `✅ Shortener Verification Bypassed\n` +
       `✅ Channel Force-Sub Bypassed\n` +
       `✅ Unlimited High-Speed Downloads`;
+
+    if (!refDisabled) {
+      text += `\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n` +
+        `<i>Total Referrals: <b>${refs}</b> (Earn +24h VIP per 3 referrals)</i>`;
+    }
   } else {
-    text += `• <b>Tier:</b> Free / Standard\n\n` +
-      `💡 <b>Want Zero Ads & Instant Downloads?</b>\n` +
-      `Share your personal referral link with friends! For every 3 friends who join, you earn <b>24 hours of VIP access</b> for free!\n\n` +
-      `🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n` +
-      `<i>Total Referrals: <b>${user?.referralCount || 0}</b></i>`;
+    if (refDisabled) {
+      text += `\n<i>Standard access tier active.</i>`;
+    } else {
+      text += `• <b>Total Referrals:</b> <b>${refs}</b>\n\n` +
+        `🎁 <b>Want Free VIP (Zero Ads & Instant Downloads)?</b>\n` +
+        `Share your referral link with friends! For every 3 friends who join, you automatically earn <b>24 hours of VIP access</b> for free!\n\n` +
+        `🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>`;
+    }
   }
 
-  const buttons = [
-    ...(prem.isPremium ? [] : [[{ text: toSmallCaps('🔗 Share Referral Link'), url: `https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${encodeURIComponent('Get fast access to movies & files!')}` }]]),
-    [{ text: toSmallCaps('🔄 Refresh Status'), callback_data: 'user:my_plan' }, { text: toSmallCaps('👤 My Profile'), callback_data: 'user:me' }]
-  ];
+  const buttons = [];
+  if (!refDisabled) {
+    buttons.push([{
+      text: toSmallCaps('🔗 Share Referral Link'),
+      url: `https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${encodeURIComponent('Get fast access to movies & files!')}`
+    }]);
+  }
+  buttons.push([
+    { text: toSmallCaps('🔄 Refresh Profile'), callback_data: 'user:me' },
+    { text: toSmallCaps('ℹ️ About'), callback_data: 'user:about' }
+  ]);
+  buttons.push([{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]);
 
-  await sendTelegramMessage(chatId, text, { inline_keyboard: buttons });
+  return { text, buttons, banner: cs?.bannerProfile || null };
+}
+
+async function handleMyPlanCommand({ chatId }) {
+  return handleMeCommand({ chatId });
 }
 
 async function handleTopRefsCommand({ chatId }) {
@@ -978,34 +1000,11 @@ async function handleRebuildChannelCommand({ chatId, rawText }) {
 }
 
 async function handleMeCommand({ chatId }) {
-  const cs = await getSettings();
-  if (cs.referralDisabled === '1') {
-    const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\n<i>Referral system is disabled on this bot.</i>`;
-    if (cs?.bannerProfile) {
-      await sendTelegramPhoto(chatId, cs.bannerProfile, text);
-    } else {
-      await sendTelegramMessage(chatId, text);
-    }
-    return;
-  }
-
-  const botUsername = await getBotUsername();
-  const refs = await getReferralStats(chatId);
-  const premium = await hasPremium(chatId);
-  let premiumText = 'Standard';
-  if (premium) {
-    const users = await getCollection('users');
-    const user = await users.findOne({ _id: String(chatId) });
-    const globalTtl = user && user.premiumUntil ? Math.round((new Date(user.premiumUntil).getTime() - Date.now()) / 1000) : 0;
-    premiumText = `Premium (${globalTtl > 0 ? Math.ceil(globalTtl / (24 * 3600)) : 'Lifetime'} days left)`;
-  }
-  const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
-  const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\nStatus: <b>${premiumText}</b>\nReferrals: <b>${refs}</b>\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n<i>Share this link to earn Premium access! 3 referrals = 24h Premium.</i>`;
-
-  if (cs?.bannerProfile) {
-    await sendTelegramPhoto(chatId, cs.bannerProfile, text);
+  const profile = await buildUnifiedProfileCard(chatId);
+  if (profile.banner) {
+    await sendTelegramPhoto(chatId, profile.banner, profile.text, { inline_keyboard: profile.buttons });
   } else {
-    await sendTelegramMessage(chatId, text);
+    await sendTelegramMessage(chatId, profile.text, { inline_keyboard: profile.buttons });
   }
 }
 

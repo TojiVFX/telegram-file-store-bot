@@ -17,6 +17,7 @@ import { getReferralStats, hasPremium, getPremiumDetails, getUserProfile } from 
 import { getAdminId } from '../auth.js';
 import { verifyCaptchaAnswer, sendCaptchaChallenge } from '../anti-scraper.js';
 import { handleStartPayload, checkRequestCooldown, updateRequestCooldown } from '../commands/start.js';
+import { buildUnifiedProfileCard } from '../commands/user.js';
 
 export async function handleUserCallback(chatId, messageId, action, cq, from, msg, admin) {
   if (action === 'save_tip') {
@@ -196,75 +197,25 @@ export async function handleUserCallback(chatId, messageId, action, cq, from, ms
     return;
   }
 
-  if (action === 'me') {
-    if (cs.referralDisabled === '1') {
-       const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\n<i>Referral system is disabled on this bot.</i>`;
-       await editTelegramMessage(chatId, messageId, text, {
-         inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
-       });
-       return;
-    }
+  if (action === 'me' || action === 'my_plan') {
+    const profile = await buildUnifiedProfileCard(chatId);
 
-    const refs = await getReferralStats(chatId);
-    const premium = await hasPremium(chatId);
-    let premiumText = 'Standard';
-    if (premium) {
-      const users = await getCollection('users');
-      const user = await users.findOne({ _id: String(chatId) });
-      const globalTtl = user && user.premiumUntil ? Math.round((new Date(user.premiumUntil).getTime() - Date.now()) / 1000) : 0;
-      premiumText = `Premium (${globalTtl > 0 ? Math.ceil(globalTtl / (24 * 3600)) : 'Lifetime'} days left)`;
-    }
-    const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
-    const text = `<b>Your Profile</b>\n\nID: <code>${chatId}</code>\nStatus: <b>${premiumText}</b>\nReferrals: <b>${refs}</b>\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n<i>Share this link to earn Premium access! 3 referrals = 24h Premium.</i>`;
-
-    if (cs.bannerProfile) {
-      const capRes = await editTelegramCaption(chatId, messageId, text, {
-        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
+    if (profile.banner) {
+      const capRes = await editTelegramCaption(chatId, messageId, profile.text, {
+        inline_keyboard: profile.buttons
       });
       if (!capRes.ok) {
         await deleteTelegramMessage(chatId, messageId).catch(() => {});
-        await sendTelegramPhoto(chatId, cs.bannerProfile, text, {
-          inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
+        await sendTelegramPhoto(chatId, profile.banner, profile.text, {
+          inline_keyboard: profile.buttons
         });
       }
     } else {
-      await editTelegramMessage(chatId, messageId, text, {
-        inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]]
+      await editTelegramMessage(chatId, messageId, profile.text, {
+        inline_keyboard: profile.buttons
       });
     }
-  } else if (action === 'my_plan') {
-    const prem = await getPremiumDetails(chatId);
-    const user = await getUserProfile(chatId);
-    const botUsername = await getBotUsername();
-    const refLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
-
-    let text = `⭐ <b>Your Membership & VIP Plan</b>\n\n` +
-      `• <b>Account:</b> <code>${chatId}</code>\n` +
-      `• <b>Status:</b> <b>${prem.label}</b>\n`;
-
-    if (prem.isPremium) {
-      text += `• <b>Expiration:</b> <code>${prem.expiryDate}</code>\n` +
-        `• <b>Remaining:</b> <b>${prem.isLifetime ? 'Unlimited ♾️' : `${prem.daysLeft} days (${prem.hoursLeft} hours)`}</b>\n\n` +
-        `🚀 <b>Your Active Perks:</b>\n` +
-        `✅ Instant 1-Tap Media Delivery\n` +
-        `✅ Zero Ads & Shorteners Bypassed\n` +
-        `✅ Channel Force-Sub Bypassed\n` +
-        `✅ Unlimited High-Speed Downloads`;
-    } else {
-      text += `• <b>Tier:</b> Free / Standard\n\n` +
-        `💡 <b>Want Zero Ads & Instant Downloads?</b>\n` +
-        `Share your personal referral link with friends! For every 3 friends who join, you earn <b>24 hours of VIP access</b> for free!\n\n` +
-        `🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n\n` +
-        `<i>Total Referrals: <b>${user?.referralCount || 0}</b></i>`;
-    }
-
-    const buttons = [
-      ...(prem.isPremium ? [] : [[{ text: toSmallCaps('🔗 Share Referral Link'), url: `https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${encodeURIComponent('Get fast access to movies & files!')}` }]]),
-      [{ text: toSmallCaps('🔄 Refresh Status'), callback_data: 'user:my_plan' }, { text: toSmallCaps('👤 My Profile'), callback_data: 'user:me' }],
-      [{ text: toSmallCaps('Back'), callback_data: 'user:back_start' }]
-    ];
-
-    await editTelegramMessage(chatId, messageId, text, { inline_keyboard: buttons });
+    return;
   } else if (action === 'help') {
     const { text, replyMarkup } = getUserHelpMessage(admin);
     await editTelegramMessage(chatId, messageId, text, replyMarkup);

@@ -91,7 +91,7 @@ export async function buildStartMenuButtons(admin) {
   }
 
   const buttons = [
-    [{ text: '⭐ My Plan', callback_data: 'user:my_plan' }, { text: 'My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
+    [{ text: '👤 My Profile', callback_data: 'user:me' }, { text: 'About', callback_data: 'user:about' }]
   ];
   if (admin) {
     buttons.unshift([{ text: 'Admin Dashboard', callback_data: 'admin:dashboard' }]);
