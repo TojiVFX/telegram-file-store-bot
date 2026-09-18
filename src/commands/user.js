@@ -733,17 +733,19 @@ export async function buildUnifiedProfileCard(chatId) {
       `✅ Unlimited High-Speed Downloads`;
 
     if (!refDisabled) {
-      text += `\n\n🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n` +
-        `<i>Total Referrals: <b>${refs}</b> (Earn +24h VIP per 3 referrals)</i>`;
+      text += `\n\n<blockquote>🎁 <b>Extend VIP for Free:</b>\n` +
+        `Share your referral link with friends! Every 3 friends who join add <b>+24 hours</b> of VIP access.\n\n` +
+        `🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>\n` +
+        `<i>Total Referrals: <b>${refs}</b></i></blockquote>`;
     }
   } else {
     if (refDisabled) {
       text += `\n<i>Standard access tier active.</i>`;
     } else {
       text += `• <b>Total Referrals:</b> <b>${refs}</b>\n\n` +
-        `🎁 <b>Want Free VIP (Zero Ads & Instant Downloads)?</b>\n` +
+        `<blockquote>🎁 <b>Want Free VIP (Zero Ads & Instant Downloads)?</b>\n` +
         `Share your referral link with friends! For every 3 friends who join, you automatically earn <b>24 hours of VIP access</b> for free!\n\n` +
-        `🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code>`;
+        `🔗 <b>Your Referral Link:</b>\n<code>${refLink}</code></blockquote>`;
     }
   }
 
