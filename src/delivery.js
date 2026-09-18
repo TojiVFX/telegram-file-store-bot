@@ -66,9 +66,14 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
   let failedCount = 0;
   const healedIndices = [];
 
-  const totalCount = Array.isArray(dbMessageIds)
-    ? dbMessageIds.length
-    : (dbFirstMsgId && dbLastMsgId ? dbLastMsgId - dbFirstMsgId + 1 : 0);
+  const allIds = Array.isArray(dbMessageIds)
+    ? dbMessageIds
+    : (dbFirstMsgId && dbLastMsgId
+        ? Array.from({ length: dbLastMsgId - dbFirstMsgId + 1 }, (_, i) => dbFirstMsgId + i)
+        : []);
+
+  const totalCount = allIds.length;
+  if (totalCount === 0) return { ok: false, sentCount: 0 };
 
   const isWorker = getToken() !== getMainToken();
   let hasRelay = false;
@@ -76,175 +81,76 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     hasRelay = Boolean(await getRelayChatId());
   }
 
-  if (Array.isArray(dbMessageIds)) {
-    let batchCopied = false;
-
-    // Telegram copyMessages requires IDs to be strictly increasing
-    const isIncreasing = dbMessageIds.every((id, idx) => idx === 0 || id > dbMessageIds[idx - 1]);
-    if (isIncreasing && !hasRelay && dbMessageIds.length > 0) {
-      const CHUNK_SIZE = 100;
-      for (let i = 0; i < dbMessageIds.length; i += CHUNK_SIZE) {
-        const chunk = dbMessageIds.slice(i, i + CHUNK_SIZE);
-        let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent);
-        if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
-          copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
-            copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent)
-          );
-        }
-        if (copyBatchRes?.ok && copyBatchRes.messageIds.length === chunk.length) {
-          sentMessageIds.push(...copyBatchRes.messageIds);
-          if (typeof onProgress === 'function') {
-            await onProgress(sentMessageIds.length, totalCount, 'delivering').catch(() => {});
-          }
-          if (i + CHUNK_SIZE < dbMessageIds.length) {
-            await new Promise((r) => setTimeout(r, 200));
-          }
-        } else {
-          // Chunk failed (e.g. some message in this chunk was deleted from primary channel)
-          // Fallback to item-by-item delivery with backup channel failover for this chunk
-          for (let j = 0; j < chunk.length; j++) {
-            const globalIdx = i + j;
-            const msgId = chunk[j];
-            let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
-
-            if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds[globalIdx]) {
-              const backupRes = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[globalIdx], protectContent);
-              if (backupRes?.ok && backupRes?.messageId) {
-                res = backupRes;
-                dbMessageIds[globalIdx] = backupDbMessageIds[globalIdx];
-                healedIndices.push({ index: globalIdx, backupMsgId: backupDbMessageIds[globalIdx], backupChannelId: backupDbChannelId });
-              }
-            }
-
-            if (res?.ok && res?.messageId) {
-              sentMessageIds.push(res.messageId);
-            } else {
-              failedCount++;
-            }
-            if (typeof onProgress === 'function') {
-              await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
-            }
-            if (totalCount > 1) await new Promise((r) => setTimeout(r, 350));
-          }
-        }
-      }
-      batchCopied = true;
-    }
-
-    if (!batchCopied && hasRelay) {
-      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, dbMessageIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress, stagedTransitMsgIds);
-      if (relayRes?.ok) {
-        sentMessageIds.push(...relayRes.sentMessageIds);
-        failedCount += relayRes.failedCount || 0;
-        batchCopied = true;
-        if (relayRes.healedIndices && relayRes.healedIndices.length > 0) {
-          for (const h of relayRes.healedIndices) {
-            dbMessageIds[h.index] = h.backupMsgId;
-          }
-          healedIndices.push(...relayRes.healedIndices);
-        }
-      }
-    }
-
-    if (!batchCopied) {
-      for (let i = 0; i < dbMessageIds.length; i++) {
-        const msgId = dbMessageIds[i];
-        let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
-
-        // Seamless failover to backup DB channel if primary message fails
-        if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && backupDbMessageIds[i]) {
-          const backupRes = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[i], protectContent);
-          if (backupRes?.ok && backupRes?.messageId) {
-            res = backupRes;
-            dbMessageIds[i] = backupDbMessageIds[i];
-            healedIndices.push({ index: i, backupMsgId: backupDbMessageIds[i], backupChannelId: backupDbChannelId });
-          }
-        }
-
-        if (res?.ok && res?.messageId) {
-          sentMessageIds.push(res.messageId);
-        } else {
-          failedCount++;
-        }
-        if (typeof onProgress === 'function') {
-          await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
-        }
-        if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
+  // 1. Ghost Fleet Relay Tunnel (Air-Gapped delivery for worker bots)
+  if (hasRelay) {
+    const relayRes = await deliverBatchViaRelayTunnel(
+      toChatId, dbChannelId, allIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress, stagedTransitMsgIds
+    );
+    if (relayRes?.ok && Array.isArray(relayRes.sentMessageIds)) {
+      sentMessageIds.push(...relayRes.sentMessageIds);
+      if (relayRes.healedIndices?.length > 0) {
+        healedIndices.push(...relayRes.healedIndices);
       }
     }
   }
-  else if (dbFirstMsgId && dbLastMsgId) {
-    const rangeIds = [];
-    for (let msgId = dbFirstMsgId; msgId <= dbLastMsgId; msgId++) {
-      rangeIds.push(msgId);
-    }
 
-    let batchCopied = false;
-    if (rangeIds.length > 0 && !hasRelay) {
-      const CHUNK_SIZE = 100;
-      for (let i = 0; i < rangeIds.length; i += CHUNK_SIZE) {
-        const chunk = rangeIds.slice(i, i + CHUNK_SIZE);
-        let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent);
-        if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
-          copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
-            copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent)
-          );
-        }
-        if (copyBatchRes?.ok && copyBatchRes.messageIds.length === chunk.length) {
-          sentMessageIds.push(...copyBatchRes.messageIds);
-          if (typeof onProgress === 'function') {
-            await onProgress(sentMessageIds.length, totalCount, 'delivering').catch(() => {});
-          }
-          if (i + CHUNK_SIZE < rangeIds.length) {
-            await new Promise((r) => setTimeout(r, 500));
-          }
-        } else {
-          // Fallback for this chunk
-          for (let j = 0; j < chunk.length; j++) {
-            const msgId = chunk[j];
-            let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
-            if (res?.ok && res?.messageId) {
-              sentMessageIds.push(res.messageId);
-            } else {
-              failedCount++;
-            }
-            if (typeof onProgress === 'function') {
-              await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
-            }
-            if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
-          }
-        }
+  // 2. Direct Bulk Delivery (for Main Bot or seamless failover if Relay Tunnel was partial/unviable)
+  if (sentMessageIds.length < totalCount) {
+    const deliveredCount = sentMessageIds.length;
+    const remainingIds = allIds.slice(deliveredCount);
+    const sortedRemaining = [...new Set(remainingIds.filter(id => id != null && !isNaN(id)).map(Number))].sort((a, b) => a - b);
+    const CHUNK_SIZE = 100;
+
+    for (let i = 0; i < sortedRemaining.length; i += CHUNK_SIZE) {
+      const chunk = sortedRemaining.slice(i, i + CHUNK_SIZE);
+
+      let copyBatchRes = await copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent);
+      if (!copyBatchRes?.ok && getToken() !== getMainToken()) {
+        copyBatchRes = await botContext.run({ token: getMainToken() }, () =>
+          copyTelegramMessages(toChatId, dbChannelId, chunk, protectContent)
+        );
       }
-      batchCopied = true;
-    }
 
-    if (!batchCopied && hasRelay) {
-      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, rangeIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress, stagedTransitMsgIds);
-      if (relayRes?.ok) {
-        sentMessageIds.push(...relayRes.sentMessageIds);
-        failedCount += relayRes.failedCount || 0;
-        batchCopied = true;
-      }
-    }
-
-    if (!batchCopied) {
-      for (let msgId = dbFirstMsgId; msgId <= dbLastMsgId; msgId++) {
-        let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
-        if (res?.ok && res?.messageId) {
-          sentMessageIds.push(res.messageId);
-        } else {
-          failedCount++;
-        }
+      if (copyBatchRes?.ok && Array.isArray(copyBatchRes.messageIds) && copyBatchRes.messageIds.length === chunk.length) {
+        sentMessageIds.push(...copyBatchRes.messageIds);
         if (typeof onProgress === 'function') {
-          await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
+          await onProgress(sentMessageIds.length, totalCount, 'delivering').catch(() => {});
         }
-        if (totalCount > 1) await new Promise((r) => setTimeout(r, 350));
+        if (i + CHUNK_SIZE < sortedRemaining.length) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      } else {
+        // Fallback item-by-item recovery with backup DB failover for this chunk
+        for (let j = 0; j < chunk.length; j++) {
+          const msgId = chunk[j];
+          const globalIdx = allIds.indexOf(msgId);
+          let res = await copyFromDbChannel(toChatId, dbChannelId, msgId, protectContent);
+
+          if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupDbMessageIds) && globalIdx >= 0 && backupDbMessageIds[globalIdx]) {
+            const backupRes = await copyFromDbChannel(toChatId, backupDbChannelId, backupDbMessageIds[globalIdx], protectContent);
+            if (backupRes?.ok && backupRes?.messageId) {
+              res = backupRes;
+              allIds[globalIdx] = backupDbMessageIds[globalIdx];
+              healedIndices.push({ index: globalIdx, backupMsgId: backupDbMessageIds[globalIdx], backupChannelId: backupDbChannelId });
+            }
+          }
+
+          if (res?.ok && res?.messageId) {
+            sentMessageIds.push(res.messageId);
+          } else {
+            failedCount++;
+          }
+          if (typeof onProgress === 'function') {
+            await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
+          }
+          if (chunk.length > 1) await new Promise((r) => setTimeout(r, 350));
+        }
       }
     }
   }
 
   if (failedCount > 0 && sentMessageIds.length === 0) {
-    await sendTelegramMessage(toChatId, `❌ <b>Batch Unavailable</b>\n\nThe files in this batch are no longer available in storage (they may have been removed from the database channel).`, null, protectContent);
+    await sendTelegramMessage(toChatId, `❌ <b>Batch Unavailable</b>\n\nThe files in this batch could not be retrieved from storage (they may have been removed from the database channel).`, null, protectContent);
   } else if (failedCount > 0) {
     await sendTelegramMessage(toChatId, `⚠️ <b>Note:</b> ${failedCount} file(s) in this batch could not be retrieved because they were deleted from storage.`, null, protectContent);
   }

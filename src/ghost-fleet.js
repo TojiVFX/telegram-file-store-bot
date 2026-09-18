@@ -915,8 +915,6 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
           const res = await copyMessage(toChatId, relayChatId, transitId, protectContent);
           if (res?.ok && res?.messageId) {
             sentMessageIds.push(res.messageId);
-          } else {
-            failedCount++;
           }
           if (chunk.length > 1) {
             await new Promise(r => setTimeout(r, 350));
@@ -933,21 +931,28 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
       deleteTelegramMessages(relayChatId, transitMsgIds)
     ).catch(() => {});
 
-    if (typeof onProgress === 'function') {
-      await onProgress(totalCount, totalCount).catch(() => {});
+    if (sentMessageIds.length >= totalCount) {
+      if (typeof onProgress === 'function') {
+        await onProgress(totalCount, totalCount).catch(() => {});
+      }
+      return { ok: true, sentMessageIds, failedCount: 0, healedIndices };
     }
-
-    return { ok: sentMessageIds.length > 0, sentMessageIds, failedCount, healedIndices };
+    log('warn', 'Pre-staged blast delivered partial files; continuing to on-the-fly staging', {
+      delivered: sentMessageIds.length,
+      total: totalCount
+    });
   }
 
   // ─── Fallback: On-the-fly Bulk Transit Staging & Instant Blast ───────────
-  // When files are not pre-staged (e.g. user clicked Re-send Files), bulk-stage
-  // them into the Relay Tunnel and immediately blast to the user in chunks of 100.
-  const sortedMsgIds = [...new Set(msgIds.filter(id => id != null && !isNaN(id)).map(Number))].sort((a, b) => a - b);
+  // When files are not pre-staged or pre-staged blast had missing items, bulk-stage
+  // remaining files into Relay Tunnel and blast to user in chunks of 100.
+  const remainingMsgIds = msgIds.slice(sentMessageIds.length);
+  const sortedMsgIds = [...new Set(remainingMsgIds.filter(id => id != null && !isNaN(id)).map(Number))].sort((a, b) => a - b);
   const CHUNK_SIZE = 100;
 
   for (let i = 0; i < sortedMsgIds.length; i += CHUNK_SIZE) {
     const chunk = sortedMsgIds.slice(i, i + CHUNK_SIZE);
+    let chunkDelivered = false;
 
     // Step 1: Main Bot bulk-copies the chunk into Relay Tunnel (1 fast API call)
     let stageRes = await botContext.run({ token: getMainToken() }, () =>
@@ -959,20 +964,22 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
 
       // Step 2: Worker Bot immediately bulk-blasts the files from Relay Tunnel to User (1 fast API call)
       let blastRes = await copyTelegramMessages(toChatId, relayChatId, transitMsgIds, protectContent);
-      if (blastRes?.ok && Array.isArray(blastRes.messageIds) && blastRes.messageIds.length > 0) {
+      if (blastRes?.ok && Array.isArray(blastRes.messageIds) && blastRes.messageIds.length === transitMsgIds.length) {
         sentMessageIds.push(...blastRes.messageIds);
+        chunkDelivered = true;
       } else {
-        // Fallback: copy transit messages individually with safe pacing
+        // Partial or failed blast: copy individually with safe pacing
         for (const tId of transitMsgIds) {
           const res = await copyMessage(toChatId, relayChatId, tId, protectContent);
           if (res?.ok && res?.messageId) {
             sentMessageIds.push(res.messageId);
-          } else {
-            failedCount++;
           }
           if (transitMsgIds.length > 1) {
             await new Promise(r => setTimeout(r, 350));
           }
+        }
+        if (blastRes?.messageIds?.length > 0) {
+          chunkDelivered = true;
         }
       }
 
@@ -980,40 +987,47 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
       botContext.run({ token: getMainToken() }, () =>
         deleteTelegramMessages(relayChatId, transitMsgIds)
       ).catch(() => {});
-    } else {
-      // Step 4: Fallback item-by-item staging with backup DB failover & pacing
-      log('warn', 'deliverBatchViaRelayTunnel: bulk stage failed, falling back to paced item staging', {
-        relayChatId, effectiveDbChannelId, count: chunk.length, reason: stageRes?.reason
+    }
+
+    // Step 4: Direct Bulk Failover if Relay Tunnel was unviable (avoids 48 slow calls & 429)
+    if (!chunkDelivered) {
+      log('warn', 'Relay tunnel transit unviable for chunk; executing direct bulk delivery fallback', {
+        relayChatId, effectiveDbChannelId, count: chunk.length, stageReason: stageRes?.reason
       });
-      for (let j = 0; j < chunk.length; j++) {
-        const srcMsgId = chunk[j];
-        let transitRes = await botContext.run({ token: getMainToken() }, () =>
-          copyMessage(relayChatId, effectiveDbChannelId, srcMsgId, false)
-        );
 
-        if ((!transitRes?.ok || !transitRes?.messageId) && backupDbChannelId && Array.isArray(backupMsgIds) && backupMsgIds[i + j]) {
-          transitRes = await botContext.run({ token: getMainToken() }, () =>
-            copyMessage(relayChatId, backupDbChannelId, backupMsgIds[i + j], false)
+      let directRes = await botContext.run({ token: getMainToken() }, () =>
+        copyTelegramMessages(toChatId, effectiveDbChannelId, chunk, protectContent)
+      );
+
+      if (directRes?.ok && Array.isArray(directRes.messageIds) && directRes.messageIds.length === chunk.length) {
+        sentMessageIds.push(...directRes.messageIds);
+      } else {
+        // Item-by-item recovery with backup DB failover
+        for (let j = 0; j < chunk.length; j++) {
+          const srcMsgId = chunk[j];
+          const globalIdx = msgIds.indexOf(srcMsgId);
+          let res = await botContext.run({ token: getMainToken() }, () =>
+            copyMessage(toChatId, effectiveDbChannelId, srcMsgId, protectContent)
           );
-        }
 
-        if (transitRes?.ok && transitRes?.messageId) {
-          const transitMsgId = transitRes.messageId;
-          const workerRes = await copyMessage(toChatId, relayChatId, transitMsgId, protectContent);
-          botContext.run({ token: getMainToken() }, () =>
-            deleteTelegramMessage(relayChatId, transitMsgId)
-          ).catch(() => {});
+          if ((!res?.ok || !res?.messageId) && backupDbChannelId && Array.isArray(backupMsgIds) && globalIdx >= 0 && backupMsgIds[globalIdx]) {
+            const bRes = await botContext.run({ token: getMainToken() }, () =>
+              copyMessage(toChatId, backupDbChannelId, backupMsgIds[globalIdx], protectContent)
+            );
+            if (bRes?.ok && bRes?.messageId) {
+              res = bRes;
+              healedIndices.push({ index: globalIdx, backupMsgId: backupMsgIds[globalIdx], backupChannelId: backupDbChannelId });
+            }
+          }
 
-          if (workerRes?.ok && workerRes?.messageId) {
-            sentMessageIds.push(workerRes.messageId);
+          if (res?.ok && res?.messageId) {
+            sentMessageIds.push(res.messageId);
           } else {
             failedCount++;
           }
-        } else {
-          failedCount++;
-        }
-        if (chunk.length > 1) {
-          await new Promise(r => setTimeout(r, 350));
+          if (chunk.length > 1) {
+            await new Promise(r => setTimeout(r, 350));
+          }
         }
       }
     }

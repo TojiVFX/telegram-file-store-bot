@@ -1074,7 +1074,8 @@ export async function copyTelegramMessages(toChatId, fromChatId, messageIds, pro
         });
         const data = await res.json();
         if (res.status === 429 && attempts > 0) {
-          const waitSec = Math.min(data?.parameters?.retry_after || 2, 10);
+          const waitSec = Math.min(data?.parameters?.retry_after || 2, 35);
+          log('warn', `Telegram rate limited copyTelegramMessages (429). Waiting ${waitSec}s before retrying...`, { fromChatId, toChatId, waitSec });
           await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
           continue;
         }
@@ -1126,7 +1127,7 @@ export async function copyMessage(toChatId, fromChatId, msgId, protectContent = 
     if (response.status === 429) {
       const waitSec = data?.parameters?.retry_after || 2;
       log('warn', `Telegram rate limited copyMessage (429). Retry after ${waitSec}s`, { toChatId, fromChatId, msgId, waitSec });
-      if (waitSec > 12 || maxRetries <= 0) {
+      if (waitSec > 35 || maxRetries <= 0) {
         return { ok: false, reason: 'rate_limited', retryAfter: waitSec, isRateLimited: true };
       }
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
