@@ -32,10 +32,6 @@ export async function renderGhostFleetMgmt(chatId, messageId = null) {
       { text: toSmallCaps(`🛡️ Standby Nodes (${standbyWorkers.length})`), callback_data: 'admin:workers_standby' }
     ],
     [
-      { text: toSmallCaps('➕ Add Active Node'), callback_data: 'admin:add_worker_prompt' },
-      { text: toSmallCaps('🛡️ Add Standby Node'), callback_data: 'admin:add_standby_prompt' }
-    ],
-    [
       { text: toSmallCaps(s.relayChatId ? '📡 Change Relay' : '📡 Set Relay Tunnel'), callback_data: 'admin:set_relay_prompt' },
       ...(s.relayChatId ? [
         { text: toSmallCaps('🧪 Test Tunnel'), callback_data: 'admin:test_relay' },
