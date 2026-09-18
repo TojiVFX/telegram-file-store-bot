@@ -802,9 +802,8 @@ export async function runAutomatedDbAudit(options = {}) {
     try {
       if (item.type === 'batch') {
         if (Array.isArray(item.dbMessageIds) && item.dbMessageIds.length) {
-          let batchModified = false;
-          const newDbIds = [...item.dbMessageIds];
           let allHealthy = true;
+          let hasDead = false;
 
           for (let j = 0; j < item.dbMessageIds.length; j++) {
             const pMsgId = item.dbMessageIds[j];
@@ -815,32 +814,26 @@ export async function runAutomatedDbAudit(options = {}) {
               if (backupChannelId && bMsgId) {
                 const bStatus = await checkChannelMessageExists(backupChannelId, bMsgId);
                 if (bStatus.alive) {
-                  const copyRes = await copyIntoDbChannel(primaryChannelId, backupChannelId, bMsgId);
-                  if (copyRes?.ok && copyRes?.messageId) {
-                    newDbIds[j] = copyRes.messageId;
-                    batchModified = true;
-                  }
+                  healed++; // Covered by backup failover
+                  continue;
                 }
               }
+              hasDead = true;
             }
             await new Promise(r => setTimeout(r, 40));
           }
 
-          if (batchModified) {
-            await files.updateOne({ _id: item._id }, { $set: { dbMessageIds: newDbIds } });
-            healed++;
-          } else if (allHealthy) {
+          if (allHealthy) {
             healthy++;
-          } else {
+          } else if (hasDead) {
             unrecoverable++;
             deadItems.push({ code: item._id, title: item.title || item.caption || 'Batch', reason: 'Missing messages in primary channel with no backup available' });
           }
         }
       } else if (item.type === 'bundle') {
         if (Array.isArray(item.qualities) && item.qualities.length) {
-          let bundleModified = false;
-          const newQualities = [...item.qualities];
           let allHealthy = true;
+          let hasDead = false;
 
           for (let j = 0; j < item.qualities.length; j++) {
             const q = item.qualities[j];
@@ -852,23 +845,18 @@ export async function runAutomatedDbAudit(options = {}) {
               if (bChannel && bMsgId) {
                 const bStatus = await checkChannelMessageExists(bChannel, bMsgId);
                 if (bStatus.alive) {
-                  const copyRes = await copyIntoDbChannel(primaryChannelId, bChannel, bMsgId);
-                  if (copyRes?.ok && copyRes?.messageId) {
-                    newQualities[j] = { ...q, dbMessageId: copyRes.messageId };
-                    bundleModified = true;
-                  }
+                  healed++; // Covered by backup failover
+                  continue;
                 }
               }
+              hasDead = true;
             }
             await new Promise(r => setTimeout(r, 40));
           }
 
-          if (bundleModified) {
-            await files.updateOne({ _id: item._id }, { $set: { qualities: newQualities } });
-            healed++;
-          } else if (allHealthy) {
+          if (allHealthy) {
             healthy++;
-          } else {
+          } else if (hasDead) {
             unrecoverable++;
             deadItems.push({ code: item._id, title: item.title || 'Bundle', reason: 'Missing quality posts in primary channel with no backup' });
           }
@@ -880,19 +868,15 @@ export async function runAutomatedDbAudit(options = {}) {
         } else {
           const bMsgId = item.backupDbMessageId;
           const bChannel = item.backupDbChannelId || backupChannelId;
-          let recovered = false;
+          let coveredByBackup = false;
           if (bChannel && bMsgId) {
             const bStatus = await checkChannelMessageExists(bChannel, bMsgId);
             if (bStatus.alive) {
-              const copyRes = await copyIntoDbChannel(primaryChannelId, bChannel, bMsgId);
-              if (copyRes?.ok && copyRes?.messageId) {
-                await files.updateOne({ _id: item._id }, { $set: { dbMessageId: copyRes.messageId } });
-                healed++;
-                recovered = true;
-              }
+              healed++; // Covered by backup
+              coveredByBackup = true;
             }
           }
-          if (!recovered) {
+          if (!coveredByBackup) {
             unrecoverable++;
             deadItems.push({ code: item._id, title: item.title || item.fileName || 'File', reason: 'Deleted from primary channel and not found in backup' });
           }
@@ -950,16 +934,9 @@ export async function getLatestDbAuditReport() {
 }
 
 let dbAuditorWorkerRunning = false;
-export function startAutomatedDbAuditorWorker(intervalMs = 6 * 3600 * 1000) {
-  if (dbAuditorWorkerRunning) return;
-  dbAuditorWorkerRunning = true;
-  setTimeout(() => {
-    runAutomatedDbAudit({ batchSize: 50, notifyAdmin: true }).catch(() => {});
-  }, 2 * 60 * 1000);
-
-  setInterval(() => {
-    runAutomatedDbAudit({ batchSize: 50, notifyAdmin: true }).catch(() => {});
-  }, intervalMs).unref?.();
+export function startAutomatedDbAuditorWorker() {
+  // Automated background re-posting disabled to prevent duplicate channel messages.
+  return;
 }
 
 export async function runWeeklyCleanup() {

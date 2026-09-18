@@ -329,7 +329,7 @@ export async function checkChannelMessageExists(channelId, messageId) {
       return { alive: true };
     }
     const desc = (data.description || '').toLowerCase();
-    if (desc.includes('message is not modified')) {
+    if (desc.includes('message is not modified') || desc.includes("message can't be edited") || desc.includes("message to edit not specified")) {
       return { alive: true };
     }
     return { alive: false, reason: data.description || 'not_found' };

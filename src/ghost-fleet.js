@@ -885,122 +885,67 @@ export async function preStageBatchForDispatch(dispatchToken, batch) {
  * Delivers a batch of messages through the Air-Gapped Relay Tunnel.
  * Supports pre-staged messages (instant blast) or on-the-fly bulk staging + blast.
  */
-export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, backupDbChannelId, backupMsgIds, protectContent = false, onProgress = null, preStagedTransitIds = null) {
+export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, backupDbChannelId, backupMsgIds, protectContent = false, onProgress = null) {
   const relayChatId = await getRelayChatId();
   if (!relayChatId) return { ok: false, reason: 'relay_not_configured', sentMessageIds: [], healedIndices: [] };
 
+  const sentMessageIds = [];
   const totalCount = msgIds.length;
   const healedIndices = [];
-  const transitMsgIds = []; // staged message IDs in relay tunnel
-  let failedStaging = 0;
+  let failedCount = 0;
 
-  // ─── Phase 1: Use Pre-Staged Messages OR Stage into Relay Tunnel ───────────
-  if (Array.isArray(preStagedTransitIds) && preStagedTransitIds.length > 0) {
-    transitMsgIds.push(...preStagedTransitIds);
-    log('info', 'Using pre-staged messages from relay tunnel', { count: transitMsgIds.length });
-    if (typeof onProgress === 'function') {
-      await onProgress(transitMsgIds.length, totalCount, 'staging').catch(() => {});
+  for (let i = 0; i < msgIds.length; i++) {
+    const srcMsgId = msgIds[i];
+    let usedBackup = false;
+
+    // Step 1: Main Bot copies media from protected DB Channel to the Relay Tunnel
+    let transitRes = await botContext.run({ token: getMainToken() }, () =>
+      copyMessage(relayChatId, dbChannelId, srcMsgId, false)
+    );
+
+    // If primary DB message failed and backup is configured, failover to backup DB
+    if ((!transitRes?.ok || !transitRes?.messageId) && backupDbChannelId && Array.isArray(backupMsgIds) && backupMsgIds[i]) {
+      transitRes = await botContext.run({ token: getMainToken() }, () =>
+        copyMessage(relayChatId, backupDbChannelId, backupMsgIds[i], false)
+      );
+      if (transitRes?.ok && transitRes?.messageId) usedBackup = true;
     }
-  } else {
-    // Stage now in bulk chunks of 100
-    const CHUNK_SIZE = 100;
-    for (let i = 0; i < totalCount; i += CHUNK_SIZE) {
-      const chunk = msgIds.slice(i, i + CHUNK_SIZE);
-      const isIncreasing = chunk.every((id, idx) => idx === 0 || id > chunk[idx - 1]);
 
-      let chunkStaged = false;
-      if (isIncreasing) {
-        let stageRes = await botContext.run({ token: getMainToken() }, () =>
-          copyTelegramMessages(relayChatId, dbChannelId, chunk, false)
-        );
-        if (stageRes?.ok && stageRes.messageIds.length === chunk.length) {
-          for (const mid of stageRes.messageIds) {
-            transitMsgIds.push(mid);
-            await trackRelayTransit(relayChatId, mid, 600);
+    if (transitRes?.ok && transitRes?.messageId) {
+      const transitMsgId = transitRes.messageId;
+      try {
+        // Step 2: Worker Bot immediately delivers media from Relay Tunnel directly to User
+        const workerRes = await copyMessage(toChatId, relayChatId, transitMsgId, protectContent);
+
+        // Step 3: Delete the intermediate transit message from Relay Tunnel immediately
+        deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
+
+        if (workerRes?.ok && workerRes?.messageId) {
+          sentMessageIds.push(workerRes.messageId);
+          if (usedBackup) {
+            healedIndices.push({ index: i, backupMsgId: backupMsgIds[i], backupChannelId: backupDbChannelId });
           }
-          chunkStaged = true;
-          if (typeof onProgress === 'function') {
-            await onProgress(transitMsgIds.length, totalCount, 'staging').catch(() => {});
-          }
-        }
-      }
-
-      if (!chunkStaged) {
-        for (let j = 0; j < chunk.length; j++) {
-          const globalIdx = i + j;
-          const srcMsgId = chunk[j];
-          let usedBackup = false;
-          let transitRes = await botContext.run({ token: getMainToken() }, () =>
-            copyMessage(relayChatId, dbChannelId, srcMsgId, false)
-          );
-
-          if ((!transitRes?.ok || !transitRes?.messageId) && backupDbChannelId && Array.isArray(backupMsgIds) && backupMsgIds[globalIdx]) {
-            transitRes = await botContext.run({ token: getMainToken() }, () =>
-              copyMessage(relayChatId, backupDbChannelId, backupMsgIds[globalIdx], false)
-            );
-            if (transitRes?.ok && transitRes?.messageId) usedBackup = true;
-          }
-
-          if (transitRes?.ok && transitRes?.messageId) {
-            transitMsgIds.push(transitRes.messageId);
-            await trackRelayTransit(relayChatId, transitRes.messageId, 600);
-            if (usedBackup) {
-              healedIndices.push({ index: globalIdx, backupMsgId: backupMsgIds[globalIdx], backupChannelId: backupDbChannelId });
-            }
-          } else {
-            failedStaging++;
-          }
-
-          if (typeof onProgress === 'function') {
-            await onProgress(transitMsgIds.length + failedStaging, totalCount, 'staging').catch(() => {});
-          }
-        }
-      }
-    }
-  }
-
-  if (transitMsgIds.length === 0) {
-    return { ok: false, reason: 'all_staging_failed', sentMessageIds: [], failedCount: totalCount, healedIndices };
-  }
-
-  // ─── Phase 2: Blast ALL staged messages to user at once ─────────────────────
-  const sentMessageIds = [];
-  let failedDelivery = 0;
-
-  const CHUNK_SIZE = 100;
-  for (let i = 0; i < transitMsgIds.length; i += CHUNK_SIZE) {
-    const chunk = transitMsgIds.slice(i, i + CHUNK_SIZE);
-    let blastRes = await copyTelegramMessages(toChatId, relayChatId, chunk, protectContent);
-    if (blastRes?.ok && blastRes.messageIds.length === chunk.length) {
-      sentMessageIds.push(...blastRes.messageIds);
-    } else {
-      // Fallback: deliver individually from relay if bulk copy fails
-      for (const transitId of chunk) {
-        const res = await copyMessage(toChatId, relayChatId, transitId, protectContent);
-        if (res?.ok && res?.messageId) {
-          sentMessageIds.push(res.messageId);
         } else {
-          failedDelivery++;
+          failedCount++;
         }
-        if (chunk.length > 1) await new Promise(r => setTimeout(r, 850));
+      } catch (err) {
+        deleteTelegramMessage(relayChatId, transitMsgId).catch(() => {});
+        failedCount++;
       }
+    } else {
+      failedCount++;
     }
-    if (i + CHUNK_SIZE < transitMsgIds.length) {
-      await new Promise(r => setTimeout(r, 500));
+
+    if (typeof onProgress === 'function') {
+      await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
+    }
+
+    if (totalCount > 1) {
+      await new Promise(r => setTimeout(r, 60));
     }
   }
 
-  if (typeof onProgress === 'function') {
-    await onProgress(totalCount, totalCount, 'delivering').catch(() => {});
-  }
-
-  // ─── Phase 3: Clean up relay tunnel messages ────────────────────────────────
-  for (const transitId of transitMsgIds) {
-    untrackRelayTransit(relayChatId, transitId).catch(() => {});
-  }
-  deleteTelegramMessages(relayChatId, transitMsgIds).catch(() => {});
-
-  return { ok: sentMessageIds.length > 0, sentMessageIds, failedCount: failedStaging + failedDelivery, healedIndices };
+  return { ok: sentMessageIds.length > 0, sentMessageIds, failedCount, healedIndices };
 }
 
 /**

@@ -60,7 +60,7 @@ export async function showLoadingAnimation(chatId) {
 
 // ─── deliverBatch ─────────────────────────────────────────────────────────────
 export async function deliverBatch(toChatId, batch, protectContent = false, batchCode = null, onProgress = null) {
-  const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId, backupDbChannelId, backupDbMessageIds, stagedTransitMsgIds } = batch;
+  const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId, backupDbChannelId, backupDbMessageIds } = batch;
   const sentMessageIds = [];
   let failedCount = 0;
   const healedIndices = [];
@@ -96,7 +96,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
             await onProgress(sentMessageIds.length, totalCount, 'delivering').catch(() => {});
           }
           if (i + CHUNK_SIZE < dbMessageIds.length) {
-            await new Promise((r) => setTimeout(r, 500));
+            await new Promise((r) => setTimeout(r, 200));
           }
         } else {
           // Chunk failed (e.g. some message in this chunk was deleted from primary channel)
@@ -123,7 +123,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
             if (typeof onProgress === 'function') {
               await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
             }
-            if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
+            if (totalCount > 1) await new Promise((r) => setTimeout(r, 60));
           }
         }
       }
@@ -131,7 +131,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     }
 
     if (!batchCopied && hasRelay) {
-      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, dbMessageIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress, stagedTransitMsgIds);
+      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, dbMessageIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress);
       if (relayRes?.ok) {
         sentMessageIds.push(...relayRes.sentMessageIds);
         failedCount += relayRes.failedCount || 0;
@@ -218,7 +218,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     }
 
     if (!batchCopied && hasRelay) {
-      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, rangeIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress, stagedTransitMsgIds);
+      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, rangeIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress);
       if (relayRes?.ok) {
         sentMessageIds.push(...relayRes.sentMessageIds);
         failedCount += relayRes.failedCount || 0;
@@ -237,7 +237,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
         if (typeof onProgress === 'function') {
           await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
         }
-        if (totalCount > 1) await new Promise((r) => setTimeout(r, 850));
+        if (totalCount > 1) await new Promise((r) => setTimeout(r, 60));
       }
     }
   }

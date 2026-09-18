@@ -17,8 +17,7 @@ import { hasPremium, getReferralStats, addReferral, getAdminId, completePendingR
 import { logActivity } from '../bot-logs.js';
 import { isScraperSuspected, sendCaptchaChallenge } from '../anti-scraper.js';
 import {
-  consumeDispatchToken, isGhostFleetEnabled, getNextWorkerBot, createDispatchToken,
-  preStageBatchForDispatch, registerInFlightStaging
+  consumeDispatchToken, isGhostFleetEnabled, getNextWorkerBot, createDispatchToken
 } from '../ghost-fleet.js';
 import { renderGhostFleetMgmt } from '../callbacks/admin/ghost-fleet.js';
 
@@ -317,14 +316,6 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
           });
           const deliveryUrl = `https://t.me/${worker.username}?start=dispatch_${dispatchToken}`;
 
-          // Pre-stage batch into Relay Tunnel in background for instant worker delivery
-          if (payload.startsWith('batch_')) {
-            const stagingPromise = getBatch(payload).then((batch) => {
-              if (batch) return preStageBatchForDispatch(dispatchToken, batch);
-            }).catch(() => {});
-            registerInFlightStaging(dispatchToken, stagingPromise);
-          }
-
           const deliveryCard = `🚀 <b>Content Ready for Delivery</b>\n\n` +
             `Your requested media has been prepared! Tap the secure delivery button below to receive your files from our Delivery Node (<b>@${worker.username}</b>).\n\n` +
             `<i>🛡️ Ghost Fleet active — this 1-time secure delivery link expires in 10 minutes.</i>`;
@@ -454,35 +445,13 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
 
     const protect = s?.protectContent === '1';
 
-    // ─── Show loading animation while files are prepared ──────────────────────
-    const loadingText = `⏳ <b>Loading ${totalFiles} file(s)...</b>\n\n` +
-      `[▒▒▒▒▒▒▒▒▒▒] Preparing...`;
-    const loadingMsg = s?.bannerDelivery
-      ? await sendTelegramPhoto(chatId, s.bannerDelivery, loadingText, null, protect)
-      : await sendTelegramMessage(chatId, loadingText, null, protect);
+    // ─── Show loading notification while delivery starts ─────────────────────
+    const loadingMsg = await sendTelegramMessage(chatId, `⏳ <b>Preparing ${totalFiles} file(s) for delivery...</b>`, null, protect);
 
-    // Animate loading bar while files are staging/delivering behind the scenes
-    let lastProgressTime = 0;
-    await deliverBatch(chatId, b, protect, payload, async (current, total, phase) => {
-      const now = Date.now();
-      if (now - lastProgressTime >= 1500 || current === total) {
-        lastProgressTime = now;
-        sendChatAction(chatId, 'upload_document').catch(() => {});
-        const pct = Math.min(100, Math.round((current / total) * 100));
-        const filled = Math.round((pct / 100) * 10);
-        const bar = '█'.repeat(filled) + '▒'.repeat(10 - filled);
-        const phaseLabel = phase === 'staging' ? 'Preparing files...' : 'Sending...';
-        if (loadingMsg?.messageId) {
-          await editTelegramMessage(chatId, loadingMsg.messageId,
-            `⏳ <b>Loading ${totalFiles} file(s)...</b>\n\n` +
-            `${bar} ${pct}%\n` +
-            `<i>${phaseLabel}</i>`
-          ).catch(() => {});
-        }
-      }
-    });
+    sendChatAction(chatId, 'upload_document').catch(() => {});
+    await deliverBatch(chatId, b, protect, payload);
 
-    // ─── Delete loading message after files arrive ────────────────────────────
+    // ─── Clean up loading message after delivery completes ───────────────────
     if (loadingMsg?.messageId) {
       await deleteTelegramMessage(chatId, loadingMsg.messageId).catch(() => {});
     }
