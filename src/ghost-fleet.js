@@ -362,6 +362,21 @@ export async function isGhostFleetEnabled() {
   return Array.from(workerBotsCache.values()).some(w => w.isAlive);
 }
 
+// In-flight batch pre-staging promises: Map<dispatchToken, Promise<{ ok, stagedIds }>>
+const inFlightStagings = new Map();
+
+/**
+ * Registers an in-flight background staging promise so worker bots can await it.
+ */
+export function registerInFlightStaging(dispatchToken, promise) {
+  if (!dispatchToken || !promise) return;
+  inFlightStagings.set(dispatchToken, promise);
+  promise.finally(() => {
+    // Keep in cache for 30s to satisfy rapid consecutive worker requests, then delete
+    setTimeout(() => inFlightStagings.delete(dispatchToken), 30_000);
+  });
+}
+
 /**
  * Creates a single-use dispatch token for delivering a file via a Worker Bot.
  * Stored in MongoDB `sessions` with a 10-minute TTL.
@@ -377,6 +392,7 @@ export async function createDispatchToken(targetCode, userId, metadata = {}) {
     targetCode,
     userId: String(userId),
     metadata,
+    stagingStatus: targetCode?.startsWith('batch_') ? 'in_progress' : 'none',
     useCount: 0,
     maxUses: 1,
     createdAt: new Date(),
@@ -394,13 +410,21 @@ export async function createDispatchToken(targetCode, userId, metadata = {}) {
 
 /**
  * Atomically consumes a dispatch token when a user lands on a Worker Bot.
+ * Awaits any in-flight pre-staging to eliminate duplicate tunnel staging.
  */
 export async function consumeDispatchToken(rawToken, userId) {
   const clean = (rawToken || '').replace(/^dispatch_/i, '').trim();
   const tokenKey = `dispatch:${clean}`;
   const sessions = await getCollection('sessions');
 
-  // Atomically increment useCount if within limits
+  // 1. If in-flight pre-staging is currently executing in this process, await it!
+  if (inFlightStagings.has(clean)) {
+    try {
+      await inFlightStagings.get(clean);
+    } catch {}
+  }
+
+  // 2. Atomically increment useCount if within limits
   const res = await sessions.findOneAndUpdate(
     {
       _id: tokenKey,
@@ -414,7 +438,23 @@ export async function consumeDispatchToken(rawToken, userId) {
     { returnDocument: 'after' }
   );
 
-  const doc = res?.value || res;
+  let doc = res?.value || res;
+
+  // 3. Fallback poll (up to 3 seconds) if staging was marked in_progress but stagedTransitMsgIds not yet present in doc
+  if (doc && (!Array.isArray(doc.stagedTransitMsgIds) || doc.stagedTransitMsgIds.length === 0) && doc.stagingStatus === 'in_progress') {
+    const startWait = Date.now();
+    while (Date.now() - startWait < 3000) {
+      await new Promise(r => setTimeout(r, 200));
+      const fresh = await sessions.findOne({ _id: tokenKey });
+      if (fresh?.stagedTransitMsgIds && Array.isArray(fresh.stagedTransitMsgIds) && fresh.stagedTransitMsgIds.length > 0) {
+        doc.stagedTransitMsgIds = fresh.stagedTransitMsgIds;
+        doc.stagingStatus = fresh.stagingStatus;
+        break;
+      }
+      if (fresh?.stagingStatus === 'failed') break;
+    }
+  }
+
   if (!doc) {
     // Check why it failed
     const existing = await sessions.findOne({ _id: tokenKey });
@@ -749,6 +789,7 @@ export async function preStageBatchForDispatch(dispatchToken, batch) {
           $set: {
             stagedTransitMsgIds: stagedIds,
             stagedRelayChatId: String(relayChatId),
+            stagingStatus: 'completed',
             stagedAt: new Date()
           }
         }
@@ -756,8 +797,21 @@ export async function preStageBatchForDispatch(dispatchToken, batch) {
       log('info', 'Pre-staged batch into relay tunnel for dispatch', { dispatchToken, stagedCount: stagedIds.length });
       return { ok: true, stagedCount: stagedIds.length, stagedIds };
     }
+
+    const sessions = await getCollection('sessions');
+    await sessions.updateOne(
+      { _id: `dispatch:${dispatchToken}` },
+      { $set: { stagingStatus: 'failed' } }
+    ).catch(() => {});
     return { ok: false, reason: 'staging_failed' };
   } catch (err) {
+    const sessions = await getCollection('sessions').catch(() => null);
+    if (sessions) {
+      sessions.updateOne(
+        { _id: `dispatch:${dispatchToken}` },
+        { $set: { stagingStatus: 'failed' } }
+      ).catch(() => {});
+    }
     log('warn', 'preStageBatchForDispatch failed', { dispatchToken, error: err.message });
     return { ok: false, error: err.message };
   }

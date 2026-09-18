@@ -18,7 +18,7 @@ import { logActivity } from '../bot-logs.js';
 import { isScraperSuspected, sendCaptchaChallenge } from '../anti-scraper.js';
 import {
   consumeDispatchToken, isGhostFleetEnabled, getNextWorkerBot, createDispatchToken,
-  preStageBatchForDispatch
+  preStageBatchForDispatch, registerInFlightStaging
 } from '../ghost-fleet.js';
 import { renderGhostFleetMgmt } from '../callbacks/admin/ghost-fleet.js';
 
@@ -318,9 +318,10 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
 
           // Pre-stage batch into Relay Tunnel in background for instant worker delivery
           if (payload.startsWith('batch_')) {
-            getBatch(payload).then((batch) => {
-              if (batch) preStageBatchForDispatch(dispatchToken, batch).catch(() => {});
+            const stagingPromise = getBatch(payload).then((batch) => {
+              if (batch) return preStageBatchForDispatch(dispatchToken, batch);
             }).catch(() => {});
+            registerInFlightStaging(dispatchToken, stagingPromise);
           }
 
           const deliveryCard = `🚀 <b>Content Ready for Delivery</b>\n\n` +
