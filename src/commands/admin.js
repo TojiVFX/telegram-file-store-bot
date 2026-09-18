@@ -268,14 +268,17 @@ export async function processAdminMessage(chatId, rawText, message, req) {
               backupRes = await copyTelegramMessages(backupDbChannelId, batchSession.srcChannelId, chunk, false);
             }
 
-            if (copyRes?.ok && copyRes.messageIds.length === chunk.length) {
+            if (copyRes?.ok && Array.isArray(copyRes.messageIds) && copyRes.messageIds.length > 0) {
               collectedIds.push(...copyRes.messageIds);
-              if (backupRes?.ok && backupRes.messageIds.length === chunk.length) {
+              if (backupRes?.ok && Array.isArray(backupRes.messageIds) && backupRes.messageIds.length > 0) {
                 backupCollectedIds.push(...backupRes.messageIds);
               }
-              processedCount += chunk.length;
+              processedCount += copyRes.messageIds.length;
             } else {
-              // Fallback for this chunk (e.g. deleted message or service alert in range)
+              // Smart fallback: Only if bulk copy completely failed, fall back to item-by-item copy with pacing
+              log('warn', 'Batch range bulk copy failed, using paced fallback', {
+                chunkSize: chunk.length, reason: copyRes?.reason
+              });
               for (let j = 0; j < chunk.length; j++) {
                 const srcId = chunk[j];
                 const r = await copyIntoDbChannel(dbChannelId, batchSession.srcChannelId, srcId);
@@ -289,7 +292,7 @@ export async function processAdminMessage(chatId, rawText, message, req) {
                   if (backupId) backupCollectedIds.push(backupId);
                 }
                 processedCount++;
-                if (totalFiles > 20) await new Promise((r) => setTimeout(r, 40));
+                if (totalFiles > 20) await new Promise((r) => setTimeout(r, 350));
               }
             }
 
