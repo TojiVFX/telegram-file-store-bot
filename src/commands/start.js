@@ -17,7 +17,8 @@ import { hasPremium, getReferralStats, addReferral, getAdminId, completePendingR
 import { logActivity } from '../bot-logs.js';
 import { isScraperSuspected, sendCaptchaChallenge } from '../anti-scraper.js';
 import {
-  consumeDispatchToken, isGhostFleetEnabled, getNextWorkerBot, createDispatchToken
+  consumeDispatchToken, isGhostFleetEnabled, getNextWorkerBot, createDispatchToken,
+  preStageBatchForDispatch
 } from '../ghost-fleet.js';
 import { renderGhostFleetMgmt } from '../callbacks/admin/ghost-fleet.js';
 
@@ -94,7 +95,7 @@ async function alertAdminShortenerDown() {
   );
 }
 
-export async function handleStartPayload(chatId, payload, message, admin, skipTokenCheck = false) {
+export async function handleStartPayload(chatId, payload, message, admin, skipTokenCheck = false, stagedTransitMsgIds = null) {
   const botUsername = await getBotUsername();
   const sessions = await getCollection('sessions');
 
@@ -189,7 +190,7 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
 
     const { doc } = consumeRes;
     // Deliver file/batch/bundle using current worker bot context, skipping token re-verification
-    return handleStartPayload(chatId, doc.targetCode, message, admin, true);
+    return handleStartPayload(chatId, doc.targetCode, message, admin, true, doc.stagedTransitMsgIds);
   }
 
   if (payload && (payload.startsWith('batch_') || payload.startsWith('file_') || payload.startsWith('bundle_'))) {
@@ -315,6 +316,13 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
           });
           const deliveryUrl = `https://t.me/${worker.username}?start=dispatch_${dispatchToken}`;
 
+          // Pre-stage batch into Relay Tunnel in background for instant worker delivery
+          if (payload.startsWith('batch_')) {
+            getBatch(payload).then((batch) => {
+              if (batch) preStageBatchForDispatch(dispatchToken, batch).catch(() => {});
+            }).catch(() => {});
+          }
+
           const deliveryCard = `🚀 <b>Content Ready for Delivery</b>\n\n` +
             `Your requested media has been prepared! Tap the secure delivery button below to receive your files from our Delivery Node (<b>@${worker.username}</b>).\n\n` +
             `<i>🛡️ Ghost Fleet active — this 1-time secure delivery link expires in 10 minutes.</i>`;
@@ -410,6 +418,10 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       const s = await getSettings();
       await sendTelegramMessage(chatId, `❌ Not found.`, null, s?.protectContent === '1');
       return;
+    }
+
+    if (Array.isArray(stagedTransitMsgIds) && stagedTransitMsgIds.length > 0) {
+      b.stagedTransitMsgIds = stagedTransitMsgIds;
     }
 
     sendChatAction(chatId, 'upload_document').catch(() => {});
