@@ -424,6 +424,10 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
       return;
     }
 
+    if (!b.dbChannelId) {
+      b.dbChannelId = await getDbChannelId();
+    }
+
     if (Array.isArray(stagedTransitMsgIds) && stagedTransitMsgIds.length > 0) {
       b.stagedTransitMsgIds = stagedTransitMsgIds;
     }

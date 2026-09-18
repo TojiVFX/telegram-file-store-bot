@@ -60,7 +60,8 @@ export async function showLoadingAnimation(chatId) {
 
 // ─── deliverBatch ─────────────────────────────────────────────────────────────
 export async function deliverBatch(toChatId, batch, protectContent = false, batchCode = null, onProgress = null) {
-  const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId, backupDbChannelId, backupDbMessageIds, stagedTransitMsgIds } = batch;
+  const { dbMessageIds, dbFirstMsgId, dbLastMsgId, backupDbChannelId, backupDbMessageIds, stagedTransitMsgIds } = batch;
+  const dbChannelId = batch.dbChannelId || await getDbChannelId();
   const sentMessageIds = [];
   let failedCount = 0;
   const healedIndices = [];
@@ -123,7 +124,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
             if (typeof onProgress === 'function') {
               await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
             }
-            if (totalCount > 1) await new Promise((r) => setTimeout(r, 60));
+            if (totalCount > 1) await new Promise((r) => setTimeout(r, 350));
           }
         }
       }
@@ -237,7 +238,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
         if (typeof onProgress === 'function') {
           await onProgress(sentMessageIds.length + failedCount, totalCount, 'delivering').catch(() => {});
         }
-        if (totalCount > 1) await new Promise((r) => setTimeout(r, 60));
+        if (totalCount > 1) await new Promise((r) => setTimeout(r, 350));
       }
     }
   }

@@ -1049,7 +1049,8 @@ export async function copyTelegramMessages(toChatId, fromChatId, messageIds, pro
   const token = getToken();
   if (!token || !toChatId || !fromChatId || !messageIds) return { ok: false, reason: 'missing_params', messageIds: [] };
   const rawIds = Array.isArray(messageIds) ? messageIds : [messageIds];
-  const ids = rawIds.filter(id => id != null && !isNaN(id)).map(id => Number(id));
+  // Deduplicate and sort IDs ascending for strict Telegram copyMessages compliance
+  const ids = [...new Set(rawIds.filter(id => id != null && !isNaN(id)).map(id => Number(id)))].sort((a, b) => a - b);
   if (ids.length === 0) return { ok: true, messageIds: [] };
 
   const CHUNK_SIZE = 100;
@@ -1073,7 +1074,7 @@ export async function copyTelegramMessages(toChatId, fromChatId, messageIds, pro
         });
         const data = await res.json();
         if (res.status === 429 && attempts > 0) {
-          const waitSec = data?.parameters?.retry_after || 2;
+          const waitSec = Math.min(data?.parameters?.retry_after || 2, 10);
           await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
           continue;
         }
@@ -1083,6 +1084,11 @@ export async function copyTelegramMessages(toChatId, fromChatId, messageIds, pro
           }
           break;
         } else {
+          log('warn', `copyTelegramMessages Telegram error [${fromChatId} -> ${toChatId}]`, {
+            description: data?.description,
+            error_code: data?.error_code,
+            chunkSize: chunk.length,
+          });
           return { ok: false, reason: data.description || 'copy_failed', partialIds: copiedIds };
         }
       } catch (err) {
@@ -1117,9 +1123,12 @@ export async function copyMessage(toChatId, fromChatId, msgId, protectContent = 
       body: JSON.stringify(body),
     });
     const data = await response.json();
-    if (response.status === 429 && maxRetries > 0) {
+    if (response.status === 429) {
       const waitSec = data?.parameters?.retry_after || 2;
-      log('warn', `Telegram rate limited copyMessage (429). Waiting ${waitSec}s before retrying...`, { toChatId, fromChatId, msgId, waitSec });
+      log('warn', `Telegram rate limited copyMessage (429). Retry after ${waitSec}s`, { toChatId, fromChatId, msgId, waitSec });
+      if (waitSec > 12 || maxRetries <= 0) {
+        return { ok: false, reason: 'rate_limited', retryAfter: waitSec, isRateLimited: true };
+      }
       await new Promise(r => setTimeout(r, (waitSec + 0.5) * 1000));
       return copyMessage(toChatId, fromChatId, msgId, protectContent, replyMarkup, maxRetries - 1, customCaption);
     }
