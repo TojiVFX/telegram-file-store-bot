@@ -357,6 +357,8 @@ export const sessionActions = {
     await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
     await sessions.deleteOne({ _id: `admin:waiting_setting:${chatId}` });
     await sessions.deleteOne({ _id: `admin:waiting_premium_user:${chatId}` });
+    await sessions.deleteOne({ _id: `admin:premium_target:${chatId}` });
+    await sessions.deleteOne({ _id: `admin:premium_msg_id:${chatId}` });
 
     await editTelegramMessage(chatId, messageId, `<b>Session cancelled.</b>`, {
       inline_keyboard: navButtons('admin:dashboard')

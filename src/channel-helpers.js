@@ -210,17 +210,35 @@ export async function getMainBotUsername() {
 
 export async function resolveUser(input) {
   if (!input) return null;
-  const raw = String(input).trim();
-  const users = await getCollection('users');
+  if (typeof input === 'object' && input !== null) {
+    if (input._id) return String(input._id);
+    if (input.id) return String(input.id);
+    if (input.userId) return String(input.userId);
+  }
 
-  // If numeric string or number
+  const raw = String(input).trim();
+  if (!raw || raw === '[object Object]') return null;
+
+  // If numeric string or number (Telegram User ID)
   if (/^-?\d+$/.test(raw)) {
-    return await users.findOne({ _id: String(raw) });
+    return String(raw);
   }
 
   // If username with or without leading @
-  const username = raw.replace(/^@/, '').toLowerCase();
-  return await users.findOne({ username });
+  const cleanUsername = raw.replace(/^@/, '').trim();
+  if (!cleanUsername) return null;
+
+  const users = await getCollection('users');
+  const escaped = cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const user = await users.findOne({
+    username: new RegExp(`^${escaped}$`, 'i')
+  });
+
+  if (user && user._id) {
+    return String(user._id);
+  }
+
+  return null;
 }
 
 export function isChannelFatalError(errorStr) {

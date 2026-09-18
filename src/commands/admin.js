@@ -1190,16 +1190,30 @@ export async function processAdminMessage(chatId, rawText, message, req) {
   const wpDoc = await sessions.findOne({ _id: `admin:waiting_premium_user:${chatId}` });
   const isWaitingPremium = wpDoc && wpDoc.expiresAt > new Date() ? wpDoc.val : null;
   if (isWaitingPremium) {
-    const targetUserId = await resolveUser(rawText);
-
-    if (!targetUserId) {
-      await sendTelegramMessage(chatId, `❌ User not found.`);
+    if (rawText === '/cancel') {
+      await sessions.deleteOne({ _id: `admin:waiting_premium_user:${chatId}` });
+      await sessions.deleteOne({ _id: `admin:premium_msg_id:${chatId}` });
+      await sessions.deleteOne({ _id: `admin:premium_target:${chatId}` });
+      await sendTelegramMessage(chatId, `✅ <b>Grant VIP cancelled.</b>`, {
+        inline_keyboard: [[{ text: toSmallCaps('Back to User Mgmt'), callback_data: 'admin:user_mgmt' }]]
+      });
       return true;
     }
 
+    const targetUserId = await resolveUser(rawText);
+
+    if (!targetUserId) {
+      await sendTelegramMessage(chatId, `❌ User <code>${esc(rawText.trim())}</code> not found. If specifying by @username, the user must have started the bot first.`);
+      return true;
+    }
+
+    const users = await getCollection('users');
+    const u = await users.findOne({ _id: String(targetUserId) });
+    const userLabel = u?.username ? `<code>${targetUserId}</code> (@${esc(u.username)})` : `<code>${targetUserId}</code>`;
+
     await sessions.updateOne(
       { _id: `admin:premium_target:${chatId}` },
-      { $set: { val: targetUserId, expiresAt: new Date(Date.now() + 300 * 1000) } },
+      { $set: { val: String(targetUserId), expiresAt: new Date(Date.now() + 300 * 1000) } },
       { upsert: true }
     );
     await sessions.deleteOne({ _id: `admin:waiting_premium_user:${chatId}` });
@@ -1215,10 +1229,10 @@ export async function processAdminMessage(chatId, rawText, message, req) {
     };
 
     if (msgId) {
-      await editTelegramMessage(chatId, msgId, `⭐ <b>Select Duration</b> for <code>${targetUserId}</code>:`, durationKb);
+      await editTelegramMessage(chatId, msgId, `⭐ <b>Select Duration</b> for ${userLabel}:`, durationKb);
       await deleteTelegramMessage(chatId, message.message_id);
     } else {
-      await sendTelegramMessage(chatId, `⭐ <b>Select Duration</b> for <code>${targetUserId}</code>:`, durationKb);
+      await sendTelegramMessage(chatId, `⭐ <b>Select Duration</b> for ${userLabel}:`, durationKb);
     }
     return true;
   }

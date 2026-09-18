@@ -1,6 +1,6 @@
 import {
   getSettings, updateSettings, toSmallCaps, editTelegramMessage,
-  sendTelegramMessage, logHistory, esc, getCollection
+  sendTelegramMessage, logHistory, esc, getCollection, formatISTDateTime
 } from '../../bot-common.js';
 import { getStandbyChannelId } from '../../phoenix-protocol.js';
 import { sendDatabaseBackup } from '../../backup.js';
@@ -242,9 +242,15 @@ export const settingsSecurityActions = {
   'fs_set_premium:': async ({ chatId, messageId, action, cq, safeAnswer, sessions }) => {
     const rawVal = action.split(':')[1];
     const targetDoc = await sessions.findOne({ _id: `admin:premium_target:${chatId}` });
-    const targetUserId = targetDoc && targetDoc.expiresAt > new Date() ? targetDoc.val : null;
-    if (!targetUserId) {
-      await safeAnswer(cq.id, 'Session expired.');
+    let targetUserId = targetDoc && targetDoc.expiresAt > new Date() ? targetDoc.val : null;
+    if (typeof targetUserId === 'object' && targetUserId !== null) {
+      targetUserId = targetUserId._id || targetUserId.id || null;
+    }
+    if (targetUserId) {
+      targetUserId = String(targetUserId).trim();
+    }
+    if (!targetUserId || targetUserId === '[object Object]') {
+      await safeAnswer(cq.id, 'Session expired or invalid user target.');
       return;
     }
 
@@ -254,7 +260,8 @@ export const settingsSecurityActions = {
     if (rawVal === 'revoke') {
       const revRes = await revokePremium(targetUserId);
       if (revRes.ok) {
-        await editTelegramMessage(chatId, messageId, `✅ <b>VIP Access Revoked!</b>\n\nUser: <code>${targetUserId}</code>`, {
+        const uLabel = revRes.username ? `<code>${targetUserId}</code> (@${esc(revRes.username)})` : `<code>${targetUserId}</code>`;
+        await editTelegramMessage(chatId, messageId, `✅ <b>VIP Access Revoked!</b>\n\nUser: ${uLabel}`, {
           inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
         });
       } else {
@@ -274,7 +281,9 @@ export const settingsSecurityActions = {
     }
 
     const durLabel = rawVal === 'lifetime' ? 'Lifetime ♾️' : `${rawVal} Days`;
-    await editTelegramMessage(chatId, messageId, `⭐ <b>VIP Access Granted!</b>\n\n• User: <code>${targetUserId}</code>\n• Duration: <b>${durLabel}</b>\n• Expiry: <code>${grantRes.isLifetime ? 'Lifetime' : grantRes.premiumUntil.toISOString().slice(0, 10)}</code>`, {
+    const expStr = grantRes.isLifetime ? 'Lifetime (Never Expires)' : (grantRes.premiumUntil ? formatISTDateTime(grantRes.premiumUntil) : 'Active');
+    const uLabel = grantRes.username ? `<code>${targetUserId}</code> (@${esc(grantRes.username)})` : `<code>${targetUserId}</code>`;
+    await editTelegramMessage(chatId, messageId, `⭐ <b>VIP Access Granted!</b>\n\n• User: ${uLabel}\n• Duration: <b>${durLabel}</b>\n• Expiry: <code>${expStr}</code>`, {
       inline_keyboard: [[{ text: toSmallCaps('Back'), callback_data: 'admin:user_mgmt' }]]
     });
   }

@@ -662,26 +662,35 @@ export async function hasPremium(userId) {
 
 export async function grantPremium(targetUserId, duration = 30, reason = 'Admin Grant') {
   try {
+    let cleanTarget = typeof targetUserId === 'object' && targetUserId !== null
+      ? (targetUserId._id || targetUserId.id || targetUserId.userId || '')
+      : String(targetUserId || '').trim();
+
+    if (!cleanTarget || cleanTarget === '[object Object]') {
+      return { ok: false, error: 'Invalid user ID or username provided.' };
+    }
+
     const users = await getCollection('users');
-    let u = await users.findOne({ _id: String(targetUserId) });
+    let u = await users.findOne({ _id: String(cleanTarget) });
     if (!u) {
-      const cleanUsername = String(targetUserId).replace(/^@/, '');
-      u = await users.findOne({ username: new RegExp(`^${cleanUsername}$`, 'i') });
+      const cleanUsername = cleanTarget.replace(/^@/, '');
+      const escaped = cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      u = await users.findOne({ username: new RegExp(`^${escaped}$`, 'i') });
     }
     if (!u) {
-      if (/^\d+$/.test(String(targetUserId))) {
+      if (/^-?\d+$/.test(cleanTarget)) {
         await users.updateOne(
-          { _id: String(targetUserId) },
+          { _id: String(cleanTarget) },
           { $setOnInsert: { joinedAt: new Date(), lastSeen: new Date() } },
           { upsert: true }
         );
-        u = { _id: String(targetUserId) };
+        u = { _id: String(cleanTarget) };
       } else {
         return { ok: false, error: 'User not found. They must start the bot first.' };
       }
     }
 
-    const userId = u._id;
+    const userId = String(u._id);
     const isLifetime = String(duration).toLowerCase() === 'lifetime' || duration === 'forever' || duration >= 36500;
     const now = Date.now();
     let newPremiumUntil;
@@ -719,7 +728,7 @@ export async function grantPremium(targetUserId, duration = 30, reason = 'Admin 
       `• ⚡ Instant 1-Tap Delivery (Zero Ads / No Shorteners)\n` +
       `• 🔓 Bypass Channel Force-Sub\n` +
       `• ♾️ Unlimited Fast Downloads\n\n` +
-      `<i>Type /myplan anytime to check your membership status.</i>`
+      `<i>Type /me anytime to check your membership status.</i>`
     ).catch(() => {});
 
     return { ok: true, userId, username: u.username, isLifetime, premiumUntil: newPremiumUntil };
@@ -731,17 +740,26 @@ export async function grantPremium(targetUserId, duration = 30, reason = 'Admin 
 
 export async function revokePremium(targetUserId, notify = true) {
   try {
+    let cleanTarget = typeof targetUserId === 'object' && targetUserId !== null
+      ? (targetUserId._id || targetUserId.id || targetUserId.userId || '')
+      : String(targetUserId || '').trim();
+
+    if (!cleanTarget || cleanTarget === '[object Object]') {
+      return { ok: false, error: 'Invalid user ID or username provided.' };
+    }
+
     const users = await getCollection('users');
-    let u = await users.findOne({ _id: String(targetUserId) });
+    let u = await users.findOne({ _id: String(cleanTarget) });
     if (!u) {
-      const cleanUsername = String(targetUserId).replace(/^@/, '');
-      u = await users.findOne({ username: new RegExp(`^${cleanUsername}$`, 'i') });
+      const cleanUsername = cleanTarget.replace(/^@/, '');
+      const escaped = cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      u = await users.findOne({ username: new RegExp(`^${escaped}$`, 'i') });
     }
     if (!u) {
       return { ok: false, error: 'User not found.' };
     }
 
-    const userId = u._id;
+    const userId = String(u._id);
     await users.updateOne(
       { _id: String(userId) },
       { $unset: { premiumUntil: '', premiumPlan: '', premiumReason: '', premiumGrantedAt: '' } }
