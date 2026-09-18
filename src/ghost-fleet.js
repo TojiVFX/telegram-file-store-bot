@@ -506,6 +506,7 @@ export async function addWorkerBot(token) {
     lastChecked: Date.now()
   });
 
+  registerSingleWorkerWebhook({ ...verifyRes, token }).catch(() => {});
   return { ok: true, worker: verifyRes };
 }
 
@@ -550,7 +551,81 @@ export async function addStandbyWorkerBot(token) {
     lastChecked: Date.now()
   });
 
+  registerSingleWorkerWebhook({ ...verifyRes, token }).catch(() => {});
   return { ok: true, worker: verifyRes };
+}
+
+/**
+ * Bulk adds one or multiple worker bots (separated by newlines or commas).
+ */
+export async function addWorkerBotsBulk(tokenString, role = 'active') {
+  const tokens = String(tokenString || '')
+    .split(/[\r\n,]+/)
+    .map(t => t.trim().replace(/^bot/i, ''))
+    .filter(t => t.length > 15 && t.includes(':'));
+
+  if (tokens.length === 0) {
+    return { ok: false, reason: 'No valid bot tokens found. Format: 123456789:ABCdefGhI...' };
+  }
+
+  const results = [];
+  for (const t of tokens) {
+    const fn = role === 'standby' ? addStandbyWorkerBot : addWorkerBot;
+    const r = await fn(t);
+    results.push({ token: t, ...r });
+  }
+
+  const successList = results.filter(r => r.ok);
+  return {
+    ok: successList.length > 0,
+    total: tokens.length,
+    successCount: successList.length,
+    failedCount: tokens.length - successList.length,
+    successList,
+    results
+  };
+}
+
+/**
+ * Changes a worker bot's role between 'active' and 'standby'.
+ */
+export async function setWorkerRole(botId, role = 'active') {
+  const id = String(botId);
+  const coll = await getCollection('worker_bots');
+  await coll.updateOne({ botId: id }, { $set: { role, circuitState: 'HEALTHY', updatedAt: new Date() } });
+  const cached = workerBotsCache.get(id);
+  if (cached) {
+    cached.role = role;
+    cached.circuitState = 'HEALTHY';
+  }
+  return { ok: true, botId: id, role };
+}
+
+/**
+ * Registers webhook for a single worker bot.
+ */
+export async function registerSingleWorkerWebhook(worker) {
+  const domain = (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || process.env.KOYEB_APP_URL || process.env.BASE_URL || '').trim();
+  if (!domain || !worker?.token || !worker?.botId) return false;
+  const formattedDomain = domain.startsWith('http://') || domain.startsWith('https://') ? domain : `https://${domain}`;
+  const webhookUrl = `${formattedDomain}/webhook/worker/${worker.botId}`;
+  const secretToken = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+  try {
+    const body = {
+      url: webhookUrl,
+      allowed_updates: ['message', 'callback_query']
+    };
+    if (secretToken) body.secret_token = secretToken;
+    const res = await fetch(`https://api.telegram.org/bot${worker.token.trim().replace(/^bot/i, '')}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    return Boolean(data?.ok);
+  } catch {
+    return false;
+  }
 }
 
 /**

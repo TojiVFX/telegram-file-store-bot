@@ -28,7 +28,7 @@ import {
 } from '../stealth-engine.js';
 import { renderStorageAudit } from '../callbacks/admin/storage-audit.js';
 import { setStandbyChannelId } from '../phoenix-protocol.js';
-import { addWorkerBot, addStandbyWorkerBot } from '../ghost-fleet.js';
+import { addWorkerBot, addStandbyWorkerBot, addWorkerBotsBulk } from '../ghost-fleet.js';
 
 export async function processAdminMessage(chatId, rawText, message, req) {
   const sessions = await getCollection('sessions');
@@ -1159,13 +1159,25 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       const tokenCandidate = rawText.trim();
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
 
-      const addRes = await addWorkerBot(tokenCandidate);
+      const addRes = await addWorkerBotsBulk(tokenCandidate, 'active');
       if (addRes.ok) {
-        await sendTelegramMessage(chatId, `🎉 <b>Ghost Fleet Worker Bot Added!</b>\n\n• Bot: <b>@${esc(addRes.worker.username)}</b>\n• ID: <code>${addRes.worker.botId}</code>\n• Webhook: <b>Registered & Active</b>\n\nThis node is now ready to receive secure file dispatch jobs.`, {
-          inline_keyboard: [[{ text: toSmallCaps('Ghost Fleet Manager'), callback_data: 'admin:ghost_fleet' }]]
+        let msg = `🎉 <b>Ghost Fleet Active Worker${addRes.total > 1 ? 's' : ''} Added!</b>\n\n`;
+        msg += `• Successfully Added: <b>${addRes.successCount} / ${addRes.total}</b>\n`;
+        for (const item of (addRes.successList || [])) {
+          msg += `  ✅ @${esc(item.worker?.username || item.worker?.botId)}\n`;
+        }
+        if (addRes.failedCount > 0) {
+          msg += `\n⚠️ <i>${addRes.failedCount} token(s) failed verification.</i>\n`;
+        }
+        msg += `\nThese active delivery nodes are now live in the round-robin rotation!`;
+        await sendTelegramMessage(chatId, msg, {
+          inline_keyboard: [
+            [{ text: toSmallCaps('🟢 View Active Workers'), callback_data: 'admin:workers_active' }],
+            [{ text: toSmallCaps('« Ghost Fleet Dashboard'), callback_data: 'admin:ghost_fleet' }]
+          ]
         });
       } else {
-        await sendTelegramMessage(chatId, `❌ <b>Failed to add worker bot:</b>\n${esc(addRes.reason || addRes.error || 'Invalid token')}`, {
+        await sendTelegramMessage(chatId, `❌ <b>Failed to add worker:</b>\n${esc(addRes.reason || 'Invalid token')}`, {
           inline_keyboard: [[{ text: toSmallCaps('Back to Ghost Fleet'), callback_data: 'admin:ghost_fleet' }]]
         });
       }
@@ -1176,13 +1188,25 @@ export async function processAdminMessage(chatId, rawText, message, req) {
       const tokenCandidate = rawText.trim();
       await sessions.deleteOne({ _id: `admin:waiting_action:${chatId}` });
 
-      const addRes = await addStandbyWorkerBot(tokenCandidate);
+      const addRes = await addWorkerBotsBulk(tokenCandidate, 'standby');
       if (addRes.ok) {
-        await sendTelegramMessage(chatId, `🛡️ <b>Standby Reserve Worker Added!</b>\n\n• Bot: <b>@${esc(addRes.worker.username)}</b>\n• ID: <code>${addRes.worker.botId}</code>\n• Status: <b>Standby Reserve</b>\n\nThis node is safely held in reserve and will automatically hot-swap into active rotation if an active worker bot is banned or rate-limited.`, {
-          inline_keyboard: [[{ text: toSmallCaps('Ghost Fleet Manager'), callback_data: 'admin:ghost_fleet' }]]
+        let msg = `🛡️ <b>Standby Reserve Worker${addRes.total > 1 ? 's' : ''} Added!</b>\n\n`;
+        msg += `• Successfully Added: <b>${addRes.successCount} / ${addRes.total}</b>\n`;
+        for (const item of (addRes.successList || [])) {
+          msg += `  🟡 @${esc(item.worker?.username || item.worker?.botId)}\n`;
+        }
+        if (addRes.failedCount > 0) {
+          msg += `\n⚠️ <i>${addRes.failedCount} token(s) failed verification.</i>\n`;
+        }
+        msg += `\nThese standby reserve nodes will automatically hot-swap into rotation if any active worker bot fails or gets rate limited!`;
+        await sendTelegramMessage(chatId, msg, {
+          inline_keyboard: [
+            [{ text: toSmallCaps('🛡️ View Standby Reserve'), callback_data: 'admin:workers_standby' }],
+            [{ text: toSmallCaps('« Ghost Fleet Dashboard'), callback_data: 'admin:ghost_fleet' }]
+          ]
         });
       } else {
-        await sendTelegramMessage(chatId, `❌ <b>Failed to add standby worker:</b>\n${esc(addRes.reason || addRes.error || 'Invalid token')}`, {
+        await sendTelegramMessage(chatId, `❌ <b>Failed to add standby worker:</b>\n${esc(addRes.reason || 'Invalid token')}`, {
           inline_keyboard: [[{ text: toSmallCaps('Back to Ghost Fleet'), callback_data: 'admin:ghost_fleet' }]]
         });
       }
