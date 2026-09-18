@@ -440,10 +440,10 @@ export async function consumeDispatchToken(rawToken, userId) {
 
   let doc = res?.value || res;
 
-  // 3. Fallback poll (up to 3 seconds) if staging was marked in_progress but stagedTransitMsgIds not yet present in doc
+  // 3. Fallback poll (up to 12 seconds) if staging was marked in_progress but stagedTransitMsgIds not yet present in doc
   if (doc && (!Array.isArray(doc.stagedTransitMsgIds) || doc.stagedTransitMsgIds.length === 0) && doc.stagingStatus === 'in_progress') {
     const startWait = Date.now();
-    while (Date.now() - startWait < 3000) {
+    while (Date.now() - startWait < 12000) {
       await new Promise(r => setTimeout(r, 200));
       const fresh = await sessions.findOne({ _id: tokenKey });
       if (fresh?.stagedTransitMsgIds && Array.isArray(fresh.stagedTransitMsgIds) && fresh.stagedTransitMsgIds.length > 0) {
@@ -885,7 +885,7 @@ export async function preStageBatchForDispatch(dispatchToken, batch) {
  * Delivers a batch of messages through the Air-Gapped Relay Tunnel.
  * Supports pre-staged messages (instant blast) or on-the-fly bulk staging + blast.
  */
-export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, backupDbChannelId, backupMsgIds, protectContent = false, onProgress = null) {
+export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, backupDbChannelId, backupMsgIds, protectContent = false, onProgress = null, preStagedTransitIds = null) {
   const relayChatId = await getRelayChatId();
   if (!relayChatId) return { ok: false, reason: 'relay_not_configured', sentMessageIds: [], healedIndices: [] };
 
@@ -894,6 +894,46 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
   const healedIndices = [];
   let failedCount = 0;
 
+  // ─── Fast Blast: Messages already pre-staged in Relay Tunnel! ─────────────
+  if (Array.isArray(preStagedTransitIds) && preStagedTransitIds.length > 0) {
+    const transitMsgIds = preStagedTransitIds;
+    log('info', 'Blasting pre-staged batch from relay tunnel to user at once', { count: transitMsgIds.length });
+
+    const CHUNK_SIZE = 100;
+    for (let i = 0; i < transitMsgIds.length; i += CHUNK_SIZE) {
+      const chunk = transitMsgIds.slice(i, i + CHUNK_SIZE);
+      let blastRes = await copyTelegramMessages(toChatId, relayChatId, chunk, protectContent);
+      if (blastRes?.ok && Array.isArray(blastRes.messageIds) && blastRes.messageIds.length === chunk.length) {
+        sentMessageIds.push(...blastRes.messageIds);
+      } else {
+        // Fallback: copy individually if bulk copy encounters an error
+        for (const transitId of chunk) {
+          const res = await copyMessage(toChatId, relayChatId, transitId, protectContent);
+          if (res?.ok && res?.messageId) {
+            sentMessageIds.push(res.messageId);
+          } else {
+            failedCount++;
+          }
+        }
+      }
+    }
+
+    // Clean up transit messages from Relay Tunnel immediately
+    for (const transitId of transitMsgIds) {
+      untrackRelayTransit(relayChatId, transitId).catch(() => {});
+    }
+    botContext.run({ token: getMainToken() }, () =>
+      deleteTelegramMessages(relayChatId, transitMsgIds)
+    ).catch(() => {});
+
+    if (typeof onProgress === 'function') {
+      await onProgress(totalCount, totalCount).catch(() => {});
+    }
+
+    return { ok: sentMessageIds.length > 0, sentMessageIds, failedCount, healedIndices };
+  }
+
+  // ─── Fallback: Sequential transit streaming if not pre-staged ─────────────
   for (let i = 0; i < msgIds.length; i++) {
     const srcMsgId = msgIds[i];
     let usedBackup = false;

@@ -60,7 +60,7 @@ export async function showLoadingAnimation(chatId) {
 
 // ─── deliverBatch ─────────────────────────────────────────────────────────────
 export async function deliverBatch(toChatId, batch, protectContent = false, batchCode = null, onProgress = null) {
-  const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId, backupDbChannelId, backupDbMessageIds } = batch;
+  const { dbChannelId, dbMessageIds, dbFirstMsgId, dbLastMsgId, backupDbChannelId, backupDbMessageIds, stagedTransitMsgIds } = batch;
   const sentMessageIds = [];
   let failedCount = 0;
   const healedIndices = [];
@@ -131,7 +131,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     }
 
     if (!batchCopied && hasRelay) {
-      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, dbMessageIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress);
+      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, dbMessageIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress, stagedTransitMsgIds);
       if (relayRes?.ok) {
         sentMessageIds.push(...relayRes.sentMessageIds);
         failedCount += relayRes.failedCount || 0;
@@ -218,7 +218,7 @@ export async function deliverBatch(toChatId, batch, protectContent = false, batc
     }
 
     if (!batchCopied && hasRelay) {
-      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, rangeIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress);
+      const relayRes = await deliverBatchViaRelayTunnel(toChatId, dbChannelId, rangeIds, backupDbChannelId, backupDbMessageIds, protectContent, onProgress, stagedTransitMsgIds);
       if (relayRes?.ok) {
         sentMessageIds.push(...relayRes.sentMessageIds);
         failedCount += relayRes.failedCount || 0;

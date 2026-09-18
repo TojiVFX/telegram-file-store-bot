@@ -17,7 +17,8 @@ import { hasPremium, getReferralStats, addReferral, getAdminId, completePendingR
 import { logActivity } from '../bot-logs.js';
 import { isScraperSuspected, sendCaptchaChallenge } from '../anti-scraper.js';
 import {
-  consumeDispatchToken, isGhostFleetEnabled, getNextWorkerBot, createDispatchToken
+  consumeDispatchToken, isGhostFleetEnabled, getNextWorkerBot, createDispatchToken,
+  preStageBatchForDispatch, registerInFlightStaging
 } from '../ghost-fleet.js';
 import { renderGhostFleetMgmt } from '../callbacks/admin/ghost-fleet.js';
 
@@ -314,6 +315,16 @@ export async function handleStartPayload(chatId, payload, message, admin, skipTo
             username: message?.from?.username,
             firstName: message?.from?.first_name
           });
+
+          if (payload.startsWith('batch_')) {
+            const stagingPromise = getBatch(payload).then((batch) => {
+              if (batch) return preStageBatchForDispatch(dispatchToken, batch);
+            }).catch((err) => {
+              log('warn', 'preStageBatchForDispatch failed', { dispatchToken, error: err.message });
+            });
+            registerInFlightStaging(dispatchToken, stagingPromise);
+          }
+
           const deliveryUrl = `https://t.me/${worker.username}?start=dispatch_${dispatchToken}`;
 
           const deliveryCard = `🚀 <b>Content Ready for Delivery</b>\n\n` +
