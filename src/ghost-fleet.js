@@ -940,59 +940,86 @@ export async function deliverBatchViaRelayTunnel(toChatId, dbChannelId, msgIds, 
     return { ok: sentMessageIds.length > 0, sentMessageIds, failedCount, healedIndices };
   }
 
-  // ─── Fallback: Sequential transit streaming if not pre-staged ─────────────
-  for (let i = 0; i < msgIds.length; i++) {
-    const srcMsgId = msgIds[i];
-    let usedBackup = false;
+  // ─── Fallback: On-the-fly Bulk Transit Staging & Instant Blast ───────────
+  // When files are not pre-staged (e.g. user clicked Re-send Files), bulk-stage
+  // them into the Relay Tunnel and immediately blast to the user in chunks of 100.
+  const sortedMsgIds = [...new Set(msgIds.filter(id => id != null && !isNaN(id)).map(Number))].sort((a, b) => a - b);
+  const CHUNK_SIZE = 100;
 
-    // Step 1: Main Bot copies media from protected DB Channel to the Relay Tunnel
-    let transitRes = await botContext.run({ token: getMainToken() }, () =>
-      copyMessage(relayChatId, effectiveDbChannelId, srcMsgId, false)
+  for (let i = 0; i < sortedMsgIds.length; i += CHUNK_SIZE) {
+    const chunk = sortedMsgIds.slice(i, i + CHUNK_SIZE);
+
+    // Step 1: Main Bot bulk-copies the chunk into Relay Tunnel (1 fast API call)
+    let stageRes = await botContext.run({ token: getMainToken() }, () =>
+      copyTelegramMessages(relayChatId, effectiveDbChannelId, chunk, false)
     );
 
-    // If primary DB message failed and backup is configured, failover to backup DB
-    if ((!transitRes?.ok || !transitRes?.messageId) && backupDbChannelId && Array.isArray(backupMsgIds) && backupMsgIds[i]) {
-      transitRes = await botContext.run({ token: getMainToken() }, () =>
-        copyMessage(relayChatId, backupDbChannelId, backupMsgIds[i], false)
-      );
-      if (transitRes?.ok && transitRes?.messageId) usedBackup = true;
-    }
+    if (stageRes?.ok && Array.isArray(stageRes.messageIds) && stageRes.messageIds.length > 0) {
+      const transitMsgIds = stageRes.messageIds;
 
-    if (transitRes?.ok && transitRes?.messageId) {
-      const transitMsgId = transitRes.messageId;
-      try {
-        // Step 2: Worker Bot immediately delivers media from Relay Tunnel directly to User
-        const workerRes = await copyMessage(toChatId, relayChatId, transitMsgId, protectContent);
+      // Step 2: Worker Bot immediately bulk-blasts the files from Relay Tunnel to User (1 fast API call)
+      let blastRes = await copyTelegramMessages(toChatId, relayChatId, transitMsgIds, protectContent);
+      if (blastRes?.ok && Array.isArray(blastRes.messageIds) && blastRes.messageIds.length > 0) {
+        sentMessageIds.push(...blastRes.messageIds);
+      } else {
+        // Fallback: copy transit messages individually with safe pacing
+        for (const tId of transitMsgIds) {
+          const res = await copyMessage(toChatId, relayChatId, tId, protectContent);
+          if (res?.ok && res?.messageId) {
+            sentMessageIds.push(res.messageId);
+          } else {
+            failedCount++;
+          }
+          if (transitMsgIds.length > 1) {
+            await new Promise(r => setTimeout(r, 350));
+          }
+        }
+      }
 
-        // Step 3: Delete the intermediate transit message from Relay Tunnel immediately
-        botContext.run({ token: getMainToken() }, () =>
-          deleteTelegramMessage(relayChatId, transitMsgId)
-        ).catch(() => {});
+      // Step 3: Purge transit messages from Relay Tunnel immediately in 1 call
+      botContext.run({ token: getMainToken() }, () =>
+        deleteTelegramMessages(relayChatId, transitMsgIds)
+      ).catch(() => {});
+    } else {
+      // Step 4: Fallback item-by-item staging with backup DB failover & pacing
+      log('warn', 'deliverBatchViaRelayTunnel: bulk stage failed, falling back to paced item staging', {
+        relayChatId, effectiveDbChannelId, count: chunk.length, reason: stageRes?.reason
+      });
+      for (let j = 0; j < chunk.length; j++) {
+        const srcMsgId = chunk[j];
+        let transitRes = await botContext.run({ token: getMainToken() }, () =>
+          copyMessage(relayChatId, effectiveDbChannelId, srcMsgId, false)
+        );
 
-        if (workerRes?.ok && workerRes?.messageId) {
-          sentMessageIds.push(workerRes.messageId);
-          if (usedBackup) {
-            healedIndices.push({ index: i, backupMsgId: backupMsgIds[i], backupChannelId: backupDbChannelId });
+        if ((!transitRes?.ok || !transitRes?.messageId) && backupDbChannelId && Array.isArray(backupMsgIds) && backupMsgIds[i + j]) {
+          transitRes = await botContext.run({ token: getMainToken() }, () =>
+            copyMessage(relayChatId, backupDbChannelId, backupMsgIds[i + j], false)
+          );
+        }
+
+        if (transitRes?.ok && transitRes?.messageId) {
+          const transitMsgId = transitRes.messageId;
+          const workerRes = await copyMessage(toChatId, relayChatId, transitMsgId, protectContent);
+          botContext.run({ token: getMainToken() }, () =>
+            deleteTelegramMessage(relayChatId, transitMsgId)
+          ).catch(() => {});
+
+          if (workerRes?.ok && workerRes?.messageId) {
+            sentMessageIds.push(workerRes.messageId);
+          } else {
+            failedCount++;
           }
         } else {
           failedCount++;
         }
-      } catch (err) {
-        botContext.run({ token: getMainToken() }, () =>
-          deleteTelegramMessage(relayChatId, transitMsgId)
-        ).catch(() => {});
-        failedCount++;
+        if (chunk.length > 1) {
+          await new Promise(r => setTimeout(r, 350));
+        }
       }
-    } else {
-      failedCount++;
     }
 
     if (typeof onProgress === 'function') {
       await onProgress(sentMessageIds.length + failedCount, totalCount).catch(() => {});
-    }
-
-    if (totalCount > 1) {
-      await new Promise(r => setTimeout(r, 350));
     }
   }
 
